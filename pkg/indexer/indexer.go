@@ -66,15 +66,15 @@ func (idx *Indexer) IndexAll() error {
 
 	slog.Info("found files to index", "count", len(files))
 
+	chunksMap, err := idx.Chunker.ChunkFiles(files)
+	if err != nil {
+		return fmt.Errorf("chunk files: %w", err)
+	}
+
 	var totalChunks int
 	for _, fi := range files {
-		chunks, err := idx.Chunker.ChunkFile(fi)
-		if err != nil {
-			slog.Warn("skip chunking", "file", fi.RelPath, "error", err)
-			continue
-		}
-
-		if len(chunks) == 0 {
+		chunks, ok := chunksMap[fi.Path]
+		if !ok || len(chunks) == 0 {
 			continue
 		}
 
@@ -148,10 +148,14 @@ func (idx *Indexer) IndexChanged() error {
 
 	slog.Info("incremental index", "files", len(files), "since", sinceSHA)
 
+	chunksMap, err := idx.Chunker.ChunkFiles(files)
+	if err != nil {
+		return fmt.Errorf("chunk changed files: %w", err)
+	}
+
 	for _, fi := range files {
-		chunks, err := idx.Chunker.ChunkFile(fi)
-		if err != nil {
-			slog.Warn("skip chunking changed file", "file", fi.RelPath, "error", err)
+		chunks, ok := chunksMap[fi.Path]
+		if !ok || len(chunks) == 0 {
 			continue
 		}
 

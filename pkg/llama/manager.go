@@ -300,6 +300,14 @@ func (m *Manager) Start() error {
 	return nil
 }
 
+func (m *Manager) IsRunning() bool {
+	port := m.Cfg.Llama.Port
+	if port == 0 {
+		port = 56000
+	}
+	return m.isRunning(port)
+}
+
 func (m *Manager) isRunning(port int) bool {
 	client := &http.Client{Timeout: 2 * time.Second}
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/embeddings", port)

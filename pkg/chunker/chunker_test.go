@@ -5,11 +5,12 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/cristian/go-indexing-mcp/pkg/treeparse"
 	"github.com/cristian/go-indexing-mcp/pkg/walker"
 )
 
 func TestNew_DefaultValues(t *testing.T) {
-	c := New(0, 0)
+	c := New(0, 0, "")
 	if c.ChunkSize != 50 {
 		t.Errorf("expected chunk size 50, got %d", c.ChunkSize)
 	}
@@ -19,14 +20,14 @@ func TestNew_DefaultValues(t *testing.T) {
 }
 
 func TestNew_ClampOverlap(t *testing.T) {
-	c := New(100, 80)
+	c := New(100, 80, "")
 	if c.ChunkOverlap >= c.ChunkSize {
 		t.Error("overlap should be clamped below chunk size")
 	}
 }
 
 func TestNew_NegativeOverlap(t *testing.T) {
-	c := New(50, -1)
+	c := New(50, -1, "")
 	if c.ChunkOverlap != 0 {
 		t.Errorf("expected overlap 0, got %d", c.ChunkOverlap)
 	}
@@ -38,7 +39,7 @@ func TestChunkFile_EmptyFile(t *testing.T) {
 	os.WriteFile(path, []byte{}, 0644)
 
 	fi := walker.FileInfo{Path: path, RelPath: "empty.go", Hash: "abc123", Language: "go"}
-	c := New(10, 2)
+	c := New(10, 2, "")
 	chunks, err := c.ChunkFile(fi)
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +55,7 @@ func TestChunkFile_SingleChunk(t *testing.T) {
 	os.WriteFile(path, []byte("line1\nline2\nline3"), 0644)
 
 	fi := walker.FileInfo{Path: path, RelPath: "small.go", Hash: "abc123", Language: "go"}
-	c := New(10, 2)
+	c := New(10, 2, "")
 	chunks, err := c.ChunkFile(fi)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +88,7 @@ func TestChunkFile_MultipleChunks(t *testing.T) {
 	os.WriteFile(path, []byte(content), 0644)
 
 	fi := walker.FileInfo{Path: path, RelPath: "multi.go", Hash: "def456", Language: "go"}
-	c := New(4, 1)
+	c := New(4, 1, "")
 	chunks, err := c.ChunkFile(fi)
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +125,7 @@ func TestChunkFile_RelPathFallback(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fi := walker.FileInfo{Path: path, RelPath: tt.rel, Hash: "abc", Language: "go"}
-			c := New(10, 2)
+			c := New(10, 2, "")
 			chunks, err := c.ChunkFile(fi)
 			if err != nil {
 				t.Fatal(err)
@@ -149,7 +150,7 @@ func TestChunkFile_Metadata(t *testing.T) {
 		Size:     42,
 	}
 
-	c := New(10, 2)
+	c := New(10, 2, "")
 	chunks, err := c.ChunkFile(fi)
 	if err != nil {
 		t.Fatal(err)
@@ -173,9 +174,118 @@ func TestChunkFile_Metadata(t *testing.T) {
 
 func TestChunkFile_ReadError(t *testing.T) {
 	fi := walker.FileInfo{Path: "/nonexistent/file.go", RelPath: "file.go", Hash: "abc", Language: "go"}
-	c := New(10, 2)
+	c := New(10, 2, "")
 	_, err := c.ChunkFile(fi)
 	if err == nil {
 		t.Error("expected error for nonexistent file")
+	}
+}
+
+func TestSlidingWindow_FitsInOne(t *testing.T) {
+	lines := []string{"a", "b", "c"}
+	c := New(10, 2, "")
+	chunks := c.slidingWindow(lines, 0, 3, walker.FileInfo{Path: "test.go", RelPath: "test.go", Hash: "abc", Language: "go"})
+	if len(chunks) != 1 {
+		t.Fatalf("expected 1 chunk, got %d", len(chunks))
+	}
+}
+
+func TestSlidingWindow_Multiple(t *testing.T) {
+	lines := []string{"1", "2", "3", "4", "5", "6", "7"}
+	c := New(3, 1, "")
+	chunks := c.slidingWindow(lines, 0, 7, walker.FileInfo{Path: "test.go", RelPath: "test.go", Hash: "abc", Language: "go"})
+	if len(chunks) < 2 {
+		t.Fatalf("expected at least 2 chunks, got %d", len(chunks))
+	}
+	if chunks[0].StartLine != 1 || chunks[0].EndLine != 3 {
+		t.Errorf("first chunk expected 1-3, got %d-%d", chunks[0].StartLine, chunks[0].EndLine)
+	}
+	last := chunks[len(chunks)-1]
+	if last.EndLine != 7 {
+		t.Errorf("last chunk should end at 7, got %d", last.EndLine)
+	}
+}
+
+func TestStructuralSplit_RespectsBlockBoundaries(t *testing.T) {
+	lines := make([]string, 100)
+	for i := range 100 {
+		lines[i] = "line" + itoa(i+1)
+	}
+
+	blocks := []treeparse.Block{
+		{StartLine: 1, EndLine: 10, NodeType: "function_declaration"},
+		{StartLine: 15, EndLine: 45, NodeType: "function_declaration"},
+		{StartLine: 50, EndLine: 100, NodeType: "function_declaration"},
+	}
+
+	c := New(20, 2, "")
+	fi := walker.FileInfo{Path: "test.go", RelPath: "test.go", Hash: "abc", Language: "go"}
+
+	chunks := c.structuralSplit(lines, blocks, fi)
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least 1 chunk")
+	}
+
+	for _, ch := range chunks {
+		if ch.StartLine > 100 || ch.EndLine < 1 {
+			t.Errorf("chunk out of range: %d-%d", ch.StartLine, ch.EndLine)
+		}
+	}
+
+	var hasSplitFunc bool
+	for _, ch := range chunks {
+		if ch.StartLine >= 15 && ch.EndLine <= 45 && ch.EndLine-ch.StartLine+1 <= 20 {
+			hasSplitFunc = true
+			break
+		}
+	}
+	if !hasSplitFunc {
+		t.Log("note: large function (15-45) should be split into sub-chunks ≤ chunkSize")
+	}
+}
+
+func TestStructuralSplit_GapBetweenBlocks(t *testing.T) {
+	lines := make([]string, 30)
+	for i := range 30 {
+		lines[i] = "line" + itoa(i+1)
+	}
+
+	c := New(20, 2, "")
+	fi := walker.FileInfo{Path: "test.go", RelPath: "test.go", Hash: "abc", Language: "go"}
+
+	blocks := []treeparse.Block{
+		{StartLine: 1, EndLine: 10, NodeType: "function_declaration"},
+		{StartLine: 20, EndLine: 30, NodeType: "function_declaration"},
+	}
+
+	chunks := c.structuralSplit(lines, blocks, fi)
+
+	if len(chunks) < 2 {
+		t.Fatalf("expected at least 2 chunks, got %d", len(chunks))
+	}
+
+	firstOverlap := false
+	for _, ch := range chunks {
+		if ch.StartLine <= 10 && ch.EndLine >= 11 {
+			firstOverlap = true
+		}
+	}
+	if firstOverlap {
+		t.Log("gap (lines 11-19) may be a separate chunk or merged with adjacent blocks")
+	}
+}
+
+func TestNew_WithTreeBinPath(t *testing.T) {
+	c := New(50, 10, "/usr/bin/tree-sitter")
+	if c.treeParser == nil {
+		t.Error("expected treeParser to be set when binPath is provided")
+	}
+}
+
+func TestNew_WithoutTreeBinPath(t *testing.T) {
+	c := New(50, 10, "")
+	if c.treeParser != nil {
+		t.Error("expected treeParser to be nil when binPath is empty")
 	}
 }

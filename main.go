@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -19,9 +20,15 @@ import (
 	"github.com/cristian/go-indexing-mcp/pkg/walker"
 )
 
+// progressWriter writes directly to stdout without slog formatting.
+type progressWriter struct{}
+
+func (progressWriter) Write(p []byte) (int, error) { return os.Stdout.Write(p) }
+
 func main() {
 	mcpMode := flag.Bool("mcp", false, "Start MCP server (stdio)")
 	freeMem := flag.Bool("free", false, "Stop llama-server and free memory")
+	generateMode := flag.Bool("generate", false, "One-shot index of current directory")
 	flag.Parse()
 
 	if *freeMem {
@@ -38,6 +45,11 @@ func main() {
 		}
 		slog.Info("llama-server stopped, memory freed")
 		return
+	}
+
+	if *generateMode {
+		setupConsoleLogger()
+		os.Exit(runGenerate())
 	}
 
 	if !*mcpMode {
@@ -81,7 +93,7 @@ func main() {
 	defer mgr.Stop()
 
 	w := walker.New(cfg.Indexing.RootPath, cfg.Indexing.IgnorePatterns)
-	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
+	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap, cfg.Indexing.TreeSitterBinPath)
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
 	dbPath := cfg.Storage.Path
 	if !filepath.IsAbs(dbPath) {
@@ -107,6 +119,143 @@ func main() {
 		slog.Error("MCP server", "error", err)
 		os.Exit(1)
 	}
+}
+
+func runGenerate() int {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("load config", "error", err)
+		return 1
+	}
+
+	mgr := llama.New(cfg)
+	pw := progressWriter{}
+
+	tStart := time.Now()
+
+	fmt.Fprintln(pw, "Preparing llama-server...")
+	if _, err := mgr.FindOrDownloadLlama(); err != nil {
+		slog.Error("llama setup", "error", err)
+		return 1
+	}
+	if _, err := mgr.FindOrDownloadModel(); err != nil {
+		slog.Error("model setup", "error", err)
+		return 1
+	}
+
+	wasRunning := mgr.IsRunning()
+	if err := mgr.Start(); err != nil {
+		slog.Error("start llama", "error", err)
+		return 1
+	}
+	if !wasRunning {
+		fmt.Fprintln(pw, "✓ llama-server started")
+	} else {
+		fmt.Fprintln(pw, "✓ llama-server already running, reusing")
+	}
+	defer func() {
+		if !wasRunning {
+			fmt.Fprintln(pw, "Stopping llama-server...")
+			mgr.Stop()
+		}
+	}()
+
+	rootPath := cfg.Indexing.RootPath
+	if rootPath == "" {
+		rootPath = "."
+	}
+
+	tWalk := time.Now()
+	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
+	files, err := w.Walk()
+	if err != nil {
+		slog.Error("walk files", "error", err)
+		return 1
+	}
+	tWalkDone := time.Now()
+
+	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap, cfg.Indexing.TreeSitterBinPath)
+	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
+	dbPath := cfg.Storage.Path
+	if !filepath.IsAbs(dbPath) {
+		abs, err := filepath.Abs(dbPath)
+		if err == nil {
+			dbPath = abs
+		}
+	}
+
+	st, err := storage.New(dbPath, cfg.Embedding.Dimensions)
+	if err != nil {
+		slog.Error("storage init", "error", err)
+		return 1
+	}
+	defer st.Close()
+
+	idx := indexer.New(w, ch, em, st)
+
+	tChunk := time.Now()
+	chunksMap, err := idx.Chunker.ChunkFiles(files)
+	if err != nil {
+		slog.Error("chunk files", "error", err)
+		return 1
+	}
+	tChunkDone := time.Now()
+	chunkerStats := idx.Chunker.Stats()
+
+	var totalChunks int
+	tEmbed := time.Now()
+	for _, fi := range files {
+		chunks, ok := chunksMap[fi.Path]
+		if !ok || len(chunks) == 0 {
+			continue
+		}
+
+		embeddings, err := em.EmbedChunks(chunks)
+		if err != nil {
+			slog.Error("embed", "file", fi.RelPath, "error", err)
+			continue
+		}
+
+		if err := st.UpsertChunks(chunks, embeddings); err != nil {
+			slog.Error("store", "file", fi.RelPath, "error", err)
+			continue
+		}
+
+		totalChunks += len(chunks)
+	}
+	tEmbedDone := time.Now()
+
+	headSHA := w.GetHeadSHA()
+	if headSHA != "" {
+		st.SetCommitSHA(headSHA)
+	}
+
+	elapsed := time.Since(tStart)
+	absRoot, _ := filepath.Abs(rootPath)
+	fmt.Fprintln(pw)
+	fmt.Fprintln(pw, "=== Index Complete ===")
+	fmt.Fprintf(pw, "  Root path:        %s\n", absRoot)
+	fmt.Fprintf(pw, "  Files found:      %d\n", len(files))
+	fmt.Fprintf(pw, "  Files indexed:    %d\n", len(chunksMap))
+	fmt.Fprintf(pw, "  Chunks created:   %d\n", totalChunks)
+	fmt.Fprintln(pw, "  ─ Chunking method:")
+	fmt.Fprintf(pw, "    Tree-sitter:    %d files, %d chunks\n", chunkerStats.TreeSitterFiles, chunkerStats.TreeSitterChunks)
+	fmt.Fprintf(pw, "    Sliding window: %d files, %d chunks\n", chunkerStats.SlidingWinFiles, chunkerStats.SlidingWinChunks)
+	fmt.Fprintln(pw, "  ─ Timing:")
+	fmt.Fprintf(pw, "    Walk files:     %s\n", roundDuration(tWalkDone.Sub(tWalk)))
+	fmt.Fprintf(pw, "    Chunk:          %s\n", roundDuration(tChunkDone.Sub(tChunk)))
+	fmt.Fprintf(pw, "    Embed + store:  %s\n", roundDuration(tEmbedDone.Sub(tEmbed)))
+	fmt.Fprintf(pw, "    Total:          %s\n", roundDuration(elapsed))
+	fmt.Fprintln(pw, "======================")
+
+	return 0
+}
+
+func roundDuration(d time.Duration) string {
+	if d < time.Second {
+		return d.Round(time.Millisecond).String()
+	}
+	return d.Round(time.Millisecond * 10).String()
 }
 
 func setupConsoleLogger() {

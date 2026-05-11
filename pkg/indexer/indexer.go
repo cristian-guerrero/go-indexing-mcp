@@ -173,6 +173,13 @@ func (idx *Indexer) GetStats() IndexStats {
 	return idx.Stats
 }
 
+func (idx *Indexer) ListFiles() []string {
+	if idx.Storage == nil {
+		return nil
+	}
+	return idx.Storage.ListFiles()
+}
+
 func (idx *Indexer) Search(query string, pathFilter string, limit int) ([]storage.SearchResult, error) {
 	queryVec, err := idx.Embedder.EmbedQuery(query)
 	if err != nil {

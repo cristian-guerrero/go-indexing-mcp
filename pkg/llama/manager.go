@@ -22,6 +22,7 @@ import (
 type Manager struct {
 	Cfg       *config.Config
 	cmd       *exec.Cmd
+	logFile   *os.File
 	Port      int
 	Ready     bool
 	ModelPath string
@@ -247,28 +248,115 @@ func (m *Manager) Start() error {
 	}
 	m.Port = port
 
+	if m.isRunning(port) {
+		slog.Info("llama-server already running on port", "port", port)
+		m.Ready = true
+		return nil
+	}
+
 	args := []string{
 		"--port", strconv.Itoa(port),
 		"--model", m.ModelPath,
 		"--embedding",
 		"--no-webui",
 		"--mlock",
+		"--batch-size", "8192",
+		"--ubatch-size", "2048",
 	}
 	args = append(args, m.Cfg.Llama.ExtraArgs...)
 
 	cmd := exec.Command(m.BinPath, args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	m.cmd = cmd
 
-	slog.Info("starting llama-server", "port", port, "model", m.ModelPath)
+	logDir := config.McpDir()
+	os.MkdirAll(logDir, 0755)
+	logPath := filepath.Join(logDir, "llama-server.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return fmt.Errorf("open llama log: %w", err)
+	}
+
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	m.cmd = cmd
+	m.logFile = logFile
+
+	slog.Info("starting llama-server", "port", port, "model", m.ModelPath, "log", logPath)
 	if err := cmd.Start(); err != nil {
+		logFile.Close()
 		return fmt.Errorf("start llama-server: %w", err)
 	}
 
-	time.Sleep(2 * time.Second)
+	if err := m.waitReady(30 * time.Second); err != nil {
+		slog.Warn("llama-server may not be ready yet", "error", err)
+	}
+
 	m.Ready = true
 	slog.Info("llama-server started", "pid", cmd.Process.Pid)
+	return nil
+}
+
+func (m *Manager) isRunning(port int) bool {
+	client := &http.Client{Timeout: 2 * time.Second}
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/embeddings", port)
+	body := `{"input":["test"],"model":"test"}`
+	req, err := http.NewRequest("POST", url, strings.NewReader(body))
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200 || resp.StatusCode == 400
+}
+
+func (m *Manager) waitReady(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 1 * time.Second}
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/embeddings", m.Port)
+	body := `{"input":["test"]}`
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest("POST", url, strings.NewReader(body))
+		if err != nil {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			return nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return fmt.Errorf("timeout waiting for llama-server on port %d", m.Port)
+}
+
+func (m *Manager) KillByPort() error {
+	port := m.Cfg.Llama.Port
+	if port == 0 {
+		port = 56000
+	}
+
+	if !m.isRunning(port) {
+		slog.Info("no llama-server found on port", "port", port)
+		return nil
+	}
+
+	m.Port = port
+	m.Stop()
+
+	if m.isRunning(port) {
+		pid := findProcessByPort(port)
+		if pid > 0 {
+			proc, err := os.FindProcess(pid)
+			if err == nil {
+				proc.Kill()
+			}
+		}
+	}
 	return nil
 }
 
@@ -277,8 +365,34 @@ func (m *Manager) Stop() {
 		slog.Info("stopping llama-server", "pid", m.cmd.Process.Pid)
 		m.cmd.Process.Kill()
 		m.cmd.Wait()
-		m.Ready = false
 	}
+	if m.logFile != nil {
+		m.logFile.Close()
+		m.logFile = nil
+	}
+	m.Ready = false
+}
+
+func findProcessByPort(port int) int {
+	if runtime.GOOS != "windows" {
+		return 0
+	}
+	cmd := exec.Command("netstat", "-ano")
+	out, err := cmd.Output()
+	if err != nil {
+		return 0
+	}
+	target := fmt.Sprintf(":%d", port)
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, target) && strings.Contains(line, "LISTENING") {
+			parts := strings.Fields(line)
+			if len(parts) >= 5 {
+				pid, _ := strconv.Atoi(parts[len(parts)-1])
+				return pid
+			}
+		}
+	}
+	return 0
 }
 
 func (m *Manager) BaseURL() string {

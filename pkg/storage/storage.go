@@ -193,6 +193,21 @@ func (s *Storage) Stats() (chunks, files int, err error) {
 	return len(s.records), len(fileSet), nil
 }
 
+func (s *Storage) ListFiles() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	var files []string
+	for _, rec := range s.records {
+		if !seen[rec.RelPath] {
+			seen[rec.RelPath] = true
+			files = append(files, rec.RelPath)
+		}
+	}
+	return files
+}
+
 func (s *Storage) Close() error {
 	return s.save()
 }

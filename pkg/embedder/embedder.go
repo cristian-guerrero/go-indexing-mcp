@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -68,7 +69,15 @@ func (e *Embedder) EmbedChunks(chunks []chunker.Chunk) (map[string][]float64, er
 	return result, nil
 }
 
+const maxInputLength = 1200
+
 func (e *Embedder) embed(texts []string) ([][]float64, error) {
+	for i, t := range texts {
+		if len(t) > maxInputLength {
+			slog.Debug("truncating long input", "original_len", len(t), "truncated_to", maxInputLength)
+			texts[i] = t[:maxInputLength]
+		}
+	}
 	body := embedRequest{Input: texts}
 	data, err := json.Marshal(body)
 	if err != nil {

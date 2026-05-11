@@ -46,7 +46,7 @@ func Run() error {
 	modelPath, err := mgr.FindOrDownloadModel()
 	if err != nil {
 		fmt.Printf("⚠ Model download: %s\n", err)
-		fmt.Println("  You can download a GGUF embedding model manually and set model_path in config.yaml")
+		fmt.Println("  You can download a GGUF embedding model manually and set model_path in config.json")
 	} else {
 		fmt.Printf("✓ Model: %s\n", modelPath)
 	}

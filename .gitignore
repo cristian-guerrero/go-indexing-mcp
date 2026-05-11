@@ -5,7 +5,7 @@ bin/
 
 # Go
 vendor/
-*.mod
+
 
 # IDE
 .idea/
@@ -22,3 +22,5 @@ Thumbs.db
 
 # Temp
 tmp/
+info.txt
+.go-mcp

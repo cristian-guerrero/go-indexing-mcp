@@ -229,7 +229,7 @@ func (s *Storage) SwitchBranch(branch string) error {
 
 	ext := filepath.Ext(s.basePath)
 	base := s.basePath[:len(s.basePath)-len(ext)]
-	if branch == "" {
+	if branch == "" || branch == "main" {
 		s.path = s.basePath
 	} else {
 		s.path = base + "-" + branch + ext

@@ -1,11 +1,11 @@
 # go-indexing-mcp
 
-Servidor MCP (Model Context Protocol) para indexación semántica de código. Permite buscar código en lenguaje natural usando embeddings locales con llama.cpp.
+Servidor MCP (Model Context Protocol) para indexación semántica de código. Busca código en lenguaje natural usando embeddings locales con llama.cpp.
 
 ## Requisitos
 
 - Go 1.26+
-- Conexión a internet (solo para primera descarga de modelos)
+- Conexión a internet (solo para primera descarga)
 
 ## Compilación
 
@@ -17,7 +17,7 @@ go build -o bin/go-indexing-mcp.exe .
 
 ### Primera ejecución (auto-setup)
 
-Sin flags, el binario ejecuta el auto-setup: descarga llama.cpp, descarga el modelo de embeddings, copia el binario al PATH y crea scripts de ejecución.
+Sin flags ejecuta el auto-setup: descarga llama.cpp, descarga el modelo de embeddings, copia el binario al PATH y crea scripts:
 
 ```bash
 ./bin/go-indexing-mcp.exe
@@ -29,7 +29,7 @@ Sin flags, el binario ejecuta el auto-setup: descarga llama.cpp, descarga el mod
 ./bin/go-indexing-mcp.exe --mcp
 ```
 
-El servidor se comunica por **stdio** siguiendo el protocolo MCP. Para usarlo con un cliente MCP (Claude Desktop, etc.):
+En un cliente MCP (Claude Desktop, etc.):
 
 ```json
 {
@@ -38,14 +38,35 @@ El servidor se comunica por **stdio** siguiendo el protocolo MCP. Para usarlo co
 }
 ```
 
+### Liberar memoria
+
+Detiene llama-server y libera la RAM usada por el modelo:
+
+```bash
+./bin/go-indexing-mcp.exe --free
+```
+
 ## Herramientas MCP
 
 | Herramienta | Descripción | Parámetros |
 |---|---|---|
-| `search_code` | Búsqueda semántica de código | `query` (req), `path_filter` (opc), `limit` (opc, def: 10) |
-| `index_status` | Estado del índice (chunks, archivos, ultima indexación) | — |
+| `search_code` | Búsqueda semántica con indexación automática | `query` (req), `path_filter` (opc), `limit` (opc, def: 10) |
 | `reindex` | Re-indexar todos los archivos en segundo plano | — |
 | `index_path` | Indexar un archivo o directorio específico | `path` (req) |
+| `_debug_index_files` | Listar archivos indexados (debug) | — |
+
+### search_code — comportamiento inteligente
+
+Cada búsqueda mantiene el índice actualizado automáticamente:
+
+1. Si el índice está vacío → indexa todo (síncrono)
+2. Si hay commits nuevos desde la última indexación → indexa cambios (síncrono)
+3. Si solo hay cambios sin commit → indexa en background, búsqueda instantánea
+4. Si cambiaste de rama → carga el índice de esa rama al instante
+
+## Índice por rama
+
+Cada rama de git tiene su propio archivo de índice (`vectors-{rama}.gob`). Al cambiar de rama y buscar, el servidor guarda el índice actual y carga el de la nueva rama automáticamente, sin re-indexar.
 
 ## Lenguajes Soportados
 
@@ -53,7 +74,7 @@ El servidor se comunica por **stdio** siguiendo el protocolo MCP. Para usarlo co
 
 ## Configuración
 
-Archivo: `~/.go-mcp/indexing/config.json`
+Archivo: `~/.go-mcp/indexing/config.json` (se crea automáticamente en la primera ejecución)
 
 ```json
 {
@@ -83,24 +104,23 @@ Archivo: `~/.go-mcp/indexing/config.json`
 
 ### Secciones
 
-- **llama**: Configuración del servidor llama.cpp (binario, modelo, puerto)
-- **indexing**: Root del proyecto, patrones a ignorar, tamaño de chunks
-- **storage**: Ruta del archivo de vectores (`.go-mcp/vectors.gob` por proyecto)
+- **llama**: Configuración de llama.cpp (binario, modelo, puerto, argumentos extra)
+- **indexing**: Raíz del proyecto, patrones a ignorar, tamaño de chunks
+- **storage**: Ruta base del archivo de vectores (se genera `vectors-{rama}.gob` por rama)
 - **embedding**: Modelo de embeddings, dimensiones y batch size
-
-## Almacenamiento
-
-El índice se guarda en `<proyecto>/.go-mcp/vectors.gob` usando `encoding/gob`. Cada proyecto tiene su propio índice aislado. Al iniciar el servidor, si no existe el archivo de índice se ejecuta una indexación completa automática.
 
 ## Arquitectura
 
 ```
 [FS] → [walker] → [ignore filter] → [chunker] → [llama-server embeddings] → [storage]
-   ^                                                                           |
-   +── git diff (indexación incremental) ──────────────────────────────────────+
+   ↑                                                                              |
+   ├── git diff <last_sha> (cambios committed + working tree) ────────────────────+
+   └── git branch detection (índice aislado por rama)
 ```
+
+El índice se guarda en `<proyecto>/.go-mcp/vectors-{rama}.gob` usando `encoding/gob`. Cada rama tiene su propio índice. Si no existe, se indexa automáticamente en la primera búsqueda.
 
 ## Dependencias
 
-- `github.com/mark3labs/mcp-go` — Implementación del protocolo MCP
+- `github.com/mark3labs/mcp-go` — Protocolo MCP
 - `github.com/sabhiram/go-gitignore` — Filtrado .gitignore

@@ -1,0 +1,85 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -v -count=1 ./...
+
+  build:
+    needs: test
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          go-version-file: go.mod
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          ext=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
+          go build -o "go-indexing-mcp-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: go-indexing-mcp-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: go-indexing-mcp-${{ matrix.goos }}-${{ matrix.goarch }}*
+
+  release-tag:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - run: |
+          mkdir -p release
+          cp -r go-indexing-mcp-*/ release/
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: release/*
+          generate_release_notes: true
+          prerelease: false
+
+  release-latest:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+      - run: |
+          mkdir -p release
+          cp -r go-indexing-mcp-*/ release/
+      - uses: ncipollo/release-action@v1
+        with:
+          tag: latest
+          name: Latest
+          artifacts: "release/*"
+          allowUpdates: true
+          prerelease: false
+          makeLatest: true

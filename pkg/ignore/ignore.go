@@ -129,6 +129,15 @@ func (m *Matcher) ShouldIgnore(relPath string) bool {
 		if strings.HasPrefix(rel, p+"/") || rel == p {
 			return true
 		}
+		if !strings.ContainsAny(p, "/*?[") {
+			base := filepath.Base(rel)
+			if base == p {
+				return true
+			}
+			if strings.Contains(rel, "/"+p+"/") || strings.HasSuffix(rel, "/"+p) {
+				return true
+			}
+		}
 	}
 	if m.gitIgnore != nil && m.gitIgnore.MatchesPath(rel) {
 		return true

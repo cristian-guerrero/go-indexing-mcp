@@ -301,8 +301,10 @@ func RunConfigure(target string) int {
 		return configurePi(exe)
 	case "opencode":
 		return configureOpenCode(exe)
+	case "kilocode":
+		return configureKiloCode(exe)
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown target: %s. Use 'pi' or 'opencode'.\n", target)
+		fmt.Fprintf(os.Stderr, "Unknown target: %s. Use 'pi', 'opencode', or 'kilocode'.\n", target)
 		return 1
 	}
 }
@@ -383,6 +385,45 @@ func configureOpenCode(exe string) int {
 		fmt.Fprintln(pw, "✓ Global AGENTS.md created with search instructions")
 	}
 	fmt.Fprintln(pw, "Done. Restart OpenCode for changes to take effect.")
+	return 0
+}
+
+func configureKiloCode(exe string) int {
+	pw := progressWriter{}
+	configDir := filepath.Join(os.Getenv("USERPROFILE"), ".config", "kilo")
+	configPath := filepath.Join(configDir, "kilo.json")
+
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		slog.Error("create kilo config dir", "error", err)
+		return 1
+	}
+
+	mcpEntry := map[string]any{
+		"command": []string{exe, "--mcp"},
+		"type":    "local",
+		"enabled": true,
+	}
+
+	if err := mergeMCPIntoJSON(configPath, "go-indexing-mcp", mcpEntry); err != nil {
+		slog.Error("update kilo config", "error", err)
+		return 1
+	}
+	fmt.Fprintln(pw, "✓ KiloCode MCP server configured")
+
+	agentsPath := filepath.Join(configDir, "AGENTS.md")
+	agentsContent := strings.NewReplacer(
+		"{BT}", "`",
+	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT} MCP tool for ALL code searches.\nAlways try it FIRST, before falling back to built-in grep/glob tools.\n\n## Search modes\n\nThree modes available via the {BT}mode{BT} parameter:\n\n- **semantic** (default): embedding + cosine similarity. Best for intent-based search (\"database connection pool\", \"error handling\"). Requires llama.cpp.\n- **grep**: literal or regex substring matching on cached chunks. Fast, no llama needed. Use for exact symbols/identifiers (\"func validate\") or regex patterns (\"type.*Downloader\").\n- **hybrid**: BM25 keyword ranking fused with vector similarity via RRF. Best of both worlds.\n\n## How to use the search tool\n\nCall the tool with a query describing what the code DOES:\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"func validate\", mode=\"grep\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"type.*Downloader\", mode=\"grep\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database pool config\", mode=\"hybrid\"){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50):\n- For listing queries (e.g. \"list all downloaders\"), use {BT}limit=50{BT}\n- For precise searches, the default works well\n\n## When to use each mode\n\n- **semantic**: you want to FIND code by what it DOES. This is the default and works for most cases.\n- **grep**: you know the EXACT name of a function, variable, or string.\n- **hybrid**: semantic results are missing keyword matches. Combines both approaches.\n\n## Search workflow (MANDATORY)\n\n1. **Prefer semantic search** - describe what the code DOES (e.g. \"authentication flow\", \"database connection pool\").\n2. **Use grep mode for exact symbols** - if you know the precise identifier (e.g. \"func validate\", \"DB_HOST\"), skip semantic and use {BT}mode=\"grep\"{BT} directly.\n3. Use returned chunks to understand the code; only read full files when the chunk is insufficient.\n4. Only fall back to built-in grep/glob when {BT}go-indexing-mcp_search_code{BT} returns nothing useful AND you have confirmed with the user.")
+
+	if existing, err := os.ReadFile(agentsPath); err == nil && string(existing) == agentsContent {
+		fmt.Fprintln(pw, "✓ AGENTS.md already up to date")
+	} else if err := os.WriteFile(agentsPath, []byte(agentsContent), 0644); err != nil {
+		slog.Error("write kilo AGENTS.md", "error", err)
+		return 1
+	} else {
+		fmt.Fprintln(pw, "✓ Global AGENTS.md created with search instructions")
+	}
+	fmt.Fprintln(pw, "Done. Restart KiloCode for changes to take effect.")
 	return 0
 }
 

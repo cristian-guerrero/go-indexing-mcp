@@ -27,7 +27,7 @@ func main() {
 	queryMode := flag.String("query", "", "Search the index for a natural language query")
 	modeFlag := flag.String("mode", "semantic", "Search mode: 'semantic', 'grep', or 'hybrid' (used with --query)")
 	limitFlag := flag.Int("limit", 25, "Max results (used with --query, default: 25, max: 50)")
-	configureMode := flag.String("configure", "", "Configure integration: 'pi' or 'opencode'")
+	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', or 'kilocode'")
 	flag.Parse()
 
 	if *configureMode != "" {

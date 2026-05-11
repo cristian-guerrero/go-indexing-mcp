@@ -25,6 +25,7 @@ func main() {
 	freeMem := flag.Bool("free", false, "Stop llama-server and free memory")
 	generateMode := flag.Bool("generate", false, "One-shot index of current directory")
 	queryMode := flag.String("query", "", "Search the index for a natural language query")
+	modeFlag := flag.String("mode", "semantic", "Search mode: 'semantic', 'grep', or 'hybrid' (used with --query)")
 	configureMode := flag.String("configure", "", "Configure integration: 'pi' or 'opencode'")
 	flag.Parse()
 
@@ -51,7 +52,7 @@ func main() {
 
 	if *queryMode != "" {
 		setupConsoleLogger()
-		os.Exit(cli.RunQuery(*queryMode))
+		os.Exit(cli.RunQuery(*queryMode, *modeFlag))
 	}
 
 	if *generateMode {

@@ -6,7 +6,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 
 	"github.com/cristian/go-indexing-mcp/pkg/chunker"
@@ -50,6 +49,7 @@ type Storage struct {
 	byID       map[string]int
 	byPath     map[string][]int
 	dirty      bool
+	bm25       *bm25Index
 }
 
 func New(dbPath string, dimensions int) (*Storage, error) {
@@ -113,6 +113,7 @@ func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]f
 	}
 
 	s.dirty = true
+	s.bm25 = nil
 	return nil
 }
 
@@ -142,52 +143,14 @@ func (s *Storage) DeleteChunksByPath(filePath string) error {
 
 	s.rebuildIndex(kept)
 	s.dirty = true
+	s.bm25 = nil
 	return nil
 }
 
 func (s *Storage) Search(query []float64, limit int) ([]SearchResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	if limit <= 0 {
-		limit = 10
-	}
-
-	type scored struct {
-		idx   int
-		score float64
-	}
-
-	var results []scored
-	for i, rec := range s.records {
-		score := cosineSimilarity(query, rec.Vector)
-		results = append(results, scored{i, score})
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
-	})
-
-	if len(results) > limit {
-		results = results[:limit]
-	}
-
-	out := make([]SearchResult, len(results))
-	for i, r := range results {
-		rec := s.records[r.idx]
-		out[i] = SearchResult{
-			ID:        rec.ID,
-			FilePath:  rec.FilePath,
-			RelPath:   rec.RelPath,
-			Language:  rec.Language,
-			StartLine: rec.StartLine,
-			EndLine:   rec.EndLine,
-			Content:   rec.Content,
-			Score:     r.score,
-		}
-	}
-
-	return out, nil
+	return s.searchLocked(query, limit)
 }
 
 func (s *Storage) Stats() (chunks, files int, err error) {
@@ -345,6 +308,7 @@ func (s *Storage) rebuildIndex(records []ChunkRecord) {
 	s.records = records
 	s.byID = make(map[string]int)
 	s.byPath = make(map[string][]int)
+	s.bm25 = nil
 
 	for i, rec := range records {
 		s.byID[rec.ID] = i

@@ -49,16 +49,19 @@ func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int) *MCPServ
 
 func (m *MCPServer) registerTools() {
 	searchTool := mcp.NewTool("search_code",
-		mcp.WithDescription("Semantic code search. Converts the query into an embedding vector using llama.cpp and returns the most semantically similar code chunks ranked by cosine similarity. Results include file path, line range, language, and similarity score. Use this to find relevant code by intent, not by keyword matching."),
+		mcp.WithDescription("Search code using different modes: 'semantic' (default) uses embedding vectors via llama.cpp for intent-based search; 'grep' does fast substring matching on cached chunks without llama; 'hybrid' fuses BM25 keyword ranking with vector similarity via RRF."),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("Natural language query describing what you are looking for, e.g. 'database connection pool', 'error handling middleware', 'user authentication'"),
+			mcp.Description("Search query — natural language for semantic/hybrid, literal text for grep"),
 		),
 		mcp.WithString("path_filter",
 			mcp.Description("Optional path prefix filter to narrow results to a specific directory, e.g. 'pkg/', 'pkg/llama/', 'main.go'"),
 		),
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum number of results to return (default: 10, max: 50)"),
+		),
+		mcp.WithString("mode",
+			mcp.Description("Search mode: 'semantic' (default), 'grep' (literal substring), or 'hybrid' (BM25 + vector RRF)"),
 		),
 	)
 
@@ -131,15 +134,24 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		limit = int(l)
 	}
 
+	mode := "semantic"
+	if m, ok := args["mode"].(string); ok && m != "" {
+		mode = m
+	}
+
 	slog.Debug("tool called: search_code",
 		"query", query,
 		"path_filter", pathFilter,
 		"limit", limit,
+		"mode", mode,
 	)
 
-	if err := m.ensureLlama(); err != nil {
-		slog.Error("llama wake failed", "error", err)
-		return mcp.NewToolResultError(fmt.Sprintf("llama-server wake failed: %s", err)), nil
+	needsLlama := mode != "grep"
+	if needsLlama {
+		if err := m.ensureLlama(); err != nil {
+			slog.Error("llama wake failed", "error", err)
+			return mcp.NewToolResultError(fmt.Sprintf("llama-server wake failed: %s", err)), nil
+		}
 	}
 
 	branch := m.indexer.Walker.GetBranch()
@@ -153,12 +165,14 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 
 	stats := m.indexer.GetStats()
 	if stats.TotalChunks == 0 {
-		slog.Info("no index found, indexing on first search")
-		if err := m.indexer.IndexAll(); err != nil {
-			slog.Error("initial index failed", "error", err)
-			return mcp.NewToolResultError(fmt.Sprintf("initial index failed: %s", err)), nil
+		if needsLlama {
+			slog.Info("no index found, indexing on first search")
+			if err := m.indexer.IndexAll(); err != nil {
+				slog.Error("initial index failed", "error", err)
+				return mcp.NewToolResultError(fmt.Sprintf("initial index failed: %s", err)), nil
+			}
 		}
-	} else if !stats.IsIndexing {
+	} else if needsLlama && !stats.IsIndexing {
 		lastSHA := m.indexer.Storage.GetCommitSHA()
 		headSHA := m.indexer.Walker.GetHeadSHA()
 		hasNewCommits := headSHA != "" && lastSHA != "" && headSHA != lastSHA
@@ -178,7 +192,7 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		}
 	}
 
-	results, err := m.indexer.Search(query, pathFilter, limit)
+	results, err := m.indexer.Search(query, pathFilter, limit, mode)
 	if err != nil {
 		slog.Error("search failed", "error", err)
 		return mcp.NewToolResultError(fmt.Sprintf("search failed: %s", err)), nil
@@ -188,6 +202,7 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		"query", query,
 		"results", len(results),
 		"path_filter", pathFilter,
+		"mode", mode,
 	)
 
 	data, _ := json.MarshalIndent(results, "", "  ")

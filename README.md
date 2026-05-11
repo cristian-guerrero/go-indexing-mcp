@@ -50,9 +50,16 @@ Indexa todo el proyecto actual y muestra reporte detallado:
 
 ```bash
 ./bin/go-indexing-mcp.exe --query "database connection pool"
+./bin/go-indexing-mcp.exe --query "func validate" --mode grep
+./bin/go-indexing-mcp.exe --query "db config" --mode hybrid
 ```
 
 Auto-indexa si es necesario, reusa o inicia llama-server según corresponda.
+
+Modos de búsqueda:
+- **`semantic`** (default) — embedding + cosine similarity. Ideal para buscar por intención.
+- **`grep`** — substring matching sobre chunks cacheados. Rápido, sin llama.cpp. Útil para símbolos exactos.
+- **`hybrid`** — BM25 + vector similarity fusionados con RRF. Lo mejor de ambos mundos.
 
 ### Liberar memoria
 
@@ -66,7 +73,7 @@ Detiene llama-server y libera la RAM usada por el modelo:
 
 | Herramienta | Descripción | Parámetros |
 |---|---|---|
-| `search_code` | Búsqueda semántica con indexación automática | `query` (req), `path_filter` (opc), `limit` (opc, def: 10) |
+| `search_code` | Búsqueda semántica con indexación automática | `query` (req), `path_filter` (opc), `limit` (opc, def: 10), `mode` (opc: semantic/grep/hybrid) |
 | `reindex` | Re-indexar todos los archivos en segundo plano | — |
 | `index_path` | Indexar un archivo o directorio específico | `path` (req) |
 | `_debug_index_files` | Listar archivos indexados (debug) | — |

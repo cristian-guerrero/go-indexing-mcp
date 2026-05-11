@@ -203,28 +203,50 @@ func (idx *Indexer) ListFiles() []string {
 	return idx.Storage.ListFiles()
 }
 
-func (idx *Indexer) Search(query string, pathFilter string, limit int) ([]storage.SearchResult, error) {
-	queryVec, err := idx.Embedder.EmbedQuery(query)
-	if err != nil {
-		return nil, fmt.Errorf("embed query: %w", err)
-	}
-
-	results, err := idx.Storage.Search(queryVec, limit)
-	if err != nil {
-		return nil, fmt.Errorf("search: %w", err)
-	}
-
-	if pathFilter != "" {
-		var filtered []storage.SearchResult
-		for _, r := range results {
-			if matchesPath(r.RelPath, pathFilter) {
-				filtered = append(filtered, r)
-			}
+func (idx *Indexer) Search(query string, pathFilter string, limit int, mode string) ([]storage.SearchResult, error) {
+	switch mode {
+	case "grep":
+		results, err := idx.Storage.SearchGrep(query, limit)
+		if err != nil {
+			return nil, fmt.Errorf("grep search: %w", err)
 		}
-		return filtered, nil
-	}
+		return idx.filterByPath(results, pathFilter), nil
 
-	return results, nil
+	case "hybrid":
+		queryVec, err := idx.Embedder.EmbedQuery(query)
+		if err != nil {
+			return nil, fmt.Errorf("embed query: %w", err)
+		}
+		results, err := idx.Storage.SearchHybrid(queryVec, query, limit)
+		if err != nil {
+			return nil, fmt.Errorf("hybrid search: %w", err)
+		}
+		return idx.filterByPath(results, pathFilter), nil
+
+	default:
+		queryVec, err := idx.Embedder.EmbedQuery(query)
+		if err != nil {
+			return nil, fmt.Errorf("embed query: %w", err)
+		}
+		results, err := idx.Storage.Search(queryVec, limit)
+		if err != nil {
+			return nil, fmt.Errorf("search: %w", err)
+		}
+		return idx.filterByPath(results, pathFilter), nil
+	}
+}
+
+func (idx *Indexer) filterByPath(results []storage.SearchResult, pathFilter string) []storage.SearchResult {
+	if pathFilter == "" {
+		return results
+	}
+	var filtered []storage.SearchResult
+	for _, r := range results {
+		if matchesPath(r.RelPath, pathFilter) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
 }
 
 func matchesPath(relPath, filter string) bool {

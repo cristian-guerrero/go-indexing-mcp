@@ -255,8 +255,9 @@ func TestSearchLimit(t *testing.T) {
 	}
 
 	results, _ = s.Search([]float64{1, 0, 0, 0}, 0)
-	if len(results) != 10 {
-		t.Errorf("expected 10 results (default), got %d", len(results))
+	// test inserts 20 chunks, default limit is 25, so all 20 should be returned
+	if len(results) != 20 {
+		t.Errorf("expected 20 results (default), got %d", len(results))
 	}
 }
 

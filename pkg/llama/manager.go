@@ -264,8 +264,9 @@ func (m *Manager) Start() error {
 		"--embedding",
 		"--no-webui",
 		"--mlock",
-		"--batch-size", "8192",
+		"--batch-size", "2048",
 		"--ubatch-size", "2048",
+		"--ctx-size", "4096",
 	}
 	args = append(args, m.Cfg.Llama.ExtraArgs...)
 

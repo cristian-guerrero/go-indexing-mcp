@@ -46,7 +46,7 @@ func DefaultConfig() *Config {
 		Llama: LlamaConfig{
 			BinPath:   "",
 			ModelPath: filepath.Join(mcpDir, "models", "jina-embeddings-v2-base-code-Q5_K_M.gguf"),
-			Port:      0,
+			Port:      56000,
 			ExtraArgs: []string{},
 		},
 		Indexing: IndexingConfig{

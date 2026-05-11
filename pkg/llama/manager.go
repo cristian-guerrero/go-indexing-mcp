@@ -150,6 +150,10 @@ var modelFallbacks = []struct {
 	URL  string
 }{
 	{
+		Name: "jina-embeddings-v2-base-code-Q5_K_M.gguf",
+		URL:  "https://huggingface.co/second-state/jina-embeddings-v2-base-code-GGUF/resolve/main/jina-embeddings-v2-base-code-Q5_K_M.gguf",
+	},
+	{
 		Name: "nomic-embed-text-v1.5.Q4_K_M.gguf",
 		URL:  "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf",
 	},

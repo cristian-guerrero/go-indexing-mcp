@@ -45,7 +45,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Llama: LlamaConfig{
 			BinPath:   "",
-			ModelPath: filepath.Join(mcpDir, "models", "nomic-embed-text-v1.5.Q4_K_M.gguf"),
+			ModelPath: filepath.Join(mcpDir, "models", "jina-embeddings-v2-base-code-Q5_K_M.gguf"),
 			Port:      0,
 			ExtraArgs: []string{},
 		},
@@ -60,7 +60,7 @@ func DefaultConfig() *Config {
 			Path: filepath.Join(".go-mcp", "vectors.gob"),
 		},
 		Embedding: EmbeddingConfig{
-			Model:      "jina-embeddings-v2-base-code",
+			Model:      "jina-embeddings-v2-base-code-Q5_K_M",
 			Dimensions: 768,
 			BatchSize:  8,
 		},

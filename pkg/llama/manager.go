@@ -2,7 +2,6 @@ package llama
 
 import (
 	"archive/zip"
-	"compress/gzip"
 	"fmt"
 	"io"
 	"log/slog"
@@ -78,7 +77,7 @@ func (m *Manager) FindOrDownloadLlama() (string, error) {
 
 func (m *Manager) downloadLlama(dest string) error {
 	url := llamaDownloadURL()
-	slog.Info("downloading from", "url", url)
+	slog.Info("downloading llama.cpp", "url", url)
 
 	resp, err := http.Get(url)
 	if err != nil {
@@ -90,39 +89,60 @@ func (m *Manager) downloadLlama(dest string) error {
 		return fmt.Errorf("download failed: %s", resp.Status)
 	}
 
-	tmp := dest + ".tmp"
-	f, err := os.Create(tmp)
+	tmpZip := dest + ".zip.tmp"
+	f, err := os.Create(tmpZip)
 	if err != nil {
-		return fmt.Errorf("create tmp file: %w", err)
+		return fmt.Errorf("create temp file: %w", err)
 	}
-
-	var reader io.Reader = resp.Body
-	if strings.HasSuffix(url, ".gz") {
-		gr, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			f.Close()
-			os.Remove(tmp)
-			return fmt.Errorf("gzip reader: %w", err)
-		}
-		defer gr.Close()
-		reader = gr
-	}
-
-	if _, err := io.Copy(f, reader); err != nil {
+	if _, err := io.Copy(f, resp.Body); err != nil {
 		f.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("write file: %w", err)
+		os.Remove(tmpZip)
+		return fmt.Errorf("write zip: %w", err)
 	}
 	f.Close()
 
-	if err := os.Rename(tmp, dest); err != nil {
-		return fmt.Errorf("rename: %w", err)
+	tmpDir := dest + ".tmpdir"
+	os.RemoveAll(tmpDir)
+	if err := ExtractZip(tmpZip, tmpDir); err != nil {
+		os.Remove(tmpZip)
+		return fmt.Errorf("extract zip: %w", err)
 	}
-	if err := os.Chmod(dest, 0755); err != nil {
-		return fmt.Errorf("chmod: %w", err)
+	os.Remove(tmpZip)
+
+	name := "llama-server"
+	if runtime.GOOS == "windows" {
+		name = "llama-server.exe"
 	}
 
-	slog.Info("llama.cpp downloaded", "path", dest)
+	var exePath string
+	filepath.WalkDir(tmpDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() && strings.EqualFold(d.Name(), name) {
+			exePath = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+
+	if exePath == "" {
+		os.RemoveAll(tmpDir)
+		return fmt.Errorf("llama-server not found in downloaded archive")
+	}
+
+	data, err := os.ReadFile(exePath)
+	if err != nil {
+		os.RemoveAll(tmpDir)
+		return fmt.Errorf("read exe: %w", err)
+	}
+	if err := os.WriteFile(dest, data, 0755); err != nil {
+		os.RemoveAll(tmpDir)
+		return fmt.Errorf("write exe: %w", err)
+	}
+
+	os.RemoveAll(tmpDir)
+	slog.Info("llama.cpp downloaded and extracted", "path", dest)
 	return nil
 }
 
@@ -133,16 +153,34 @@ func llamaDownloadURL() string {
 
 	switch {
 	case osName == "windows" && arch == "amd64":
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-bin-win-%s-x64.zip", tag, tag)
+		variant := detectWindowsVariant()
+		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-win-%s-x64.zip", tag, tag, variant)
+	case osName == "windows" && arch == "arm64":
+		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-win-llvm-arm64.zip", tag, tag)
 	case osName == "linux" && arch == "amd64":
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-bin-ubuntu-%s-x64.tar.gz", tag, tag)
+		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-ubuntu-x64.zip", tag, tag)
 	case osName == "linux" && arch == "arm64":
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-bin-ubuntu-%s-arm64.tar.gz", tag, tag)
+		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-ubuntu-arm64.zip", tag, tag)
 	case osName == "darwin" && arch == "arm64":
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-bin-macos-%s-arm64.tar.gz", tag, tag)
+		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-macos-arm64.zip", tag, tag)
+	case osName == "darwin" && arch == "amd64":
+		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-macos-x64.zip", tag, tag)
 	default:
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-bin-win-%s-x64.zip", tag, tag)
+		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-win-avx2-x64.zip", tag, tag)
 	}
+}
+
+func detectWindowsVariant() string {
+	if _, err := exec.LookPath("nvidia-smi"); err == nil {
+		slog.Info("nvidia GPU detected, selecting CUDA variant")
+		return "cuda-cu12.4"
+	}
+	if _, err := exec.LookPath("vulkaninfo"); err == nil {
+		slog.Info("Vulkan detected, selecting Vulkan variant")
+		return "vulkan"
+	}
+	slog.Info("no GPU detected, selecting CPU AVX2 variant")
+	return "avx2"
 }
 
 var modelFallbacks = []struct {

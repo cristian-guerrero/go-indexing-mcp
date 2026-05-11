@@ -177,7 +177,7 @@ Indexing (sliding window fallback) for all the above plus: `sql`, `powershell`, 
 
 ### Embeddings
 
-Uses [jina-embeddings-v2-base-code](https://huggingface.co/jinaai/jina-embeddings-v2-base-code) (137M params, 768-dim) via llama.cpp. Everything runs locally on CPU.
+Uses [jina-embeddings-v2-base-code](https://huggingface.co/jinaai/jina-embeddings-v2-base-code) (137M params, 768-dim) via llama.cpp. Runs locally with zero API keys — llama.cpp auto-detects GPU (CUDA, Metal, Vulkan) if available, otherwise falls back to CPU. No configuration needed.
 
 ### Branch-isolated indexes
 

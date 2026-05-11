@@ -12,8 +12,9 @@ import (
 )
 
 type MCPServer struct {
-	server  *server.MCPServer
-	indexer *indexer.Indexer
+	server        *server.MCPServer
+	indexer       *indexer.Indexer
+	currentBranch string
 }
 
 func New(idx *indexer.Indexer) *MCPServer {
@@ -84,6 +85,15 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		"limit", limit,
 	)
 
+	branch := m.indexer.Walker.GetBranch()
+	if branch != m.currentBranch {
+		slog.Info("branch changed", "from", m.currentBranch, "to", branch)
+		if err := m.indexer.Storage.SwitchBranch(branch); err != nil {
+			slog.Warn("branch switch failed, continuing", "error", err)
+		}
+		m.currentBranch = branch
+	}
+
 	stats := m.indexer.GetStats()
 	if stats.TotalChunks == 0 {
 		slog.Info("no index found, indexing on first search")
@@ -91,10 +101,23 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 			slog.Error("initial index failed", "error", err)
 			return mcp.NewToolResultError(fmt.Sprintf("initial index failed: %s", err)), nil
 		}
-	} else {
-		slog.Debug("checking for changed files before search")
-		if err := m.indexer.IndexChanged(); err != nil {
-			slog.Warn("incremental index failed, continuing with existing index", "error", err)
+	} else if !stats.IsIndexing {
+		lastSHA := m.indexer.Storage.GetCommitSHA()
+		headSHA := m.indexer.Walker.GetHeadSHA()
+		hasNewCommits := headSHA != "" && lastSHA != "" && headSHA != lastSHA
+
+		if hasNewCommits {
+			slog.Info("new commits detected, indexing changes before search", "last", lastSHA, "head", headSHA)
+			if err := m.indexer.IndexChanged(); err != nil {
+				slog.Warn("incremental index failed, continuing with existing index", "error", err)
+			}
+		} else {
+			slog.Debug("triggering background incremental index for uncommitted changes")
+			go func() {
+				if err := m.indexer.IndexChanged(); err != nil {
+					slog.Warn("background incremental index failed", "error", err)
+				}
+			}()
 		}
 	}
 

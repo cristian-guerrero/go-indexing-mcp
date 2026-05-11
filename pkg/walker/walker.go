@@ -75,6 +75,20 @@ func (w *Walker) GetHeadSHA() string {
 	return strings.TrimSpace(string(out))
 }
 
+func (w *Walker) GetBranch() string {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = w.Root
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	branch := strings.TrimSpace(string(out))
+	if branch == "HEAD" {
+		return ""
+	}
+	return branch
+}
+
 func (w *Walker) GetChangedFiles(sinceSHA string) ([]FileInfo, error) {
 	args := []string{"diff", "--name-only"}
 	if sinceSHA != "" {

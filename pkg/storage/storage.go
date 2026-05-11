@@ -42,6 +42,7 @@ type StorageData struct {
 
 type Storage struct {
 	path       string
+	basePath   string
 	dimensions int
 	mu         sync.RWMutex
 	records    []ChunkRecord
@@ -58,6 +59,7 @@ func New(dbPath string, dimensions int) (*Storage, error) {
 
 	s := &Storage{
 		path:       dbPath,
+		basePath:   dbPath,
 		dimensions: dimensions,
 		byID:       make(map[string]int),
 		byPath:     make(map[string][]int),
@@ -67,6 +69,7 @@ func New(dbPath string, dimensions int) (*Storage, error) {
 		return nil, fmt.Errorf("load storage: %w", err)
 	}
 
+	s.dirty = false
 	return s, nil
 }
 
@@ -214,6 +217,58 @@ func (s *Storage) ListFiles() []string {
 	return files
 }
 
+func (s *Storage) SwitchBranch(branch string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.dirty {
+		if err := s.saveLocked(); err != nil {
+			return fmt.Errorf("save current branch: %w", err)
+		}
+	}
+
+	ext := filepath.Ext(s.basePath)
+	base := s.basePath[:len(s.basePath)-len(ext)]
+	if branch == "" {
+		s.path = s.basePath
+	} else {
+		s.path = base + "-" + branch + ext
+	}
+
+	s.records = nil
+	s.byID = make(map[string]int)
+	s.byPath = make(map[string][]int)
+	s.commitSHA = ""
+	s.dirty = false
+
+	f, err := os.Open(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+
+	var data StorageData
+	dec := gob.NewDecoder(f)
+	if err := dec.Decode(&data); err == nil {
+		s.rebuildIndex(data.Records)
+		s.commitSHA = data.CommitSHA
+		return nil
+	}
+
+	f.Seek(0, 0)
+	var records []ChunkRecord
+	dec = gob.NewDecoder(f)
+	if err := dec.Decode(&records); err != nil {
+		return nil
+	}
+
+	s.rebuildIndex(records)
+	return nil
+}
+
 func (s *Storage) Close() error {
 	return s.save()
 }
@@ -265,7 +320,10 @@ func (s *Storage) load() error {
 func (s *Storage) save() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.saveLocked()
+}
 
+func (s *Storage) saveLocked() error {
 	if !s.dirty {
 		return nil
 	}

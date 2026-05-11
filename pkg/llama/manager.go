@@ -52,6 +52,7 @@ func (m *Manager) FindOrDownloadLlama() (string, error) {
 	found, _ := exec.LookPath(name)
 	if found != "" {
 		m.BinPath = found
+		m.saveBinPath()
 		slog.Info("llama.cpp found in PATH", "path", found)
 		return found, nil
 	}
@@ -63,6 +64,7 @@ func (m *Manager) FindOrDownloadLlama() (string, error) {
 	localPath := filepath.Join(llamaDir, name)
 	if _, err := os.Stat(localPath); err == nil {
 		m.BinPath = localPath
+		m.saveBinPath()
 		slog.Info("llama.cpp found in llama-cpp dir", "path", localPath)
 		return localPath, nil
 	}
@@ -72,101 +74,92 @@ func (m *Manager) FindOrDownloadLlama() (string, error) {
 		return "", fmt.Errorf("download llama.cpp: %w", err)
 	}
 	m.BinPath = localPath
+	m.saveBinPath()
 	return localPath, nil
 }
 
-func (m *Manager) downloadLlama(dest string) error {
-	url := llamaDownloadURL()
-	slog.Info("downloading llama.cpp", "url", url)
+func (m *Manager) saveBinPath() {
+	m.Cfg.Llama.BinPath = m.BinPath
+	if err := config.Save(m.Cfg); err != nil {
+		slog.Warn("save config with bin_path", "error", err)
+	}
+}
 
+func (m *Manager) downloadLlama(dest string) error {
+	tag := "b4383"
+	variant := llamaVariant()
+	extractDir := filepath.Dir(dest)
+
+	primaryURL := fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-%s.zip", tag, tag, variant)
+	if err := downloadAndExtractZip(primaryURL, extractDir); err != nil {
+		return fmt.Errorf("download llama: %w", err)
+	}
+
+	if strings.HasPrefix(variant, "win-cuda-") {
+		cudaVer := strings.TrimPrefix(variant, "win-cuda-")
+		cudaVer = strings.TrimSuffix(cudaVer, "-x64")
+		cudartURL := fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/cudart-llama-bin-win-%s-x64.zip", tag, cudaVer)
+		slog.Info("downloading CUDA runtime DLLs", "url", cudartURL)
+		if err := downloadAndExtractZip(cudartURL, extractDir); err != nil {
+			return fmt.Errorf("download CUDA runtime: %w", err)
+		}
+	}
+
+	slog.Info("llama.cpp downloaded and extracted", "dir", extractDir)
+	return nil
+}
+
+func downloadAndExtractZip(url, extractDir string) error {
+	slog.Info("downloading", "url", url)
 	resp, err := http.Get(url)
 	if err != nil {
 		return fmt.Errorf("http get: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download failed: %s", resp.Status)
 	}
 
-	tmpZip := dest + ".zip.tmp"
+	tmpZip := filepath.Join(extractDir, "llama-download.tmp")
 	f, err := os.Create(tmpZip)
 	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+		return err
 	}
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		f.Close()
 		os.Remove(tmpZip)
-		return fmt.Errorf("write zip: %w", err)
+		return err
 	}
 	f.Close()
 
-	tmpDir := dest + ".tmpdir"
-	os.RemoveAll(tmpDir)
-	if err := ExtractZip(tmpZip, tmpDir); err != nil {
+	if err := ExtractZip(tmpZip, extractDir); err != nil {
 		os.Remove(tmpZip)
-		return fmt.Errorf("extract zip: %w", err)
+		return err
 	}
 	os.Remove(tmpZip)
-
-	name := "llama-server"
-	if runtime.GOOS == "windows" {
-		name = "llama-server.exe"
-	}
-
-	var exePath string
-	filepath.WalkDir(tmpDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if !d.IsDir() && strings.EqualFold(d.Name(), name) {
-			exePath = path
-			return filepath.SkipAll
-		}
-		return nil
-	})
-
-	if exePath == "" {
-		os.RemoveAll(tmpDir)
-		return fmt.Errorf("llama-server not found in downloaded archive")
-	}
-
-	data, err := os.ReadFile(exePath)
-	if err != nil {
-		os.RemoveAll(tmpDir)
-		return fmt.Errorf("read exe: %w", err)
-	}
-	if err := os.WriteFile(dest, data, 0755); err != nil {
-		os.RemoveAll(tmpDir)
-		return fmt.Errorf("write exe: %w", err)
-	}
-
-	os.RemoveAll(tmpDir)
-	slog.Info("llama.cpp downloaded and extracted", "path", dest)
 	return nil
 }
 
-func llamaDownloadURL() string {
-	tag := "b4383"
+func llamaVariant() string {
 	osName := runtime.GOOS
 	arch := runtime.GOARCH
 
 	switch {
 	case osName == "windows" && arch == "amd64":
 		variant := detectWindowsVariant()
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-win-%s-x64.zip", tag, tag, variant)
+		return fmt.Sprintf("win-%s-x64", variant)
 	case osName == "windows" && arch == "arm64":
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-win-llvm-arm64.zip", tag, tag)
+		return "win-llvm-arm64"
 	case osName == "linux" && arch == "amd64":
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-ubuntu-x64.zip", tag, tag)
+		return "ubuntu-x64.zip"
 	case osName == "linux" && arch == "arm64":
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-ubuntu-arm64.zip", tag, tag)
+		return "ubuntu-arm64.zip"
 	case osName == "darwin" && arch == "arm64":
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-macos-arm64.zip", tag, tag)
+		return "macos-arm64.zip"
 	case osName == "darwin" && arch == "amd64":
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-macos-x64.zip", tag, tag)
+		return "macos-x64.zip"
 	default:
-		return fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-win-avx2-x64.zip", tag, tag)
+		return "win-avx2-x64.zip"
 	}
 }
 
@@ -313,7 +306,7 @@ func (m *Manager) Start() error {
 	logDir := config.McpDir()
 	os.MkdirAll(logDir, 0755)
 	logPath := filepath.Join(logDir, "llama-server.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return fmt.Errorf("open llama log: %w", err)
 	}
@@ -329,7 +322,7 @@ func (m *Manager) Start() error {
 		return fmt.Errorf("start llama-server: %w", err)
 	}
 
-	if err := m.waitReady(30 * time.Second); err != nil {
+	if err := m.waitReady(120 * time.Second); err != nil {
 		slog.Warn("llama-server may not be ready yet", "error", err)
 	}
 
@@ -448,6 +441,27 @@ func findProcessByPort(port int) int {
 		}
 	}
 	return 0
+}
+
+func (m *Manager) ForceDownloadLlama() (string, error) {
+	llamaDir := config.LlamaCppDir()
+	if err := os.MkdirAll(llamaDir, 0755); err != nil {
+		return "", fmt.Errorf("create llama-cpp dir: %w", err)
+	}
+
+	name := "llama-server"
+	if runtime.GOOS == "windows" {
+		name = "llama-server.exe"
+	}
+	localPath := filepath.Join(llamaDir, name)
+
+	if err := m.downloadLlama(localPath); err != nil {
+		return "", fmt.Errorf("download llama: %w", err)
+	}
+
+	m.BinPath = localPath
+	m.saveBinPath()
+	return localPath, nil
 }
 
 func (m *Manager) BaseURL() string {

@@ -72,14 +72,14 @@ func Run() error {
 	fmt.Println()
 	fmt.Println("Setup complete!")
 	fmt.Println()
-	fmt.Println("To use the MCP server, run:")
-	fmt.Println("  " + runScriptPath())
+	fmt.Println("To configure an agent to use this MCP server:")
 	fmt.Println()
-	fmt.Println("Or add to your MCP client config:")
-	fmt.Println(`  {
-    "command": "` + runScriptPath() + `",
-    "args": ["--mcp"]
-  }`)
+	fmt.Println("  go-indexing-mcp --configure opencode")
+	fmt.Println("  go-indexing-mcp --configure kilocode")
+	fmt.Println("  go-indexing-mcp --configure pi")
+	fmt.Println()
+	fmt.Println("Each command adds the MCP server to the agent's config")
+	fmt.Println("and writes a global AGENTS.md with mandatory search instructions.")
 	fmt.Println()
 	fmt.Println("NOTE: You may need to restart your terminal for PATH changes to take effect.")
 

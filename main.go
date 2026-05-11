@@ -27,8 +27,26 @@ func main() {
 	queryMode := flag.String("query", "", "Search the index for a natural language query")
 	modeFlag := flag.String("mode", "semantic", "Search mode: 'semantic', 'grep', or 'hybrid' (used with --query)")
 	limitFlag := flag.Int("limit", 25, "Max results (used with --query, default: 25, max: 50)")
+	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp (skip PATH, test GPU detection)")
 	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', or 'kilocode'")
 	flag.Parse()
+
+	if *downloadLlama {
+		setupConsoleLogger()
+		cfg, err := config.Load()
+		if err != nil {
+			slog.Error("load config", "error", err)
+			os.Exit(1)
+		}
+		mgr := llama.New(cfg)
+		path, err := mgr.ForceDownloadLlama()
+		if err != nil {
+			slog.Error("download llama", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("llama.cpp downloaded", "path", path)
+		return
+	}
 
 	if *configureMode != "" {
 		setupConsoleLogger()

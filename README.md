@@ -155,6 +155,7 @@ go-indexing-mcp --free
 | `--limit <n>` | Max results (1-50, default 25) |
 | `--configure <target>` | Auto-setup for pi, opencode, or kilocode |
 | `--free` | Stop llama-server, free RAM |
+| `--download-llama` | Force download llama.cpp (auto-detects GPU variant) |
 
 ## Architecture
 

@@ -21,12 +21,10 @@
 ## Structure
 
 - `main.go` — flag parsing + routing to handlers
-- `generate.go` — `runGenerate()` for `--generate`
-- `query.go` — `runQuery()` for `--query`
-- `configure.go` — `runConfigure()`, `configurePi()`, `configureOpenCode()` for `--configure`
-- `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`
+- `internal/cli/handlers.go` — `RunGenerate()`, `RunQuery()`, `RunConfigure()` + `configurePi()`, `configureOpenCode()`, `configureKiloCode()`
+- `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`. `McpDir()`, `LlamaCppDir()`, `McpBinDir()`
 - `pkg/selfsetup/` — auto-setup on first run
-- `pkg/llama/` — manager: download, llama-server subprocess, health check, `IsRunning()`, `StartedProcess()`
+- `pkg/llama/` — manager: download (auto-detects GPU → CUDA/Vulkan/CPU), llama-server subprocess, health check, `IsRunning()`, `StartedProcess()`
 - `pkg/ignore/` — .gitignore filter + default patterns (nested levels)
 - `pkg/walker/` — file walker with git diff, hash, branch and language detection
 - `pkg/chunker/` — sliding window + structural splitter. `ChunkFile` single or `ChunkFiles` batch
@@ -88,9 +86,9 @@ Each search keeps the index auto-updated:
 3. `selfsetup.Run()`:
    - Re-launches in terminal if needed
    - Reads/creates config
-   - Verifies/downloads llama.cpp
+   - Verifies/downloads llama.cpp (auto-detects GPU → CUDA/Vulkan/CPU variant on Windows)
    - Verifies/downloads model
-   - Copies binary
+   - Copies binary to `~/.go-mcp/indexing/bin/`
    - Adds to PATH
    - Creates run.bat/run.sh
 4. With `--mcp` → starts `mcp.Serve(llamaManager)`
@@ -107,7 +105,9 @@ Do not modify README.md unless the public interface changes (flags, tools, confi
 
 - `--mcp` — starts MCP server over stdio
 - `--free` — stops llama-server and frees memory
+- `--download-llama` — force download llama.cpp (auto-detects GPU variant, skips PATH)
 - `--generate` — one-shot index of current directory with detailed report
 - `--query "<text>"` — search from CLI, auto-indexes if needed
 - `--mode <semantic|grep|hybrid>` — search mode (default: semantic, used with --query)
-- `--configure <pi|opencode>` — configure integration with Pi agent or OpenCode
+- `--limit <n>` — max results for --query (default: 25, max: 50)
+- `--configure <pi|opencode|kilocode>` — configure integration with Pi, OpenCode, or KiloCode (writes MCP config + global AGENTS.md)

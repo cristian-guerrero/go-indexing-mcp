@@ -91,6 +91,11 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 			slog.Error("initial index failed", "error", err)
 			return mcp.NewToolResultError(fmt.Sprintf("initial index failed: %s", err)), nil
 		}
+	} else {
+		slog.Debug("checking for changed files before search")
+		if err := m.indexer.IndexChanged(); err != nil {
+			slog.Warn("incremental index failed, continuing with existing index", "error", err)
+		}
 	}
 
 	results, err := m.indexer.Search(query, pathFilter, limit)

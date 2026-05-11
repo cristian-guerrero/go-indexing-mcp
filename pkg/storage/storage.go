@@ -35,11 +35,17 @@ type SearchResult struct {
 	Score     float64 `json:"score"`
 }
 
+type StorageData struct {
+	Records   []ChunkRecord
+	CommitSHA string
+}
+
 type Storage struct {
 	path       string
 	dimensions int
 	mu         sync.RWMutex
 	records    []ChunkRecord
+	commitSHA  string
 	byID       map[string]int
 	byPath     map[string][]int
 	dirty      bool
@@ -212,6 +218,19 @@ func (s *Storage) Close() error {
 	return s.save()
 }
 
+func (s *Storage) SetCommitSHA(sha string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.commitSHA = sha
+	s.dirty = true
+}
+
+func (s *Storage) GetCommitSHA() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.commitSHA
+}
+
 func (s *Storage) load() error {
 	f, err := os.Open(s.path)
 	if err != nil {
@@ -222,8 +241,18 @@ func (s *Storage) load() error {
 	}
 	defer f.Close()
 
-	var records []ChunkRecord
+	var data StorageData
 	dec := gob.NewDecoder(f)
+	if err := dec.Decode(&data); err == nil {
+		s.rebuildIndex(data.Records)
+		s.commitSHA = data.CommitSHA
+		s.dirty = false
+		return nil
+	}
+
+	f.Seek(0, 0)
+	var records []ChunkRecord
+	dec = gob.NewDecoder(f)
 	if err := dec.Decode(&records); err != nil {
 		return err
 	}
@@ -248,7 +277,10 @@ func (s *Storage) save() error {
 	defer f.Close()
 
 	enc := gob.NewEncoder(f)
-	return enc.Encode(s.records)
+	return enc.Encode(StorageData{
+		Records:   s.records,
+		CommitSHA: s.commitSHA,
+	})
 }
 
 func (s *Storage) rebuildIndex(records []ChunkRecord) {

@@ -97,6 +97,12 @@ func (idx *Indexer) IndexAll() error {
 	idx.Stats.LastIndexed = "just now"
 	idx.mu.Unlock()
 
+	headSHA := idx.Walker.GetHeadSHA()
+	if headSHA != "" {
+		idx.Storage.SetCommitSHA(headSHA)
+		slog.Debug("saved indexed commit", "sha", headSHA)
+	}
+
 	slog.Info("index complete", "files", len(files), "chunks", totalChunks)
 	return nil
 }
@@ -130,10 +136,17 @@ func (idx *Indexer) IndexPath(path string) error {
 }
 
 func (idx *Indexer) IndexChanged() error {
-	files, err := idx.Walker.GetChangedFiles()
+	sinceSHA := idx.Storage.GetCommitSHA()
+	files, err := idx.Walker.GetChangedFiles(sinceSHA)
 	if err != nil {
 		return fmt.Errorf("get changed files: %w", err)
 	}
+
+	if len(files) == 0 {
+		return nil
+	}
+
+	slog.Info("incremental index", "files", len(files), "since", sinceSHA)
 
 	for _, fi := range files {
 		chunks, err := idx.Chunker.ChunkFile(fi)
@@ -153,6 +166,12 @@ func (idx *Indexer) IndexChanged() error {
 		}
 
 		slog.Info("re-indexed changed file", "file", fi.RelPath, "chunks", len(chunks))
+	}
+
+	headSHA := idx.Walker.GetHeadSHA()
+	if headSHA != "" {
+		idx.Storage.SetCommitSHA(headSHA)
+		slog.Debug("updated indexed commit", "sha", headSHA)
 	}
 
 	return nil

@@ -65,8 +65,25 @@ func (w *Walker) Walk() ([]FileInfo, error) {
 	return files, err
 }
 
-func (w *Walker) GetChangedFiles() ([]FileInfo, error) {
-	cmd := exec.Command("git", "diff", "--name-only", "HEAD")
+func (w *Walker) GetHeadSHA() string {
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = w.Root
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func (w *Walker) GetChangedFiles(sinceSHA string) ([]FileInfo, error) {
+	args := []string{"diff", "--name-only"}
+	if sinceSHA != "" {
+		args = append(args, sinceSHA)
+	} else {
+		args = append(args, "HEAD")
+	}
+
+	cmd := exec.Command("git", args...)
 	cmd.Dir = w.Root
 	out, err := cmd.Output()
 	if err != nil {

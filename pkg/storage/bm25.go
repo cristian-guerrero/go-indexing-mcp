@@ -120,7 +120,7 @@ func (s *Storage) SearchGrep(query string, limit int) ([]SearchResult, error) {
 	defer s.mu.RUnlock()
 
 	if limit <= 0 {
-		limit = 10
+		limit = 25
 	}
 
 	var (
@@ -195,8 +195,9 @@ func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]S
 	defer s.mu.RUnlock()
 
 	if limit <= 0 {
-		limit = 10
+		limit = 25
 	}
+
 
 	s.ensureBM25()
 	queryTerms := tokenize(query)
@@ -278,8 +279,9 @@ func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]S
 
 func (s *Storage) searchLocked(query []float64, limit int) ([]SearchResult, error) {
 	if limit <= 0 {
-		limit = 10
+		limit = 25
 	}
+
 
 	type scored struct {
 		idx   int

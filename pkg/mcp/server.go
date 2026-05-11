@@ -58,10 +58,10 @@ func (m *MCPServer) registerTools() {
 			mcp.Description("Optional path prefix filter to narrow results to a specific directory, e.g. 'pkg/', 'pkg/llama/', 'main.go'"),
 		),
 		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of results to return (default: 10, max: 50)"),
+			mcp.Description("Maximum number of results to return (default: 25, max: 50)"),
 		),
 		mcp.WithString("mode",
-			mcp.Description("Search mode: 'semantic' (default), 'grep' (literal substring), or 'hybrid' (BM25 + vector RRF)"),
+			mcp.Description("Search mode: 'semantic' (default), 'grep' (literal or regex substring), or 'hybrid' (BM25 + vector RRF)"),
 		),
 	)
 
@@ -117,7 +117,7 @@ func (m *MCPServer) idleChecker() {
 			continue
 		}
 
-		if m.mgr != nil && m.mgr.IsRunning() {
+		if m.mgr != nil && m.mgr.IsRunning() && m.mgr.StartedProcess() {
 			slog.Info("idle timeout reached, stopping llama-server to free memory", "idle", m.idleTimeout)
 			m.mgr.Stop()
 		}
@@ -129,7 +129,7 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 	query, _ := args["query"].(string)
 	pathFilter, _ := args["path_filter"].(string)
 
-	limit := 10
+	limit := 25
 	if l, ok := args["limit"].(float64); ok {
 		limit = int(l)
 	}
@@ -164,6 +164,8 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 	}
 
 	stats := m.indexer.GetStats()
+	didFullIndex := false
+
 	if stats.TotalChunks == 0 {
 		if needsLlama {
 			slog.Info("no index found, indexing on first search")
@@ -171,24 +173,34 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 				slog.Error("initial index failed", "error", err)
 				return mcp.NewToolResultError(fmt.Sprintf("initial index failed: %s", err)), nil
 			}
+			didFullIndex = true
 		}
 	} else if needsLlama && !stats.IsIndexing {
 		lastSHA := m.indexer.Storage.GetCommitSHA()
-		headSHA := m.indexer.Walker.GetHeadSHA()
-		hasNewCommits := headSHA != "" && lastSHA != "" && headSHA != lastSHA
 
-		if hasNewCommits {
-			slog.Info("new commits detected, indexing changes before search", "last", lastSHA, "head", headSHA)
-			if err := m.indexer.IndexChanged(); err != nil {
-				slog.Warn("incremental index failed, continuing with existing index", "error", err)
+		if lastSHA == "" {
+			slog.Info("index has no commit SHA (legacy/interrupted), performing full reindex")
+			if err := m.indexer.IndexAll(); err != nil {
+				slog.Error("full reindex failed", "error", err)
 			}
+			didFullIndex = true
 		} else {
-			slog.Debug("triggering background incremental index for uncommitted changes")
-			go func() {
+			headSHA := m.indexer.Walker.GetHeadSHA()
+			hasNewCommits := headSHA != "" && headSHA != lastSHA
+
+			if hasNewCommits {
+				slog.Info("new commits detected, indexing changes before search", "last", lastSHA, "head", headSHA)
 				if err := m.indexer.IndexChanged(); err != nil {
-					slog.Warn("background incremental index failed", "error", err)
+					slog.Warn("incremental index failed, continuing with existing index", "error", err)
 				}
-			}()
+			} else {
+				slog.Debug("triggering background incremental index for uncommitted changes")
+				go func() {
+					if err := m.indexer.IndexChanged(); err != nil {
+						slog.Warn("background incremental index failed", "error", err)
+					}
+				}()
+			}
 		}
 	}
 
@@ -198,6 +210,18 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError(fmt.Sprintf("search failed: %s", err)), nil
 	}
 
+	if len(results) == 0 && !didFullIndex && needsLlama {
+		slog.Info("no results found, performing full reindex and retrying search")
+		if err := m.indexer.IndexAll(); err != nil {
+			slog.Error("reindex on empty results failed", "error", err)
+		} else {
+			results, err = m.indexer.Search(query, pathFilter, limit, mode)
+			if err != nil {
+				slog.Error("retry search failed", "error", err)
+			}
+		}
+	}
+
 	slog.Debug("search completed",
 		"query", query,
 		"results", len(results),
@@ -205,6 +229,9 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		"mode", mode,
 	)
 
+	if len(results) == 0 {
+		return mcp.NewToolResultText("No results found. The index may not contain files from this path. Try using the reindex tool first to build the index for this project, or check that the path_filter matches indexed files."), nil
+	}
 	data, _ := json.MarshalIndent(results, "", "  ")
 	return mcp.NewToolResultText(string(data)), nil
 }

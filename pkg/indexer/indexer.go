@@ -3,6 +3,8 @@ package indexer
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/cristian/go-indexing-mcp/pkg/chunker"
@@ -250,5 +252,10 @@ func (idx *Indexer) filterByPath(results []storage.SearchResult, pathFilter stri
 }
 
 func matchesPath(relPath, filter string) bool {
-	return len(relPath) >= len(filter) && relPath[:len(filter)] == filter
+	relPath = filepath.ToSlash(relPath)
+	filter = filepath.ToSlash(filter)
+	if len(relPath) < len(filter) {
+		return false
+	}
+	return strings.EqualFold(relPath[:len(filter)], filter)
 }

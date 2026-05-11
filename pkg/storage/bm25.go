@@ -2,6 +2,7 @@ package storage
 
 import (
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
@@ -122,7 +123,16 @@ func (s *Storage) SearchGrep(query string, limit int) ([]SearchResult, error) {
 		limit = 10
 	}
 
-	q := strings.ToLower(query)
+	var (
+		re  *regexp.Regexp
+		err error
+	)
+	if hasRegexChars(query) {
+		re, err = regexp.Compile("(?i)" + query)
+		if err != nil {
+			re = nil
+		}
+	}
 
 	type scored struct {
 		idx   int
@@ -131,7 +141,13 @@ func (s *Storage) SearchGrep(query string, limit int) ([]SearchResult, error) {
 
 	var results []scored
 	for i, rec := range s.records {
-		cnt := strings.Count(strings.ToLower(rec.Content), q)
+		var cnt int
+		if re != nil {
+			matches := re.FindAllString(rec.Content, -1)
+			cnt = len(matches)
+		} else {
+			cnt = strings.Count(strings.ToLower(rec.Content), strings.ToLower(query))
+		}
 		if cnt > 0 {
 			results = append(results, scored{i, float64(cnt)})
 		}
@@ -161,6 +177,17 @@ func (s *Storage) SearchGrep(query string, limit int) ([]SearchResult, error) {
 	}
 
 	return out, nil
+}
+
+func hasRegexChars(s string) bool {
+	for _, r := range s {
+		if r == '.' || r == '+' || r == '*' || r == '?' || r == '(' || r == ')' ||
+			r == '|' || r == '{' || r == '}' || r == '[' || r == ']' ||
+			r == '^' || r == '$' || r == '\\' {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]SearchResult, error) {

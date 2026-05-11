@@ -19,13 +19,14 @@
 
 ## Estructura
 
-- `main.go` — flags `--mcp`, `--free`. Routing a setup o MCP server
+- `main.go` — flags `--mcp`, `--free`, `--generate`, `--query`. Routing a setup, MCP server, one-shot index o search
 - `pkg/config/` — carga/guarda `~/.go-mcp/indexing/config.json`
 - `pkg/selfsetup/` — auto-setup en primera ejecución
-- `pkg/llama/` — manager: descarga, subproceso llama-server, health check
+- `pkg/llama/` — manager: descarga, subproceso llama-server, health check, `IsRunning()`, `StartedProcess()`
 - `pkg/ignore/` — filtro .gitignore + patrones por defecto (niveles anidados)
 - `pkg/walker/` — file walker con git diff, hash, detección de branch y lenguaje
-- `pkg/chunker/` — sliding window con overlap para dividir archivos en chunks
+- `pkg/chunker/` — sliding window + structural splitter. `ChunkFile` individual o `ChunkFiles` batch
+- `pkg/structural/` — regex + brace/indent counting para detectar bloques estructurales por lenguaje. Sin dependencias externas
 - `pkg/embedder/` — cliente HTTP a llama.cpp `/v1/embeddings`
 - `pkg/storage/` — persistencia gob + cosine similarity + índices por rama
 - `pkg/indexer/` — orquesta: walk → chunk → embed → store
@@ -47,10 +48,21 @@ Cada búsqueda mantiene el índice actualizado automáticamente:
 - `Storage.SwitchBranch(branch)` persiste y carga automáticamente
 - `CommitSHA` guardado en cada indexación para diff preciso
 
+## Chunking
+
+- `pkg/chunker/` orquesta el split de archivos en chunks
+- `pkg/structural/` detecta bloques estructurales por lenguaje usando regex + brace counting
+- Lenguajes con `{}`: se cuenta profundidad de llaves para encontrar el cierre del bloque
+- Lenguajes por indentación (Python, Ruby, YAML): se detecta cuando la indentación regresa al nivel inicial
+- Lenguajes por sección (TOML, Markdown): bloque termina en el siguiente header/sección
+- JSON: soporta `{}` y `[]` como delimitadores de bloque
+- Si no se detectan bloques estructurales, se usa sliding window clásico
+- `ChunkFiles()` procesa en batch: archivos chicos → sliding window, archivos grandes → structural split
+
 ## Flujo auto-setup
 
-1. `main.go` detecta si hay `--mcp` flag
-2. Sin `--mcp` → ejecuta `selfsetup.Run()`
+1. `main.go` detecta flags
+2. Sin flags → ejecuta `selfsetup.Run()`
 3. `selfsetup.Run()`:
    - Re-lanza en terminal si es necesario
    - Lee/crea config
@@ -65,3 +77,5 @@ Cada búsqueda mantiene el índice actualizado automáticamente:
 
 - `--mcp` — inicia servidor MCP por stdio
 - `--free` — detiene llama-server y libera memoria
+- `--generate` — one-shot index del directorio actual con reporte detallado
+- `--query "<texto>"` — búsqueda semántica desde CLI, auto-indexa si es necesario

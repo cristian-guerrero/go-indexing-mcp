@@ -1,11 +1,8 @@
 package selfsetup
 
 import (
-	"compress/gzip"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,18 +57,6 @@ func Run() error {
 		fmt.Println("✓ Binary copied to MCP bin dir")
 	}
 
-	treeSitterPath, err := FindOrDownloadTreeSitter(cfg)
-	if err != nil {
-		fmt.Printf("⚠ Tree-sitter CLI: %s\n", err)
-	} else {
-		cfg.Indexing.TreeSitterBinPath = treeSitterPath
-		if err := config.Save(cfg); err != nil {
-			fmt.Printf("⚠ Save config: %s\n", err)
-		} else {
-			fmt.Printf("✓ Tree-sitter CLI: %s\n", treeSitterPath)
-		}
-	}
-
 	if err := addToPATH(); err != nil {
 		fmt.Printf("⚠ Add to PATH: %s\n", err)
 	} else {
@@ -99,115 +84,6 @@ func Run() error {
 	fmt.Println("NOTE: You may need to restart your terminal for PATH changes to take effect.")
 
 	return nil
-}
-
-func FindOrDownloadTreeSitter(cfg *config.Config) (string, error) {
-	if cfg.Indexing.TreeSitterBinPath != "" {
-		if _, err := os.Stat(cfg.Indexing.TreeSitterBinPath); err == nil {
-			return cfg.Indexing.TreeSitterBinPath, nil
-		}
-		slog.Warn("configured tree-sitter path not found, searching PATH", "path", cfg.Indexing.TreeSitterBinPath)
-	}
-
-	name := "tree-sitter"
-	if runtime.GOOS == "windows" {
-		name = "tree-sitter.exe"
-	}
-	found, _ := exec.LookPath(name)
-	if found != "" {
-		slog.Info("tree-sitter found in PATH", "path", found)
-		return found, nil
-	}
-
-	binDir := config.McpBinDir()
-	localPath := filepath.Join(binDir, name)
-	if _, err := os.Stat(localPath); err == nil {
-		slog.Info("tree-sitter found in MCP bin dir", "path", localPath)
-		return localPath, nil
-	}
-
-	slog.Info("downloading tree-sitter CLI...")
-	if err := downloadTreeSitter(localPath); err != nil {
-		return "", fmt.Errorf("download tree-sitter: %w", err)
-	}
-	slog.Info("tree-sitter downloaded", "path", localPath)
-	return localPath, nil
-}
-
-func downloadTreeSitter(dest string) error {
-	url := treeSitterDownloadURL()
-	slog.Info("downloading from", "url", url)
-
-	binDir := filepath.Dir(dest)
-	if err := os.MkdirAll(binDir, 0755); err != nil {
-		return fmt.Errorf("create bin dir: %w", err)
-	}
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return fmt.Errorf("http get: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: %s", resp.Status)
-	}
-
-	tmp := dest + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return fmt.Errorf("create tmp file: %w", err)
-	}
-
-	gr, err := gzip.NewReader(resp.Body)
-	if err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("gzip reader: %w", err)
-	}
-	defer gr.Close()
-
-	if _, err := io.Copy(f, gr); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("write file: %w", err)
-	}
-	f.Close()
-
-	if err := os.Rename(tmp, dest); err != nil {
-		return fmt.Errorf("rename: %w", err)
-	}
-	if err := os.Chmod(dest, 0755); err != nil {
-		return fmt.Errorf("chmod: %w", err)
-	}
-
-	return nil
-}
-
-func treeSitterDownloadURL() string {
-	tag := "v0.26.8"
-	goos := runtime.GOOS
-
-	arch := runtime.GOARCH
-	var archName string
-	switch arch {
-	case "amd64":
-		archName = "x64"
-	case "arm64":
-		archName = "arm64"
-	default:
-		archName = "x64"
-	}
-
-	var osName string
-	switch goos {
-	case "darwin":
-		osName = "macos"
-	default:
-		osName = goos
-	}
-
-	return fmt.Sprintf("https://github.com/tree-sitter/tree-sitter/releases/download/%s/tree-sitter-%s-%s.gz", tag, osName, archName)
 }
 
 func isInteractive() bool {

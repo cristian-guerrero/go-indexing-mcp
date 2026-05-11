@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cristian/go-indexing-mcp/pkg/treeparse"
+	"github.com/cristian/go-indexing-mcp/pkg/structural"
 	"github.com/cristian/go-indexing-mcp/pkg/walker"
 )
 
@@ -29,13 +29,13 @@ type Stats struct {
 }
 
 type Chunker struct {
-	ChunkSize    int
-	ChunkOverlap int
-	treeParser   *treeparse.Parser
-	stats        Stats
+	ChunkSize      int
+	ChunkOverlap   int
+	structSplitter *structural.Splitter
+	stats          Stats
 }
 
-func New(chunkSize, chunkOverlap int, treeBinPath string) *Chunker {
+func New(chunkSize, chunkOverlap int) *Chunker {
 	if chunkSize <= 0 {
 		chunkSize = 50
 	}
@@ -45,19 +45,19 @@ func New(chunkSize, chunkOverlap int, treeBinPath string) *Chunker {
 	if chunkOverlap >= chunkSize {
 		chunkOverlap = chunkSize / 4
 	}
-	var tp *treeparse.Parser
-	if treeBinPath != "" {
-		tp = treeparse.New(treeBinPath)
-	}
 	return &Chunker{
-		ChunkSize:    chunkSize,
-		ChunkOverlap: chunkOverlap,
-		treeParser:   tp,
+		ChunkSize:      chunkSize,
+		ChunkOverlap:   chunkOverlap,
+		structSplitter: structural.New(),
 	}
 }
 
 func (c *Chunker) Stats() Stats {
 	return c.stats
+}
+
+func (c *Chunker) HasStructuralSplit() bool {
+	return true
 }
 
 func (c *Chunker) ChunkFile(fi walker.FileInfo) ([]Chunk, error) {
@@ -71,12 +71,12 @@ func (c *Chunker) ChunkFile(fi walker.FileInfo) ([]Chunk, error) {
 
 	totalLines := len(lines)
 
-	if totalLines <= c.ChunkSize || c.treeParser == nil {
+	blocks, err := c.structSplitter.ParseBlocks(fi.Path, fi.Language)
+	if err != nil || len(blocks) == 0 {
 		return c.slidingWindow(lines, 0, totalLines, fi), nil
 	}
 
-	blocks, err := c.treeParser.ParseBlocks(fi.Path, fi.Language)
-	if err != nil || len(blocks) == 0 {
+	if totalLines <= c.ChunkSize {
 		return c.slidingWindow(lines, 0, totalLines, fi), nil
 	}
 
@@ -87,9 +87,6 @@ func (c *Chunker) ChunkFiles(files []walker.FileInfo) (map[string][]Chunk, error
 	c.stats = Stats{}
 	results := make(map[string][]Chunk, len(files))
 
-	var batchFiles []walker.FileInfo
-	var batchLines [][]string
-
 	for _, fi := range files {
 		lines, err := readFileLines(fi.Path)
 		if err != nil {
@@ -99,47 +96,27 @@ func (c *Chunker) ChunkFiles(files []walker.FileInfo) (map[string][]Chunk, error
 			continue
 		}
 
-		if len(lines) <= c.ChunkSize || c.treeParser == nil {
+		if len(lines) <= c.ChunkSize {
 			chunks := c.slidingWindow(lines, 0, len(lines), fi)
 			results[fi.Path] = chunks
 			c.stats.SlidingWinFiles++
 			c.stats.SlidingWinChunks += len(chunks)
-		} else {
-			batchFiles = append(batchFiles, fi)
-			batchLines = append(batchLines, lines)
-		}
-	}
-
-	if len(batchFiles) > 0 && c.treeParser != nil {
-		parseFiles := make([]treeparse.ParseFile, len(batchFiles))
-		for i, fi := range batchFiles {
-			parseFiles[i] = treeparse.ParseFile{Path: fi.Path, Language: fi.Language}
+			continue
 		}
 
-		blocksMap, err := c.treeParser.ParseBlocksBatch(parseFiles)
-		if err != nil {
-			for i, fi := range batchFiles {
-				chunks := c.slidingWindow(batchLines[i], 0, len(batchLines[i]), fi)
-				results[fi.Path] = chunks
-				c.stats.SlidingWinFiles++
-				c.stats.SlidingWinChunks += len(chunks)
-			}
-		} else {
-			for i, fi := range batchFiles {
-				blocks := blocksMap[fi.Path]
-				if len(blocks) == 0 {
-					chunks := c.slidingWindow(batchLines[i], 0, len(batchLines[i]), fi)
-					results[fi.Path] = chunks
-					c.stats.SlidingWinFiles++
-					c.stats.SlidingWinChunks += len(chunks)
-				} else {
-					chunks := c.structuralSplit(batchLines[i], blocks, fi)
-					results[fi.Path] = chunks
-					c.stats.TreeSitterFiles++
-					c.stats.TreeSitterChunks += len(chunks)
-				}
-			}
+		blocks, err := c.structSplitter.ParseBlocks(fi.Path, fi.Language)
+		if err != nil || len(blocks) == 0 {
+			chunks := c.slidingWindow(lines, 0, len(lines), fi)
+			results[fi.Path] = chunks
+			c.stats.SlidingWinFiles++
+			c.stats.SlidingWinChunks += len(chunks)
+			continue
 		}
+
+		chunks := c.structuralSplit(lines, blocks, fi)
+		results[fi.Path] = chunks
+		c.stats.TreeSitterFiles++
+		c.stats.TreeSitterChunks += len(chunks)
 	}
 
 	return results, nil
@@ -163,7 +140,7 @@ func readFileLines(path string) ([]string, error) {
 	return lines, nil
 }
 
-func (c *Chunker) structuralSplit(lines []string, blocks []treeparse.Block, fi walker.FileInfo) []Chunk {
+func (c *Chunker) structuralSplit(lines []string, blocks []structural.Block, fi walker.FileInfo) []Chunk {
 	totalLines := len(lines)
 	var chunks []Chunk
 	currentLine := 0

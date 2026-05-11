@@ -23,12 +23,11 @@ type LlamaConfig struct {
 }
 
 type IndexingConfig struct {
-	RootPath          string   `json:"root_path"`
-	IgnorePatterns    []string `json:"ignore_patterns"`
-	ChunkSize         int      `json:"chunk_size"`
-	ChunkOverlap      int      `json:"chunk_overlap"`
-	GitEnabled        bool     `json:"git_enabled"`
-	TreeSitterBinPath string   `json:"tree_sitter_bin_path"`
+	RootPath       string   `json:"root_path"`
+	IgnorePatterns []string `json:"ignore_patterns"`
+	ChunkSize      int      `json:"chunk_size"`
+	ChunkOverlap   int      `json:"chunk_overlap"`
+	GitEnabled     bool     `json:"git_enabled"`
 }
 
 type StorageConfig struct {

@@ -38,6 +38,22 @@ En un cliente MCP (Claude Desktop, etc.):
 }
 ```
 
+### Indexar directorio actual (one-shot)
+
+Indexa todo el proyecto actual y muestra reporte detallado:
+
+```bash
+./bin/go-indexing-mcp.exe --generate
+```
+
+### Buscar desde CLI
+
+```bash
+./bin/go-indexing-mcp.exe --query "database connection pool"
+```
+
+Auto-indexa si es necesario, reusa o inicia llama-server según corresponda.
+
 ### Liberar memoria
 
 Detiene llama-server y libera la RAM usada por el modelo:
@@ -72,6 +88,8 @@ Cada rama de git tiene su propio archivo de índice (`vectors-{rama}.gob`). Al c
 
 `go`, `python`, `javascript`, `typescript`, `rust`, `java`, `c`, `cpp`, `csharp`, `ruby`, `php`, `swift`, `kotlin`, `scala`, `sql`, `bash`, `powershell`, `markdown`, `yaml`, `json`, `toml`, `html`, `css`
 
+El chunking estructural (detecta funciones, clases, secciones) está disponible para: `go`, `python`, `javascript`, `rust`, `java`, `c`, `cpp`, `csharp`, `ruby`, `php`, `swift`, `kotlin`, `scala`, `bash`, `json`, `yaml`, `toml`, `markdown`.
+
 ## Configuración
 
 Archivo: `~/.go-mcp/indexing/config.json` (se crea automáticamente en la primera ejecución)
@@ -80,8 +98,8 @@ Archivo: `~/.go-mcp/indexing/config.json` (se crea automáticamente en la primer
 {
   "llama": {
     "bin_path": "",
-    "model_path": "~/.go-mcp/indexing/models/nomic-embed-text-v1.5.Q4_K_M.gguf",
-    "port": 0,
+    "model_path": "~/.go-mcp/indexing/models/jina-embeddings-v2-base-code-Q5_K_M.gguf",
+    "port": 56000,
     "extra_args": []
   },
   "indexing": {
@@ -112,11 +130,15 @@ Archivo: `~/.go-mcp/indexing/config.json` (se crea automáticamente en la primer
 ## Arquitectura
 
 ```
-[FS] → [walker] → [ignore filter] → [chunker] → [llama-server embeddings] → [storage]
-   ↑                                                                              |
-   ├── git diff <last_sha> (cambios committed + working tree) ────────────────────+
-   └── git branch detection (índice aislado por rama)
+[FS] → [walker] → [ignore filter] → [chunker] ─→ [llama-server embeddings] → [storage]
+                                       │               ↑
+                                       ├─ small files ─┘
+                                       └─ large files → [structural splitter] ─→ [llama-server embeddings] → [storage]
 ```
+
+El chunker decide por archivo:
+- **Chicos** (≤ chunk_size): sliding window directo
+- **Grandes**: pasa por `pkg/structural/` que detecta funciones/clases/secciones con regex + brace/indent counting. Cada bloque estructural se respeta como límite de chunk.
 
 El índice se guarda en `<proyecto>/.go-mcp/vectors-{rama}.gob` usando `encoding/gob`. Cada rama tiene su propio índice. Si no existe, se indexa automáticamente en la primera búsqueda.
 

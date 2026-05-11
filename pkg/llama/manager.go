@@ -300,6 +300,10 @@ func (m *Manager) Start() error {
 	return nil
 }
 
+func (m *Manager) StartedProcess() bool {
+	return m.cmd != nil && m.cmd.Process != nil
+}
+
 func (m *Manager) IsRunning() bool {
 	port := m.Cfg.Llama.Port
 	if port == 0 {

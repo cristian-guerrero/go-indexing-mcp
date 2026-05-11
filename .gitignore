@@ -1,0 +1,24 @@
+# Binarios
+bin/
+*.exe
+*.test
+
+# Go
+vendor/
+*.mod
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MCP local data
+.env
+
+# Temp
+tmp/

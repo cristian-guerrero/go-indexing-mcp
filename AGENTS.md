@@ -10,7 +10,7 @@
 
 ## Convenciones
 
-- No agregar comentarios a menos que sea necesario
+- Documentar funciones inline brevemente (1-2 líneas) explicando qué hace y por qué
 - Usar `fmt.Errorf("message: %w", err)` con wrapping
 - Logging con `log/slog` (structured, nivel info/debug/error)
 - Errores fatales con `slog.Error` + `os.Exit(1)`, nunca `log.Fatal`
@@ -19,7 +19,10 @@
 
 ## Estructura
 
-- `main.go` — flags `--mcp`, `--free`, `--generate`, `--query`. Routing a setup, MCP server, one-shot index o search
+- `main.go` — solo flag parsing + routing a los handlers
+- `generate.go` — `runGenerate()` para `--generate`
+- `query.go` — `runQuery()` para `--query`
+- `configure.go` — `runConfigure()`, `configurePi()`, `configureOpenCode()` para `--configure`
 - `pkg/config/` — carga/guarda `~/.go-mcp/indexing/config.json`
 - `pkg/selfsetup/` — auto-setup en primera ejecución
 - `pkg/llama/` — manager: descarga, subproceso llama-server, health check, `IsRunning()`, `StartedProcess()`
@@ -79,3 +82,4 @@ Cada búsqueda mantiene el índice actualizado automáticamente:
 - `--free` — detiene llama-server y libera memoria
 - `--generate` — one-shot index del directorio actual con reporte detallado
 - `--query "<texto>"` — búsqueda semántica desde CLI, auto-indexa si es necesario
+- `--configure <pi|opencode>` — configura integración con Pi agent u OpenCode

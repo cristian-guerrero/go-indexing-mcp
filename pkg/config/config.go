@@ -78,6 +78,11 @@ func McpBinDir() string {
 	return filepath.Join(McpDir(), "bin")
 }
 
+func LlamaCppDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".go-mcp", "llama-cpp")
+}
+
 func ConfigPath() string {
 	return filepath.Join(McpDir(), "config.json")
 }

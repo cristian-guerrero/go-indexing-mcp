@@ -56,14 +56,14 @@ func (m *Manager) FindOrDownloadLlama() (string, error) {
 		return found, nil
 	}
 
-	binDir := config.McpBinDir()
-	if err := os.MkdirAll(binDir, 0755); err != nil {
-		return "", fmt.Errorf("create bin dir: %w", err)
+	llamaDir := config.LlamaCppDir()
+	if err := os.MkdirAll(llamaDir, 0755); err != nil {
+		return "", fmt.Errorf("create llama-cpp dir: %w", err)
 	}
-	localPath := filepath.Join(binDir, name)
+	localPath := filepath.Join(llamaDir, name)
 	if _, err := os.Stat(localPath); err == nil {
 		m.BinPath = localPath
-		slog.Info("llama.cpp found in MCP bin dir", "path", localPath)
+		slog.Info("llama.cpp found in llama-cpp dir", "path", localPath)
 		return localPath, nil
 	}
 

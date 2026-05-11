@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/cristian/go-indexing-mcp/pkg/config"
@@ -30,7 +32,13 @@ func main() {
 	freeMem := flag.Bool("free", false, "Stop llama-server and free memory")
 	generateMode := flag.Bool("generate", false, "One-shot index of current directory")
 	queryMode := flag.String("query", "", "Search the index for a natural language query")
+	configureMode := flag.String("configure", "", "Configure integration: 'pi' or 'opencode'")
 	flag.Parse()
+
+	if *configureMode != "" {
+		setupConsoleLogger()
+		os.Exit(runConfigure(*configureMode))
+	}
 
 	if *freeMem {
 		setupConsoleLogger()
@@ -96,7 +104,6 @@ func main() {
 		slog.Error("start llama", "error", err)
 		os.Exit(1)
 	}
-	defer mgr.Stop()
 
 	w := walker.New(cfg.Indexing.RootPath, cfg.Indexing.IgnorePatterns)
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
@@ -118,7 +125,7 @@ func main() {
 
 	idx := indexer.New(w, ch, em, st)
 
-	srv := mcp.New(idx)
+	srv := mcp.New(idx, mgr, cfg.Indexing.IdleTimeoutSecs)
 	slog.Info("starting MCP server")
 
 	if err := srv.Serve(); err != nil {
@@ -272,7 +279,6 @@ func runQuery(query string) int {
 	mgr := llama.New(cfg)
 	pw := progressWriter{}
 
-	fmt.Fprintln(pw, "Preparing llama-server...")
 	if _, err := mgr.FindOrDownloadLlama(); err != nil {
 		slog.Error("llama setup", "error", err)
 		return 1
@@ -282,27 +288,10 @@ func runQuery(query string) int {
 		return 1
 	}
 
-	wasRunning := mgr.IsRunning()
 	if err := mgr.Start(); err != nil {
 		slog.Error("start llama", "error", err)
 		return 1
 	}
-	startedByUs := mgr.StartedProcess()
-	if !wasRunning {
-		if startedByUs {
-			fmt.Fprintln(pw, "✓ llama-server started")
-		} else {
-			fmt.Fprintln(pw, "✓ llama-server already running, reusing")
-		}
-	} else {
-		fmt.Fprintln(pw, "✓ llama-server already running, reusing")
-	}
-	defer func() {
-		if startedByUs {
-			fmt.Fprintln(pw, "Stopping llama-server...")
-			mgr.Stop()
-		}
-	}()
 
 	rootPath := cfg.Indexing.RootPath
 	if rootPath == "" {
@@ -383,6 +372,137 @@ func runQuery(query string) int {
 	fmt.Fprintln(pw, "======================")
 
 	return 0
+}
+
+func runConfigure(target string) int {
+	exe, err := os.Executable()
+	if err != nil {
+		slog.Error("get executable path", "error", err)
+		return 1
+	}
+
+	switch target {
+	case "pi":
+		return configurePi(exe)
+	case "opencode":
+		return configureOpenCode(exe)
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown target: %s. Use 'pi' or 'opencode'.\n", target)
+		return 1
+	}
+}
+
+func configurePi(exe string) int {
+	pw := progressWriter{}
+	agentsDir := filepath.Join(os.Getenv("USERPROFILE"), ".pi", "agent")
+	agentsPath := filepath.Join(agentsDir, "AGENTS.md")
+	mcpPath := filepath.Join(os.Getenv("USERPROFILE"), ".config", "mcp", "mcp.json")
+
+	if err := os.MkdirAll(agentsDir, 0755); err != nil {
+		slog.Error("create pi agent dir", "error", err)
+		return 1
+	}
+
+	agentsContent := fmt.Sprintf("## REQUIRED: Semantic search before reading code\n\nBefore using \"find\", \"grep\", \"rg\", \"ls\", or \"read\" to search for code, you MUST run:\n\n    %s --query \"<describe what you need>\"\n\nDo NOT cd to a different directory first. Only use grep/find/ls/read after semantic search returns no relevant results.\n", toForwardPath(exe))
+
+	if err := os.WriteFile(agentsPath, []byte(agentsContent), 0644); err != nil {
+		slog.Error("write AGENTS.md", "error", err)
+		return 1
+	}
+	fmt.Fprintln(pw, "✓ AGENTS.md created")
+
+	if err := addToMCPServer(mcpPath, "go-indexing-mcp", exe, []string{"--mcp"}); err != nil {
+		fmt.Fprintf(pw, "⚠ MCP config: %s\n", err)
+	} else {
+		fmt.Fprintln(pw, "✓ MCP server added to config")
+	}
+
+	fmt.Fprintln(pw, "Done. Start a new Pi session for changes to take effect.")
+	return 0
+}
+
+func configureOpenCode(exe string) int {
+	pw := progressWriter{}
+	configDir := filepath.Join(os.Getenv("USERPROFILE"), ".config", "opencode")
+	configPath := filepath.Join(configDir, "opencode.json")
+
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		slog.Error("create opencode config dir", "error", err)
+		return 1
+	}
+
+	mcpEntry := map[string]any{
+		"command": []string{exe, "--mcp"},
+		"type":    "local",
+		"enabled": true,
+	}
+
+	if err := mergeMCPIntoJSON(configPath, "go-indexing-mcp", mcpEntry); err != nil {
+		slog.Error("update opencode config", "error", err)
+		return 1
+	}
+	fmt.Fprintln(pw, "✓ OpenCode MCP server configured")
+	return 0
+}
+
+func addToMCPServer(mcpPath, serverName, command string, args []string) error {
+	var cfg struct {
+		MCP map[string]any `json:"mcpServers"`
+	}
+
+	if data, err := os.ReadFile(mcpPath); err == nil {
+		json.Unmarshal(data, &cfg)
+	}
+
+	if cfg.MCP == nil {
+		cfg.MCP = make(map[string]any)
+	}
+
+	entry := map[string]any{
+		"command": command,
+	}
+	if len(args) > 0 {
+		entry["args"] = args
+	}
+
+	cfg.MCP[serverName] = entry
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal mcp config: %w", err)
+	}
+
+	return os.WriteFile(mcpPath, data, 0644)
+}
+
+func mergeMCPIntoJSON(configPath, serverName string, entry map[string]any) error {
+	var cfg map[string]any
+
+	if data, err := os.ReadFile(configPath); err == nil {
+		json.Unmarshal(data, &cfg)
+	}
+
+	if cfg == nil {
+		cfg = make(map[string]any)
+	}
+
+	mcp, _ := cfg["mcp"].(map[string]any)
+	if mcp == nil {
+		mcp = make(map[string]any)
+	}
+	mcp[serverName] = entry
+	cfg["mcp"] = mcp
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+
+	return os.WriteFile(configPath, data, 0644)
+}
+
+func toForwardPath(p string) string {
+	return strings.ReplaceAll(p, "\\", "/")
 }
 
 func roundDuration(d time.Duration) string {

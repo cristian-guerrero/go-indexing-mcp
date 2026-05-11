@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
+	"time"
 
 	"github.com/cristian/go-indexing-mcp/pkg/indexer"
+	"github.com/cristian/go-indexing-mcp/pkg/llama"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -14,21 +17,33 @@ import (
 type MCPServer struct {
 	server        *server.MCPServer
 	indexer       *indexer.Indexer
+	mgr           *llama.Manager
 	currentBranch string
+	lastActivity  atomic.Int64
+	idleTimeout   time.Duration
+	stopped       atomic.Bool
 }
 
-func New(idx *indexer.Indexer) *MCPServer {
+func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int) *MCPServer {
 	s := server.NewMCPServer(
 		"go-indexing-mcp",
 		"1.0.0",
 	)
 
-	m := &MCPServer{
-		server:  s,
-		indexer: idx,
+	if idleTimeoutSecs <= 0 {
+		idleTimeoutSecs = 300
 	}
 
+	m := &MCPServer{
+		server:      s,
+		indexer:     idx,
+		mgr:         mgr,
+		idleTimeout: time.Duration(idleTimeoutSecs) * time.Second,
+	}
+	m.lastActivity.Store(time.Now().UnixNano())
+
 	m.registerTools()
+	go m.idleChecker()
 	return m
 }
 
@@ -69,6 +84,43 @@ func (m *MCPServer) registerTools() {
 	m.server.AddTool(debugListFilesTool, m.handleListFiles)
 }
 
+func (m *MCPServer) touchActivity() {
+	m.lastActivity.Store(time.Now().UnixNano())
+}
+
+func (m *MCPServer) ensureLlama() error {
+	m.touchActivity()
+	if m.mgr == nil {
+		return nil
+	}
+	if m.mgr.IsRunning() {
+		return nil
+	}
+	slog.Info("waking llama-server from idle sleep")
+	return m.mgr.Start()
+}
+
+func (m *MCPServer) idleChecker() {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if m.stopped.Load() {
+			return
+		}
+
+		last := time.Unix(0, m.lastActivity.Load())
+		if time.Since(last) < m.idleTimeout {
+			continue
+		}
+
+		if m.mgr != nil && m.mgr.IsRunning() {
+			slog.Info("idle timeout reached, stopping llama-server to free memory", "idle", m.idleTimeout)
+			m.mgr.Stop()
+		}
+	}
+}
+
 func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	query, _ := args["query"].(string)
@@ -84,6 +136,11 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		"path_filter", pathFilter,
 		"limit", limit,
 	)
+
+	if err := m.ensureLlama(); err != nil {
+		slog.Error("llama wake failed", "error", err)
+		return mcp.NewToolResultError(fmt.Sprintf("llama-server wake failed: %s", err)), nil
+	}
 
 	branch := m.indexer.Walker.GetBranch()
 	if branch != m.currentBranch {
@@ -138,6 +195,7 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 }
 
 func (m *MCPServer) handleReindex(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	m.touchActivity()
 	slog.Debug("tool called: reindex")
 	go func() {
 		slog.Info("reindex started in background")
@@ -159,6 +217,11 @@ func (m *MCPServer) handleIndexPath(ctx context.Context, req mcp.CallToolRequest
 
 	slog.Debug("tool called: index_path", "path", path)
 
+	if err := m.ensureLlama(); err != nil {
+		slog.Error("llama wake failed", "error", err)
+		return mcp.NewToolResultError(fmt.Sprintf("llama-server wake failed: %s", err)), nil
+	}
+
 	if err := m.indexer.IndexPath(path); err != nil {
 		slog.Error("index_path failed", "path", path, "error", err)
 		return mcp.NewToolResultError(fmt.Sprintf("index path failed: %s", err)), nil
@@ -169,6 +232,7 @@ func (m *MCPServer) handleIndexPath(ctx context.Context, req mcp.CallToolRequest
 }
 
 func (m *MCPServer) handleListFiles(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	m.touchActivity()
 	slog.Debug("tool called: _debug_index_files")
 	files := m.indexer.ListFiles()
 	data, _ := json.MarshalIndent(files, "", "  ")
@@ -183,6 +247,11 @@ func (m *MCPServer) Serve() error {
 		slog.Info("MCP server stopped", "error", err)
 	} else {
 		slog.Info("MCP server stopped (client disconnected)")
+	}
+	m.stopped.Store(true)
+	if m.mgr != nil && m.mgr.IsRunning() {
+		slog.Info("stopping llama-server on MCP server shutdown")
+		m.mgr.Stop()
 	}
 	return err
 }

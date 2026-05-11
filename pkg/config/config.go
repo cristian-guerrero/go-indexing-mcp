@@ -23,11 +23,12 @@ type LlamaConfig struct {
 }
 
 type IndexingConfig struct {
-	RootPath       string   `json:"root_path"`
-	IgnorePatterns []string `json:"ignore_patterns"`
-	ChunkSize      int      `json:"chunk_size"`
-	ChunkOverlap   int      `json:"chunk_overlap"`
-	GitEnabled     bool     `json:"git_enabled"`
+	RootPath          string   `json:"root_path"`
+	IgnorePatterns    []string `json:"ignore_patterns"`
+	ChunkSize         int      `json:"chunk_size"`
+	ChunkOverlap      int      `json:"chunk_overlap"`
+	GitEnabled        bool     `json:"git_enabled"`
+	IdleTimeoutSecs   int      `json:"idle_timeout_secs"`
 }
 
 type StorageConfig struct {
@@ -50,11 +51,12 @@ func DefaultConfig() *Config {
 			ExtraArgs: []string{},
 		},
 		Indexing: IndexingConfig{
-			RootPath:       ".",
-			IgnorePatterns: nil,
-			ChunkSize:      50,
-			ChunkOverlap:   10,
-			GitEnabled:     true,
+			RootPath:        ".",
+			IgnorePatterns:  nil,
+			ChunkSize:       50,
+			ChunkOverlap:    10,
+			GitEnabled:      true,
+			IdleTimeoutSecs: 300,
 		},
 		Storage: StorageConfig{
 			Path: filepath.Join(".go-mcp", "vectors.gob"),
@@ -143,6 +145,9 @@ func fillMissing(cfg *Config) {
 	}
 	if cfg.Indexing.ChunkOverlap == 0 && cfg.Indexing.ChunkSize != 0 {
 		cfg.Indexing.ChunkOverlap = cfg.Indexing.ChunkSize / 5
+	}
+	if cfg.Indexing.IdleTimeoutSecs == 0 {
+		cfg.Indexing.IdleTimeoutSecs = 300
 	}
 
 	if cfg.Storage.Path == "" {

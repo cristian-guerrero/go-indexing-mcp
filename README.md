@@ -1,155 +1,184 @@
-# go-indexing-mcp
+<h2 align="center">
+  go-indexing-mcp
+  <br/>
+  <sub>Semantic code search that agents <em>must</em> use</sub>
+</h2>
 
-Servidor MCP (Model Context Protocol) para indexación semántica de código. Busca código en lenguaje natural usando embeddings locales con llama.cpp.
+<div align="center">
 
-## Requisitos
+[Quickstart](#quickstart) •
+[MCP Server](#mcp-server) •
+[Forcing Agents](#forcing-agents) •
+[Configure](#configure) •
+[CLI](#cli) •
+[Architecture](#architecture)
 
-- Go 1.26+
-- Conexión a internet (solo para primera descarga)
+</div>
 
-## Compilación
+An MCP server that indexes your codebase locally with embeddings and forces any AI coding agent (Claude Code, OpenCode, KiloCode, Cursor, Codex, Pi) to use semantic search instead of grep+read. It injects itself via `AGENTS.md` with mandatory instructions — the agent has no choice.
+
+- **Forces the habit**: the AGENTS.md tells the agent it **MUST** use the search tool first
+- **Zero API keys**: everything runs locally on CPU with llama.cpp
+- **Branch-aware**: each git branch keeps its own isolated index
+- **Auto-indexes**: empty index → full index. New commits → incremental. Just works.
+
+## Quickstart
 
 ```bash
 go build -o bin/go-indexing-mcp.exe .
-```
-
-## Uso
-
-### Primera ejecución (auto-setup)
-
-Sin flags ejecuta el auto-setup: descarga llama.cpp, descarga el modelo de embeddings, copia el binario al PATH y crea scripts:
-
-```bash
 ./bin/go-indexing-mcp.exe
 ```
 
-### Servidor MCP
+The first run auto-downloads llama.cpp and the embedding model, copies the binary to PATH, and creates run scripts. Then configure your agent:
+
+```bash
+# Force OpenCode to use it
+./bin/go-indexing-mcp.exe --configure opencode
+
+# Force KiloCode to use it
+./bin/go-indexing-mcp.exe --configure kilocode
+
+# Force Pi agent to use it
+./bin/go-indexing-mcp.exe --configure pi
+```
+
+Each `--configure` target does two things:
+1. **Adds the MCP server** to the agent's config (`opencode.json`, `kilo.json`, etc.)
+2. **Writes a global AGENTS.md** with mandatory instructions — the agent reads it on every session and cannot ignore it
+
+No more grep+read. The agent **must** call `go-indexing-mcp_search_code` first.
+
+## Forcing Agents
+
+The problem with AI coding agents is they default to grep+read: search with a keyword, open every matching file, consume thousands of tokens reading irrelevant code. Then they forget context and have to do it again.
+
+go-indexing-mcp solves this by **making semantic search the path of least resistance**. Every `--configure` target writes an `AGENTS.md` that states:
+
+> You **MUST** use `go-indexing-mcp_search_code` for ALL code searches.
+> Always try it FIRST, before falling back to built-in grep/glob tools.
+
+The agent reads this at session start as a system-level directive. It can still grep — but only after confirming with you that the search tool returned nothing useful.
+
+### What agents receive
+
+| Agent | Config file | AGENTS.md location |
+|---|---|---|
+| **OpenCode** | `~/.config/opencode/opencode.json` | `~/.config/opencode/AGENTS.md` |
+| **KiloCode** | `~/.config/kilo/kilo.json` | `~/.config/kilo/AGENTS.md` |
+| **Pi** | — | `~/.pi/agent/AGENTS.md` |
+
+## MCP Server
+
+Run the server and any MCP-compatible agent connects instantly:
 
 ```bash
 ./bin/go-indexing-mcp.exe --mcp
 ```
 
-En un cliente MCP (Claude Desktop, etc.):
-
-```json
-{
-  "command": "ruta/al/go-indexing-mcp.exe",
-  "args": ["--mcp"]
-}
-```
-
-### Indexar directorio actual (one-shot)
-
-Indexa todo el proyecto actual y muestra reporte detallado:
+Or via a run script (created during auto-setup):
 
 ```bash
-./bin/go-indexing-mcp.exe --generate
+~/.go-mcp/indexing/run.bat
 ```
 
-### Buscar desde CLI
+### Tools
 
-```bash
-./bin/go-indexing-mcp.exe --query "database connection pool"
-./bin/go-indexing-mcp.exe --query "func validate" --mode grep
-./bin/go-indexing-mcp.exe --query "db config" --mode hybrid
-```
-
-Auto-indexa si es necesario, reusa o inicia llama-server según corresponda.
-
-Modos de búsqueda:
-- **`semantic`** (default) — embedding + cosine similarity. Ideal para buscar por intención.
-- **`grep`** — substring matching sobre chunks cacheados. Rápido, sin llama.cpp. Útil para símbolos exactos.
-- **`hybrid`** — BM25 + vector similarity fusionados con RRF. Lo mejor de ambos mundos.
-
-### Liberar memoria
-
-Detiene llama-server y libera la RAM usada por el modelo:
-
-```bash
-./bin/go-indexing-mcp.exe --free
-```
-
-## Herramientas MCP
-
-| Herramienta | Descripción | Parámetros |
+| Tool | Description | Parameters |
 |---|---|---|
-| `search_code` | Búsqueda semántica con indexación automática | `query` (req), `path_filter` (opc), `limit` (opc, def: 10), `mode` (opc: semantic/grep/hybrid) |
-| `reindex` | Re-indexar todos los archivos en segundo plano | — |
-| `index_path` | Indexar un archivo o directorio específico | `path` (req) |
-| `_debug_index_files` | Listar archivos indexados (debug) | — |
+| `search_code` | Search code by intent, symbol, or hybrid | `query` (req), `mode` (semantic/grep/hybrid), `limit` (1-50), `path_filter` |
+| `reindex` | Full re-index in background | — |
+| `index_path` | Index a specific file or directory | `path` (req) |
+| `_debug_index_files` | List indexed files (debug) | — |
 
-### search_code — comportamiento inteligente
+### Search modes
 
-Cada búsqueda mantiene el índice actualizado automáticamente:
+| Mode | How it works | Requires llama.cpp |
+|---|---|---|
+| `semantic` | Embedding → cosine similarity. Best for intent | Yes |
+| `grep` | Case-insensitive substring on cached chunks. Fast, no llama | No |
+| `hybrid` | BM25 + vector similarity fused with RRF (k=60) | Yes (for vector) |
 
-1. Si el índice está vacío → indexa todo (síncrono)
-2. Si hay commits nuevos desde la última indexación → indexa cambios (síncrono)
-3. Si solo hay cambios sin commit → indexa en background, búsqueda instantánea
-4. Si cambiaste de rama → carga el índice de esa rama al instante
+### Intelligent indexing
 
-## Índice por rama
+Each `search_code` call checks index freshness automatically:
 
-Cada rama de git tiene su propio archivo de índice (`vectors-{rama}.gob`). Al cambiar de rama y buscar, el servidor guarda el índice actual y carga el de la nueva rama automáticamente, sin re-indexar.
+1. **No index** → synchronous full index of the project
+2. **New commits** → synchronous incremental index of changed files
+3. **Uncommitted changes only** → incremental index in background, search returns instantly
+4. **Branch switch** → saves current index, loads target branch's index from disk
 
-## Lenguajes Soportados
+### Idle timeout
 
-`go`, `python`, `javascript`, `typescript`, `rust`, `java`, `c`, `cpp`, `csharp`, `ruby`, `php`, `swift`, `kotlin`, `scala`, `sql`, `bash`, `powershell`, `markdown`, `yaml`, `json`, `toml`, `html`, `css`
+After 5 minutes of inactivity, the server stops llama.cpp to free VRAM. The next search restarts it automatically.
 
-El chunking estructural (detecta funciones, clases, secciones) está disponible para: `go`, `python`, `javascript`, `rust`, `java`, `c`, `cpp`, `csharp`, `ruby`, `php`, `swift`, `kotlin`, `scala`, `bash`, `json`, `yaml`, `toml`, `markdown`.
+## Configure
 
-## Configuración
+The `--configure` flag generates everything needed for a specific agent:
 
-Archivo: `~/.go-mcp/indexing/config.json` (se crea automáticamente en la primera ejecución)
-
-```json
-{
-  "llama": {
-    "bin_path": "",
-    "model_path": "~/.go-mcp/indexing/models/jina-embeddings-v2-base-code-Q5_K_M.gguf",
-    "port": 56000,
-    "extra_args": []
-  },
-  "indexing": {
-    "root_path": ".",
-    "ignore_patterns": [],
-    "chunk_size": 50,
-    "chunk_overlap": 10,
-    "git_enabled": true
-  },
-  "storage": {
-    "path": ".go-mcp/vectors.gob"
-  },
-  "embedding": {
-    "model": "jina-embeddings-v2-base-code",
-    "dimensions": 768,
-    "batch_size": 8
-  }
-}
+```bash
+go-indexing-mcp --configure opencode
+go-indexing-mcp --configure kilocode
+go-indexing-mcp --configure pi
 ```
 
-### Secciones
+Each command:
+1. Detects the binary path automatically
+2. Adds `go-indexing-mcp` to the agent's MCP config (merges with existing servers)
+3. Writes a global `AGENTS.md` with the mandatory search instructions
+4. Is idempotent — running it again says "already up to date"
 
-- **llama**: Configuración de llama.cpp (binario, modelo, puerto, argumentos extra)
-- **indexing**: Raíz del proyecto, patrones a ignorar, tamaño de chunks
-- **storage**: Ruta base del archivo de vectores (se genera `vectors-{rama}.gob` por rama)
-- **embedding**: Modelo de embeddings, dimensiones y batch size
+## CLI
 
-## Arquitectura
+Full CLI for scripting and one-off operations:
+
+```bash
+# One-shot index with detailed report
+go-indexing-mcp --generate
+
+# Search from the terminal
+go-indexing-mcp --query "authentication flow"
+go-indexing-mcp --query "func validate" --mode grep
+go-indexing-mcp --query "db pool config" --mode hybrid --limit 10
+
+# Free llama-server memory
+go-indexing-mcp --free
+```
+
+### Flags
+
+| Flag | Description |
+|---|---|
+| `--mcp` | Start MCP server (stdio) |
+| `--generate` | One-shot index with report |
+| `--query <text>` | Search the index |
+| `--mode <mode>` | Search mode: semantic, grep, hybrid |
+| `--limit <n>` | Max results (1-50, default 25) |
+| `--configure <target>` | Auto-setup for pi, opencode, or kilocode |
+| `--free` | Stop llama-server, free RAM |
+
+## Architecture
 
 ```
-[FS] → [walker] → [ignore filter] → [chunker] ─→ [llama-server embeddings] → [storage]
+[FS] → [walker] → [ignore filter] → [chunker] ─→ [llama.cpp embeddings] → [storage]
                                        │               ↑
                                        ├─ small files ─┘
-                                       └─ large files → [structural splitter] ─→ [llama-server embeddings] → [storage]
+                                       └─ large files → [structural splitter]
 ```
 
-El chunker decide por archivo:
-- **Chicos** (≤ chunk_size): sliding window directo
-- **Grandes**: pasa por `pkg/structural/` que detecta funciones/clases/secciones con regex + brace/indent counting. Cada bloque estructural se respeta como límite de chunk.
+- **Small files**: sliding window chunking
+- **Large files**: structural splitter detects functions/classes/sections via regex + brace/indent counting per language
+- **Storage**: gob-serialized vectors with BM25 inverted index, isolated per git branch
 
-El índice se guarda en `<proyecto>/.go-mcp/vectors-{rama}.gob` usando `encoding/gob`. Cada rama tiene su propio índice. Si no existe, se indexa automáticamente en la primera búsqueda.
+### Languages
 
-## Dependencias
+Structural splitting for: `go`, `python`, `javascript`, `typescript`, `rust`, `java`, `c`, `cpp`, `csharp`, `ruby`, `php`, `swift`, `kotlin`, `scala`, `bash`, `json`, `yaml`, `toml`, `markdown`.
 
-- `github.com/mark3labs/mcp-go` — Protocolo MCP
-- `github.com/sabhiram/go-gitignore` — Filtrado .gitignore
+Indexing (sliding window fallback) for all the above plus: `sql`, `powershell`, `html`, `css`.
+
+### Embeddings
+
+Uses [jina-embeddings-v2-base-code](https://huggingface.co/jinaai/jina-embeddings-v2-base-code) (137M params, 768-dim) via llama.cpp. Everything runs locally on CPU.
+
+### Branch-isolated indexes
+
+Each git branch has its own `vectors-{branch}.gob` file. Switching branches and searching loads the correct index instantly — no waiting.

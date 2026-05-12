@@ -18,7 +18,7 @@
 An MCP server that indexes your codebase locally with embeddings and forces any AI coding agent (Claude Code, OpenCode, KiloCode, Cursor, Codex, Pi) to use semantic search instead of grep+read. It injects itself via `AGENTS.md` with mandatory instructions — the agent has no choice.
 
 - **Forces the habit**: the AGENTS.md tells the agent it **MUST** use the search tool first
-- **Zero API keys**: everything runs locally on CPU with llama.cpp
+- **Zero API keys**: everything runs locally on CPU or GPU with llama.cpp
 - **Branch-aware**: each git branch keeps its own isolated index
 - **Auto-indexes**: empty index → full index. New commits → incremental. Just works.
 

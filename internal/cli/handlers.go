@@ -363,6 +363,7 @@ func configureOpenCode(exe string) int {
 		"command": []string{exe, "--mcp"},
 		"type":    "local",
 		"enabled": true,
+		"timeout": 60000,
 	}
 
 	if err := mergeMCPIntoJSON(configPath, "go-indexing-mcp", mcpEntry); err != nil {
@@ -402,6 +403,7 @@ func configureKiloCode(exe string) int {
 		"command": []string{exe, "--mcp"},
 		"type":    "local",
 		"enabled": true,
+		"timeout": 60000,
 	}
 
 	if err := mergeMCPIntoJSON(configPath, "go-indexing-mcp", mcpEntry); err != nil {

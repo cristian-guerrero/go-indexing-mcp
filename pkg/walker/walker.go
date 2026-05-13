@@ -76,6 +76,23 @@ func (w *Walker) GetHeadSHA() string {
 	return strings.TrimSpace(string(out))
 }
 
+func (w *Walker) GetWorktreeName() string {
+	cmd := exec.Command("git", "rev-parse", "--git-dir")
+	cmd.Dir = w.Root
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	gitDir := filepath.ToSlash(strings.TrimSpace(string(out)))
+	parts := strings.Split(gitDir, "/")
+	for i, part := range parts {
+		if part == "worktrees" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
 func (w *Walker) GetBranch() string {
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = w.Root

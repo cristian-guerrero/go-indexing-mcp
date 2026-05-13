@@ -333,7 +333,7 @@ func TestSwitchBranch(t *testing.T) {
 	)
 	s.SetCommitSHA("sha-main")
 
-	if err := s.SwitchBranch("feature"); err != nil {
+	if err := s.SwitchBranch("feature", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -350,7 +350,7 @@ func TestSwitchBranch(t *testing.T) {
 		makeEmbeddings([]chunker.Chunk{makeChunk("c2", "feature.go")}),
 	)
 
-	if err := s.SwitchBranch("main"); err != nil {
+	if err := s.SwitchBranch("main", ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -370,7 +370,7 @@ func TestSwitchBranch(t *testing.T) {
 	}
 	defer s2.Close()
 
-	if err := s2.SwitchBranch("feature"); err != nil {
+	if err := s2.SwitchBranch("feature", ""); err != nil {
 		t.Fatal(err)
 	}
 	results, _ = s2.Search([]float64{1, 0, 0, 0}, 10)

@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/cristian/go-indexing-mcp/pkg/chunker"
@@ -180,7 +181,7 @@ func (s *Storage) ListFiles() []string {
 	return files
 }
 
-func (s *Storage) SwitchBranch(branch string) error {
+func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -192,11 +193,15 @@ func (s *Storage) SwitchBranch(branch string) error {
 
 	ext := filepath.Ext(s.basePath)
 	base := s.basePath[:len(s.basePath)-len(ext)]
-	if branch == "" || branch == "main" {
-		s.path = s.basePath
-	} else {
-		s.path = base + "-" + branch + ext
+
+	parts := []string{base}
+	if worktree != "" {
+		parts = append(parts, worktree)
 	}
+	if branch != "" && branch != "main" {
+		parts = append(parts, branch)
+	}
+	s.path = strings.Join(parts, "-") + ext
 
 	s.records = nil
 	s.byID = make(map[string]int)

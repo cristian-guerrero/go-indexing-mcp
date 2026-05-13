@@ -15,14 +15,15 @@ import (
 )
 
 type MCPServer struct {
-	server         *server.MCPServer
-	indexer        *indexer.Indexer
-	mgr            *llama.Manager
-	currentBranch  string
-	lastActivity   atomic.Int64
-	idleTimeout    time.Duration
-	watchInterval  time.Duration
-	stopped        atomic.Bool
+	server          *server.MCPServer
+	indexer         *indexer.Indexer
+	mgr             *llama.Manager
+	currentBranch   string
+	currentWorktree string
+	lastActivity    atomic.Int64
+	idleTimeout     time.Duration
+	watchInterval   time.Duration
+	stopped         atomic.Bool
 }
 
 func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int, watchEnabled bool, watchIntervalSecs int) *MCPServer {
@@ -62,16 +63,18 @@ func (m *MCPServer) indexOnStartup() {
 	}
 
 	branch := m.indexer.Walker.GetBranch()
+	worktree := m.indexer.Walker.GetWorktreeName()
 	if branch == "" {
 		slog.Debug("not a git repository, skipping startup index")
 		return
 	}
 
-	slog.Info("git repository detected, checking index state on startup", "branch", branch)
-	if err := m.indexer.Storage.SwitchBranch(branch); err != nil {
+	slog.Info("git repository detected, checking index state on startup", "branch", branch, "worktree", worktree)
+	if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
 		slog.Warn("branch switch failed on startup", "error", err)
 	}
 	m.currentBranch = branch
+	m.currentWorktree = worktree
 
 	stats := m.indexer.GetStats()
 	if stats.TotalChunks == 0 {
@@ -114,7 +117,7 @@ func (m *MCPServer) indexOnStartup() {
 
 func (m *MCPServer) registerTools() {
 	searchTool := mcp.NewTool("search_code",
-		mcp.WithDescription("Search code by intent using BM25 keyword ranking fused with vector similarity via RRF (k=60). Best for queries like 'authentication flow', 'database connection pool', 'user registration'. Returns up to 25 results ranked by relevance. If the index is outdated or empty, it automatically re-indexes the project first. Use grep_code for fast literal symbol/pattern matching without llama."),
+		mcp.WithDescription("Search code by intent using BM25 keyword ranking fused with vector similarity via RRF (k=60). Best for queries like 'authentication flow', 'database connection pool', 'user registration'. Returns up to 25 results ranked by relevance"),
 		mcp.WithString("query",
 			mcp.Required(),
 			mcp.Description("Natural language description of what the code does, e.g. 'authentication flow', 'save model to disk', 'database connection pool'"),
@@ -128,7 +131,7 @@ func (m *MCPServer) registerTools() {
 	)
 
 	grepTool := mcp.NewTool("grep_code",
-		mcp.WithDescription("Fast literal or regex substring search on cached code chunks. Best for exact symbols like 'func validate', 'DB_HOST', or regex patterns like 'type.*Downloader'. Returns up to 25 results ranked by match frequency within each chunk. Auto-indexes if the index is empty. Use search_code for intent-based semantic search."),
+		mcp.WithDescription("Fast literal or regex substring search on cached code chunks. Best for exact symbols like 'func validate', 'DB_HOST', or regex patterns like 'type.*Downloader'. Returns up to 25 results ranked by match frequency within each chunk. Auto-indexes if the index is empty"),
 		mcp.WithString("query",
 			mcp.Required(),
 			mcp.Description("Literal text or regex pattern to search for. Case-insensitive. Examples: 'func validate', 'DB_HOST', 'type.*Downloader'"),
@@ -192,6 +195,7 @@ func (m *MCPServer) watchChecker() {
 		}
 
 		branch := m.indexer.Walker.GetBranch()
+		worktree := m.indexer.Walker.GetWorktreeName()
 		if branch == "" {
 			continue
 		}
@@ -207,12 +211,13 @@ func (m *MCPServer) watchChecker() {
 
 		m.touchActivity()
 
-		if branch != m.currentBranch {
-			slog.Info("watch: branch changed", "from", m.currentBranch, "to", branch)
-			if err := m.indexer.Storage.SwitchBranch(branch); err != nil {
+		if branch != m.currentBranch || worktree != m.currentWorktree {
+			slog.Info("watch: branch/worktree changed", "from", m.currentBranch+"/"+m.currentWorktree, "to", branch+"/"+worktree)
+			if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
 				slog.Warn("watch: branch switch failed", "error", err)
 			}
 			m.currentBranch = branch
+			m.currentWorktree = worktree
 		}
 
 		if stats.TotalChunks == 0 {
@@ -290,12 +295,14 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 	}
 
 	branch := m.indexer.Walker.GetBranch()
-	if branch != m.currentBranch {
-		slog.Info("branch changed", "from", m.currentBranch, "to", branch)
-		if err := m.indexer.Storage.SwitchBranch(branch); err != nil {
+	worktree := m.indexer.Walker.GetWorktreeName()
+	if branch != m.currentBranch || worktree != m.currentWorktree {
+		slog.Info("branch/worktree changed", "from", m.currentBranch+"/"+m.currentWorktree, "to", branch+"/"+worktree)
+		if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
 			slog.Warn("branch switch failed, continuing", "error", err)
 		}
 		m.currentBranch = branch
+		m.currentWorktree = worktree
 	}
 
 	stats := m.indexer.GetStats()
@@ -357,12 +364,14 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 	)
 
 	branch := m.indexer.Walker.GetBranch()
-	if branch != m.currentBranch {
-		slog.Info("branch changed", "from", m.currentBranch, "to", branch)
-		if err := m.indexer.Storage.SwitchBranch(branch); err != nil {
+	worktree := m.indexer.Walker.GetWorktreeName()
+	if branch != m.currentBranch || worktree != m.currentWorktree {
+		slog.Info("branch/worktree changed", "from", m.currentBranch+"/"+m.currentWorktree, "to", branch+"/"+worktree)
+		if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
 			slog.Warn("branch switch failed, continuing", "error", err)
 		}
 		m.currentBranch = branch
+		m.currentWorktree = worktree
 	}
 
 	stats := m.indexer.GetStats()

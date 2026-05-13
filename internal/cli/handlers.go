@@ -95,7 +95,8 @@ func RunGenerate() int {
 	defer st.Close()
 
 	branch := w.GetBranch()
-	if err := st.SwitchBranch(branch); err != nil {
+	worktree := w.GetWorktreeName()
+	if err := st.SwitchBranch(branch, worktree); err != nil {
 		slog.Warn("branch switch failed, continuing", "error", err)
 	}
 
@@ -209,7 +210,8 @@ func RunQuery(query string, mode string, limit int) int {
 	defer st.Close()
 
 	branch := w.GetBranch()
-	if err := st.SwitchBranch(branch); err != nil {
+	worktree := w.GetWorktreeName()
+	if err := st.SwitchBranch(branch, worktree); err != nil {
 		slog.Warn("branch switch failed", "error", err)
 	}
 

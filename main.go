@@ -144,7 +144,7 @@ func main() {
 
 	idx := indexer.New(w, ch, em, st)
 
-	srv := mcp.New(idx, mgr, cfg.Indexing.IdleTimeoutSecs)
+	srv := mcp.New(idx, mgr, cfg.Indexing.IdleTimeoutSecs, cfg.Indexing.WatchEnabled, cfg.Indexing.WatchIntervalSecs)
 	slog.Info("starting MCP server")
 
 	if err := srv.Serve(); err != nil {

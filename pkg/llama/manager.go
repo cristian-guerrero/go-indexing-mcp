@@ -26,6 +26,7 @@ type Manager struct {
 	Ready     bool
 	ModelPath string
 	BinPath   string
+	jobHandle uintptr // Windows job object (KILL_ON_JOB_CLOSE), 0 on Unix
 }
 
 func New(cfg *config.Config) *Manager {
@@ -301,7 +302,10 @@ func (m *Manager) Start() error {
 	}
 	args = append(args, m.Cfg.Llama.ExtraArgs...)
 
+	m.setupJob()
+
 	cmd := exec.Command(m.BinPath, args...)
+	setChildDeath(cmd)
 
 	logDir := config.McpDir()
 	os.MkdirAll(logDir, 0755)
@@ -320,6 +324,10 @@ func (m *Manager) Start() error {
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
 		return fmt.Errorf("start llama-server: %w", err)
+	}
+
+	if err := m.assignChildToJob(cmd); err != nil {
+		slog.Warn("failed to assign llama-server to job object, child may survive parent death", "error", err)
 	}
 
 	if err := m.waitReady(120 * time.Second); err != nil {
@@ -418,6 +426,7 @@ func (m *Manager) Stop() {
 		m.logFile.Close()
 		m.logFile = nil
 	}
+	m.cleanupJob()
 	m.Ready = false
 }
 

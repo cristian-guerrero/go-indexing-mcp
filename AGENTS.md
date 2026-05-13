@@ -38,11 +38,12 @@
 
 `search_code` (hybrid mode) keeps the index auto-updated:
 
-1. Branch detected → `SwitchBranch()` if changed (branch-isolated index)
-2. Empty index → synchronous `IndexAll()` (first time)
-3. New commits since last saved SHA → synchronous `IndexChanged()`
-4. Uncommitted changes only → `IndexChanged()` in background
-5. `Search()` returns results
+1. **On MCP startup** (git repo detected) → auto-indexes if empty or outdated
+2. Branch detected → `SwitchBranch()` if changed (branch-isolated index)
+3. Empty index → synchronous `IndexAll()` (first time)
+4. New commits since last saved SHA → synchronous `IndexChanged()`
+5. Uncommitted changes only → `IndexChanged()` in background
+6. `Search()` returns results
 
 `grep_code` does NOT auto-index. If no index exists, you must run `search_code` first to build it.
 

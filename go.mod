@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	github.com/mark3labs/mcp-go v0.52.0
 	github.com/sabhiram/go-gitignore v0.0.0-20210923224102-525f6e181f06
-	gopkg.in/yaml.v3 v3.0.1
+	golang.org/x/sys v0.5.0
 )
 
 require (

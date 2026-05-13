@@ -97,16 +97,28 @@ Or via a run script (created during auto-setup):
 
 ### Intelligent indexing
 
-Each `search_code` call checks index freshness automatically:
+On startup and every search, the index freshness is checked automatically:
 
-1. **No index** → synchronous full index of the project
-2. **New commits** → synchronous incremental index of changed files
-3. **Uncommitted changes only** → incremental index in background, search returns instantly
-4. **Branch switch** → saves current index, loads target branch's index from disk
+1. **MCP startup** → detects git repo, checks index state, does full or incremental index immediately
+2. **No index** → synchronous full index of the project
+3. **New commits** → synchronous incremental index of changed files
+4. **Uncommitted changes only** → incremental index in background, search returns instantly
+5. **Branch switch** → saves current index, loads target branch's index from disk
+6. **Periodic watch** → every 60s (configurable), checks for changes and re-indexes in background
+
+### Config
+
+The configuration file at `~/.go-mcp/indexing/config.json` supports these indexing options:
+
+| Field | Default | Description |
+|---|---|---|
+| `watch_enabled` | `true` | Enable periodic background indexing |
+| `watch_interval_secs` | `60` | Interval between background index checks |
+| `idle_timeout_secs` | `300` | Seconds of inactivity before stopping llama.cpp (0 = disable) |
 
 ### Idle timeout
 
-After 5 minutes of inactivity, the server stops llama.cpp to free VRAM. The next search restarts it automatically.
+After the configured `idle_timeout_secs` of inactivity (default: 5 min), the server stops llama.cpp to free VRAM. The next search restarts it automatically. The periodic watcher keeps the server active and prevents idle timeout.
 
 ## Configure
 

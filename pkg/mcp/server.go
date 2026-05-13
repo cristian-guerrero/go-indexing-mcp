@@ -15,16 +15,17 @@ import (
 )
 
 type MCPServer struct {
-	server        *server.MCPServer
-	indexer       *indexer.Indexer
-	mgr           *llama.Manager
-	currentBranch string
-	lastActivity  atomic.Int64
-	idleTimeout   time.Duration
-	stopped       atomic.Bool
+	server         *server.MCPServer
+	indexer        *indexer.Indexer
+	mgr            *llama.Manager
+	currentBranch  string
+	lastActivity   atomic.Int64
+	idleTimeout    time.Duration
+	watchInterval  time.Duration
+	stopped        atomic.Bool
 }
 
-func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int) *MCPServer {
+func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int, watchEnabled bool, watchIntervalSecs int) *MCPServer {
 	s := server.NewMCPServer(
 		"go-indexing-mcp",
 		"1.0.0",
@@ -33,18 +34,82 @@ func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int) *MCPServ
 	if idleTimeoutSecs <= 0 {
 		idleTimeoutSecs = 300
 	}
+	if watchIntervalSecs <= 0 {
+		watchIntervalSecs = 0
+	}
 
 	m := &MCPServer{
-		server:      s,
-		indexer:     idx,
-		mgr:         mgr,
-		idleTimeout: time.Duration(idleTimeoutSecs) * time.Second,
+		server:        s,
+		indexer:       idx,
+		mgr:           mgr,
+		idleTimeout:   time.Duration(idleTimeoutSecs) * time.Second,
+		watchInterval: time.Duration(watchIntervalSecs) * time.Second,
 	}
 	m.lastActivity.Store(time.Now().UnixNano())
 
 	m.registerTools()
 	go m.idleChecker()
+	if watchEnabled && watchIntervalSecs > 0 {
+		go m.watchChecker()
+	}
+	go m.indexOnStartup()
 	return m
+}
+
+func (m *MCPServer) indexOnStartup() {
+	if m.indexer == nil || m.indexer.Embedder == nil {
+		return
+	}
+
+	branch := m.indexer.Walker.GetBranch()
+	if branch == "" {
+		slog.Debug("not a git repository, skipping startup index")
+		return
+	}
+
+	slog.Info("git repository detected, checking index state on startup", "branch", branch)
+	if err := m.indexer.Storage.SwitchBranch(branch); err != nil {
+		slog.Warn("branch switch failed on startup", "error", err)
+	}
+	m.currentBranch = branch
+
+	stats := m.indexer.GetStats()
+	if stats.TotalChunks == 0 {
+		slog.Info("index is empty, indexing on startup")
+		if err := m.ensureLlama(); err != nil {
+			slog.Error("llama not available for startup index", "error", err)
+			return
+		}
+		if err := m.indexer.IndexAll(); err != nil {
+			slog.Error("startup index failed", "error", err)
+		}
+		return
+	}
+
+	lastSHA := m.indexer.Storage.GetCommitSHA()
+	headSHA := m.indexer.Walker.GetHeadSHA()
+
+	if lastSHA == "" {
+		slog.Info("index has no commit SHA, full reindex on startup")
+		if err := m.ensureLlama(); err != nil {
+			slog.Error("llama not available for startup reindex", "error", err)
+			return
+		}
+		if err := m.indexer.IndexAll(); err != nil {
+			slog.Error("startup reindex failed", "error", err)
+		}
+	} else if headSHA != "" && headSHA != lastSHA {
+		slog.Info("new commits detected, incremental index on startup", "last", lastSHA, "head", headSHA)
+		if err := m.ensureLlama(); err != nil {
+			slog.Error("llama not available for startup incremental index", "error", err)
+			return
+		}
+		if err := m.indexer.IndexChanged(); err != nil {
+			slog.Warn("startup incremental index failed", "error", err)
+		}
+	} else {
+		slog.Info("index is up to date")
+	}
 }
 
 func (m *MCPServer) registerTools() {
@@ -113,6 +178,87 @@ func (m *MCPServer) idleChecker() {
 		if m.mgr != nil && m.mgr.IsRunning() && m.mgr.StartedProcess() {
 			slog.Info("idle timeout reached, stopping llama-server to free memory", "idle", m.idleTimeout)
 			m.mgr.Stop()
+		}
+	}
+}
+
+func (m *MCPServer) watchChecker() {
+	ticker := time.NewTicker(m.watchInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if m.stopped.Load() {
+			return
+		}
+
+		branch := m.indexer.Walker.GetBranch()
+		if branch == "" {
+			continue
+		}
+
+		if m.indexer.Embedder == nil {
+			continue
+		}
+
+		stats := m.indexer.GetStats()
+		if stats.IsIndexing {
+			continue
+		}
+
+		m.touchActivity()
+
+		if branch != m.currentBranch {
+			slog.Info("watch: branch changed", "from", m.currentBranch, "to", branch)
+			if err := m.indexer.Storage.SwitchBranch(branch); err != nil {
+				slog.Warn("watch: branch switch failed", "error", err)
+			}
+			m.currentBranch = branch
+		}
+
+		if stats.TotalChunks == 0 {
+			slog.Info("watch: index is empty, performing full index")
+			if err := m.ensureLlama(); err != nil {
+				slog.Warn("watch: llama not available for full index", "error", err)
+				continue
+			}
+			if err := m.indexer.IndexAll(); err != nil {
+				slog.Warn("watch: full index failed", "error", err)
+			}
+			continue
+		}
+
+		lastSHA := m.indexer.Storage.GetCommitSHA()
+		headSHA := m.indexer.Walker.GetHeadSHA()
+
+		if lastSHA == "" {
+			slog.Info("watch: index has no commit SHA, performing full reindex")
+			if err := m.ensureLlama(); err != nil {
+				slog.Warn("watch: llama not available for reindex", "error", err)
+				continue
+			}
+			if err := m.indexer.IndexAll(); err != nil {
+				slog.Warn("watch: full reindex failed", "error", err)
+			}
+		} else if headSHA != "" && headSHA != lastSHA {
+			slog.Info("watch: new commits detected, indexing changes", "last", lastSHA, "head", headSHA)
+			if err := m.ensureLlama(); err != nil {
+				slog.Warn("watch: llama not available for incremental index", "error", err)
+				continue
+			}
+			if err := m.indexer.IndexChanged(); err != nil {
+				slog.Warn("watch: incremental index failed", "error", err)
+			}
+		} else {
+			slog.Debug("watch: checking for uncommitted changes")
+			if err := m.ensureLlama(); err != nil {
+				slog.Warn("watch: llama not available for background index", "error", err)
+				continue
+			}
+			go func() {
+				if err := m.indexer.IndexChanged(); err != nil {
+					slog.Warn("watch: background incremental index failed", "error", err)
+				}
+			}()
 		}
 	}
 }

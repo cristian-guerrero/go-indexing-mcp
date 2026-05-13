@@ -84,19 +84,16 @@ Or via a run script (created during auto-setup):
 ### Tools
 
 | Tool | Description | Parameters |
-|---|---|---|
-| `search_code` | Search code by intent, symbol, or hybrid | `query` (req), `mode` (semantic/grep/hybrid), `limit` (1-50), `path_filter` |
-| `reindex` | Full re-index in background | — |
-| `index_path` | Index a specific file or directory | `path` (req) |
-| `_debug_index_files` | List indexed files (debug) | — |
+|---|---|---|---|
+| `search_code` | BM25 + vector similarity via RRF. Best for intent-based queries ("authentication flow"). Auto-indexes if needed | `query` (req), `path_filter`, `limit` |
+| `grep_code` | Case-insensitive substring match on cached chunks. Best for exact symbols ("func validate") or regex patterns. Auto-indexes if empty | `query` (req), `path_filter`, `limit` |
 
 ### Search modes
 
 | Mode | How it works | Requires llama.cpp |
 |---|---|---|
-| `semantic` | Embedding → cosine similarity. Best for intent | Yes |
-| `grep` | Case-insensitive substring on cached chunks. Fast, no llama | No |
-| `hybrid` | BM25 + vector similarity fused with RRF (k=60) | Yes (for vector) |
+| `hybrid` (default) | BM25 + vector similarity fused with RRF (k=60). Best for intent and keywords | Yes |
+| `grep` | Case-insensitive substring on cached chunks | No |
 
 ### Intelligent indexing
 
@@ -135,10 +132,10 @@ Full CLI for scripting and one-off operations:
 # One-shot index with detailed report
 go-indexing-mcp --generate
 
-# Search from the terminal
+# Search from the terminal (default mode: hybrid)
 go-indexing-mcp --query "authentication flow"
-go-indexing-mcp --query "func validate" --mode grep
-go-indexing-mcp --query "db pool config" --mode hybrid --limit 10
+go-indexing-mcp --grep "func validate"
+go-indexing-mcp --query "db pool config" --limit 10
 
 # Free llama-server memory
 go-indexing-mcp --free
@@ -147,11 +144,12 @@ go-indexing-mcp --free
 ### Flags
 
 | Flag | Description |
-|---|---|
+|---|---|---|
 | `--mcp` | Start MCP server (stdio) |
 | `--generate` | One-shot index with report |
-| `--query <text>` | Search the index |
-| `--mode <mode>` | Search mode: semantic, grep, hybrid |
+| `--query <text>` | Search the index (default mode: hybrid) |
+| `--grep <text>` | Search using grep mode |
+| `--mode <mode>` | Search mode: hybrid or grep (default: hybrid, used with --query) |
 | `--limit <n>` | Max results (1-50, default 25) |
 | `--configure <target>` | Auto-setup for pi, opencode, or kilocode |
 | `--free` | Stop llama-server, free RAM |

@@ -24,9 +24,10 @@ func main() {
 	mcpMode := flag.Bool("mcp", false, "Start MCP server (stdio)")
 	freeMem := flag.Bool("free", false, "Stop llama-server and free memory")
 	generateMode := flag.Bool("generate", false, "One-shot index of current directory")
-	queryMode := flag.String("query", "", "Search the index for a natural language query")
-	modeFlag := flag.String("mode", "semantic", "Search mode: 'semantic', 'grep', or 'hybrid' (used with --query)")
-	limitFlag := flag.Int("limit", 25, "Max results (used with --query, default: 25, max: 50)")
+	queryMode := flag.String("query", "", "Search the index (default mode: hybrid)")
+	grepMode := flag.String("grep", "", "Search using grep mode (fast, no llama needed)")
+	modeFlag := flag.String("mode", "hybrid", "Search mode: 'grep' or 'hybrid' (default: hybrid, used with --query)")
+	limitFlag := flag.Int("limit", 25, "Max results (used with --query or --grep, default: 25, max: 50)")
 	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp (skip PATH, test GPU detection)")
 	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', or 'kilocode'")
 	flag.Parse()
@@ -67,6 +68,11 @@ func main() {
 		}
 		slog.Info("llama-server stopped, memory freed")
 		return
+	}
+
+	if *grepMode != "" {
+		setupConsoleLogger()
+		os.Exit(cli.RunQuery(*grepMode, "grep", *limitFlag))
 	}
 
 	if *queryMode != "" {

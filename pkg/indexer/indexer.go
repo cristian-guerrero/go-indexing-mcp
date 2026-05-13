@@ -214,7 +214,7 @@ func (idx *Indexer) Search(query string, pathFilter string, limit int, mode stri
 		}
 		return idx.filterByPath(results, pathFilter), nil
 
-	case "hybrid":
+	default:
 		queryVec, err := idx.Embedder.EmbedQuery(query)
 		if err != nil {
 			return nil, fmt.Errorf("embed query: %w", err)
@@ -222,17 +222,6 @@ func (idx *Indexer) Search(query string, pathFilter string, limit int, mode stri
 		results, err := idx.Storage.SearchHybrid(queryVec, query, limit)
 		if err != nil {
 			return nil, fmt.Errorf("hybrid search: %w", err)
-		}
-		return idx.filterByPath(results, pathFilter), nil
-
-	default:
-		queryVec, err := idx.Embedder.EmbedQuery(query)
-		if err != nil {
-			return nil, fmt.Errorf("embed query: %w", err)
-		}
-		results, err := idx.Storage.Search(queryVec, limit)
-		if err != nil {
-			return nil, fmt.Errorf("search: %w", err)
 		}
 		return idx.filterByPath(results, pathFilter), nil
 	}

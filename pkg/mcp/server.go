@@ -10,8 +10,8 @@ import (
 
 	"github.com/cristian/go-indexing-mcp/pkg/indexer"
 	"github.com/cristian/go-indexing-mcp/pkg/llama"
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 type MCPServer struct {
@@ -49,10 +49,10 @@ func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int) *MCPServ
 
 func (m *MCPServer) registerTools() {
 	searchTool := mcp.NewTool("search_code",
-		mcp.WithDescription("Search code using different modes: 'semantic' (default) uses embedding vectors via llama.cpp for intent-based search; 'grep' does fast substring matching on cached chunks without llama; 'hybrid' fuses BM25 keyword ranking with vector similarity via RRF."),
+		mcp.WithDescription("Search code by intent using BM25 keyword ranking fused with vector similarity via RRF (k=60). Best for queries like 'authentication flow', 'database connection pool', 'user registration'. Returns up to 25 results ranked by relevance. If the index is outdated or empty, it automatically re-indexes the project first. Use grep_code for fast literal symbol/pattern matching without llama."),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("Search query — natural language for semantic/hybrid, literal text for grep"),
+			mcp.Description("Natural language description of what the code does, e.g. 'authentication flow', 'save model to disk', 'database connection pool'"),
 		),
 		mcp.WithString("path_filter",
 			mcp.Description("Optional path prefix filter to narrow results to a specific directory, e.g. 'pkg/', 'pkg/llama/', 'main.go'"),
@@ -60,31 +60,24 @@ func (m *MCPServer) registerTools() {
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum number of results to return (default: 25, max: 50)"),
 		),
-		mcp.WithString("mode",
-			mcp.Description("Search mode: 'semantic' (default), 'grep' (literal or regex substring), or 'hybrid' (BM25 + vector RRF)"),
-		),
 	)
 
-	reindexTool := mcp.NewTool("reindex",
-		mcp.WithDescription("Triggers a full re-index of all files in the configured root path. Walks every file, re-chunks, re-embeds, and replaces the entire index. Use this when files have changed significantly or the index is stale. Runs asynchronously in the background."),
-	)
-
-	indexPathTool := mcp.NewTool("index_path",
-		mcp.WithDescription("Index a single specific file or all files in a directory. For files, reads and chunks the file then replaces its existing embeddings. For directories, walks and indexes all supported files within. Use this for incremental indexing without re-indexing everything."),
-		mcp.WithString("path",
+	grepTool := mcp.NewTool("grep_code",
+		mcp.WithDescription("Fast literal or regex substring search on cached code chunks. Best for exact symbols like 'func validate', 'DB_HOST', or regex patterns like 'type.*Downloader'. Returns up to 25 results ranked by match frequency within each chunk. Auto-indexes if the index is empty. Use search_code for intent-based semantic search."),
+		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("Relative path of the file (e.g. 'main.go') or directory (e.g. 'pkg/config/') to index"),
+			mcp.Description("Literal text or regex pattern to search for. Case-insensitive. Examples: 'func validate', 'DB_HOST', 'type.*Downloader'"),
 		),
-	)
-
-	debugListFilesTool := mcp.NewTool("_debug_index_files",
-		mcp.WithDescription("[DEBUG] List all file paths currently stored in the index. For debugging the MCP server itself, not for general use."),
+		mcp.WithString("path_filter",
+			mcp.Description("Optional path prefix filter to narrow results to a specific directory, e.g. 'pkg/', 'pkg/llama/', 'main.go'"),
+		),
+		mcp.WithNumber("limit",
+			mcp.Description("Maximum number of results to return (default: 25, max: 50)"),
+		),
 	)
 
 	m.server.AddTool(searchTool, m.handleSearch)
-	m.server.AddTool(reindexTool, m.handleReindex)
-	m.server.AddTool(indexPathTool, m.handleIndexPath)
-	m.server.AddTool(debugListFilesTool, m.handleListFiles)
+	m.server.AddTool(grepTool, m.handleGrepSearch)
 }
 
 func (m *MCPServer) touchActivity() {
@@ -134,24 +127,15 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		limit = int(l)
 	}
 
-	mode := "semantic"
-	if m, ok := args["mode"].(string); ok && m != "" {
-		mode = m
-	}
-
 	slog.Debug("tool called: search_code",
 		"query", query,
 		"path_filter", pathFilter,
 		"limit", limit,
-		"mode", mode,
 	)
 
-	needsLlama := mode != "grep"
-	if needsLlama {
-		if err := m.ensureLlama(); err != nil {
-			slog.Error("llama wake failed", "error", err)
-			return mcp.NewToolResultError(fmt.Sprintf("llama-server wake failed: %s", err)), nil
-		}
+	if err := m.ensureLlama(); err != nil {
+		slog.Error("llama wake failed", "error", err)
+		return mcp.NewToolResultError(fmt.Sprintf("llama-server wake failed: %s", err)), nil
 	}
 
 	branch := m.indexer.Walker.GetBranch()
@@ -167,15 +151,13 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 	didFullIndex := false
 
 	if stats.TotalChunks == 0 {
-		if needsLlama {
-			slog.Info("no index found, indexing on first search")
-			if err := m.indexer.IndexAll(); err != nil {
-				slog.Error("initial index failed", "error", err)
-				return mcp.NewToolResultError(fmt.Sprintf("initial index failed: %s", err)), nil
-			}
-			didFullIndex = true
+		slog.Info("no index found, indexing on first search")
+		if err := m.indexer.IndexAll(); err != nil {
+			slog.Error("initial index failed", "error", err)
+			return mcp.NewToolResultError(fmt.Sprintf("initial index failed: %s", err)), nil
 		}
-	} else if needsLlama && !stats.IsIndexing {
+		didFullIndex = true
+	} else if !stats.IsIndexing {
 		lastSHA := m.indexer.Storage.GetCommitSHA()
 
 		if lastSHA == "" {
@@ -204,18 +186,18 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		}
 	}
 
-	results, err := m.indexer.Search(query, pathFilter, limit, mode)
+	results, err := m.indexer.Search(query, pathFilter, limit, "hybrid")
 	if err != nil {
 		slog.Error("search failed", "error", err)
 		return mcp.NewToolResultError(fmt.Sprintf("search failed: %s", err)), nil
 	}
 
-	if len(results) == 0 && !didFullIndex && needsLlama {
+	if len(results) == 0 && !didFullIndex {
 		slog.Info("no results found, performing full reindex and retrying search")
 		if err := m.indexer.IndexAll(); err != nil {
 			slog.Error("reindex on empty results failed", "error", err)
 		} else {
-			results, err = m.indexer.Search(query, pathFilter, limit, mode)
+			results, err = m.indexer.Search(query, pathFilter, limit, "hybrid")
 			if err != nil {
 				slog.Error("retry search failed", "error", err)
 			}
@@ -226,59 +208,73 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		"query", query,
 		"results", len(results),
 		"path_filter", pathFilter,
-		"mode", mode,
 	)
 
 	if len(results) == 0 {
-		return mcp.NewToolResultText("No results found. The index may not contain files from this path. Try using the reindex tool first to build the index for this project, or check that the path_filter matches indexed files."), nil
+		return mcp.NewToolResultText("No results found. The index may not contain files from this path. Check that the path_filter matches indexed files, or that the project has been indexed."), nil
 	}
 	data, _ := json.MarshalIndent(results, "", "  ")
 	return mcp.NewToolResultText(string(data)), nil
 }
 
-func (m *MCPServer) handleReindex(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	m.touchActivity()
-	slog.Debug("tool called: reindex")
-	go func() {
-		slog.Info("reindex started in background")
-		if err := m.indexer.IndexAll(); err != nil {
-			slog.Error("reindex failed", "error", err)
-			return
-		}
-		slog.Info("reindex completed")
-	}()
-	return mcp.NewToolResultText("Re-indexing started in background"), nil
-}
-
-func (m *MCPServer) handleIndexPath(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
-	path, _ := args["path"].(string)
-	if path == "" {
-		return mcp.NewToolResultError("path is required"), nil
+	query, _ := args["query"].(string)
+	pathFilter, _ := args["path_filter"].(string)
+
+	limit := 25
+	if l, ok := args["limit"].(float64); ok {
+		limit = int(l)
 	}
 
-	slog.Debug("tool called: index_path", "path", path)
-
-	if err := m.ensureLlama(); err != nil {
-		slog.Error("llama wake failed", "error", err)
-		return mcp.NewToolResultError(fmt.Sprintf("llama-server wake failed: %s", err)), nil
+	if query == "" {
+		return mcp.NewToolResultError("query is required"), nil
 	}
 
-	if err := m.indexer.IndexPath(path); err != nil {
-		slog.Error("index_path failed", "path", path, "error", err)
-		return mcp.NewToolResultError(fmt.Sprintf("index path failed: %s", err)), nil
+	slog.Debug("tool called: grep_code",
+		"query", query,
+		"path_filter", pathFilter,
+		"limit", limit,
+	)
+
+	branch := m.indexer.Walker.GetBranch()
+	if branch != m.currentBranch {
+		slog.Info("branch changed", "from", m.currentBranch, "to", branch)
+		if err := m.indexer.Storage.SwitchBranch(branch); err != nil {
+			slog.Warn("branch switch failed, continuing", "error", err)
+		}
+		m.currentBranch = branch
 	}
 
-	slog.Info("index_path completed", "path", path)
-	return mcp.NewToolResultText(fmt.Sprintf("Indexed: %s", path)), nil
-}
+	stats := m.indexer.GetStats()
+	if stats.TotalChunks == 0 || stats.TotalFiles == 0 {
+		slog.Info("no index found, indexing before grep")
+		if err := m.ensureLlama(); err != nil {
+			slog.Error("llama wake failed", "error", err)
+			return mcp.NewToolResultError(fmt.Sprintf("llama-server wake failed: %s", err)), nil
+		}
+		if err := m.indexer.IndexAll(); err != nil {
+			slog.Error("initial index failed", "error", err)
+			return mcp.NewToolResultError(fmt.Sprintf("initial index failed: %s", err)), nil
+		}
+	}
 
-func (m *MCPServer) handleListFiles(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	m.touchActivity()
-	slog.Debug("tool called: _debug_index_files")
-	files := m.indexer.ListFiles()
-	data, _ := json.MarshalIndent(files, "", "  ")
-	slog.Debug("listed indexed files", "count", len(files))
+	results, err := m.indexer.Search(query, pathFilter, limit, "grep")
+	if err != nil {
+		slog.Error("grep search failed", "error", err)
+		return mcp.NewToolResultError(fmt.Sprintf("grep search failed: %s", err)), nil
+	}
+
+	slog.Debug("grep search completed",
+		"query", query,
+		"results", len(results),
+		"path_filter", pathFilter,
+	)
+
+	if len(results) == 0 {
+		return mcp.NewToolResultText("No matches found."), nil
+	}
+	data, _ := json.MarshalIndent(results, "", "  ")
 	return mcp.NewToolResultText(string(data)), nil
 }
 

@@ -32,11 +32,11 @@
 - `pkg/embedder/` — HTTP client to llama.cpp `/v1/embeddings`
 - `pkg/storage/` — gob persistence + cosine similarity + branch-isolated indices + BM25 inverted index (`bm25.go`)
 - `pkg/indexer/` — orchestrator: walk → chunk → embed → store
-- `pkg/mcp/` — MCP server with tools: search_code, reindex, index_path, _debug_index_files
+- `pkg/mcp/` — MCP server with tools: search_code, grep_code
 
 ## search_code behavior
 
-Each search keeps the index auto-updated:
+`search_code` (hybrid mode) keeps the index auto-updated:
 
 1. Branch detected → `SwitchBranch()` if changed (branch-isolated index)
 2. Empty index → synchronous `IndexAll()` (first time)
@@ -44,22 +44,21 @@ Each search keeps the index auto-updated:
 4. Uncommitted changes only → `IndexChanged()` in background
 5. `Search()` returns results
 
-### Search modes
+`grep_code` does NOT auto-index. If no index exists, you must run `search_code` first to build it.
 
-`mode` parameter of `search_code` tool (and `--mode` CLI flag):
+### MCP tools
 
-| Mode | Description | Requires llama.cpp |
+| Tool | Description | Requires llama.cpp |
 |---|---|---|
-| `"semantic"` (default) | Embedding → cosine similarity. Intent-based search | Yes |
-| `"grep"` | Case-insensitive substring match on cached chunks. Ranked by frequency | No |
-| `"hybrid"` | BM25 + vector similarity fused with RRF (k=60) | Yes (for vector) |
+| `search_code(query, path_filter?, limit?)` | BM25 + vector similarity via RRF. Best for intent-based queries | Yes |
+| `grep_code(query, path_filter?, limit?)` | Case-insensitive substring match on cached chunks. Best for exact symbols | No |
 
 ### Implementation
 
 - `pkg/storage/bm25.go`: `tokenize()`, `buildBM25Index()`, `bm25Index.score()`, `SearchGrep()`, `SearchHybrid()`, `searchLocked()`, RRF fusion
 - `BM25`: in-memory inverted index (`map[string][]posting`), k1=1.2, b=0.75
-- `grep`: `strings.Count` of lowercase substring on `rec.Content`
-- `hybrid`: runs BM25 + vector search separately, fuses with Reciprocal Rank Fusion
+- `grep_code`: `strings.Count` of lowercase substring on `rec.Content`, or regex if the query contains regex metacharacters
+- `search_code`: runs BM25 + vector search separately, fuses with Reciprocal Rank Fusion
 - BM25 index invalidated (`s.bm25 = nil`) on UpsertChunks, DeleteChunksByPath, rebuildIndex
 
 ## Branch-isolated index
@@ -107,7 +106,8 @@ Do not modify README.md unless the public interface changes (flags, tools, confi
 - `--free` — stops llama-server and frees memory
 - `--download-llama` — force download llama.cpp (auto-detects GPU variant, skips PATH)
 - `--generate` — one-shot index of current directory with detailed report
-- `--query "<text>"` — search from CLI, auto-indexes if needed
-- `--mode <semantic|grep|hybrid>` — search mode (default: semantic, used with --query)
-- `--limit <n>` — max results for --query (default: 25, max: 50)
+- `--query "<text>"` — search from CLI (default mode: hybrid), auto-indexes if needed
+- `--grep "<text>"` — search using grep mode
+- `--mode <hybrid|grep>` — search mode (default: hybrid, used with --query)
+- `--limit <n>` — max results for --query or --grep (default: 25, max: 50)
 - `--configure <pi|opencode|kilocode>` — configure integration with Pi, OpenCode, or KiloCode (writes MCP config + global AGENTS.md)

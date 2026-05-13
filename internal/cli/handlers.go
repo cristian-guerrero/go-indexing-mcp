@@ -1,4 +1,4 @@
-package cli
+﻿package cli
 
 import (
 	"encoding/json"
@@ -141,18 +141,18 @@ func RunGenerate() int {
 	absRoot, _ := filepath.Abs(rootPath)
 	fmt.Fprintln(pw)
 	fmt.Fprintln(pw, "=== Index Complete ===")
-	fmt.Fprintf(pw, "  Root path:        %s\n", absRoot)
-	fmt.Fprintf(pw, "  Files found:      %d\n", len(files))
-	fmt.Fprintf(pw, "  Files indexed:    %d\n", len(chunksMap))
-	fmt.Fprintf(pw, "  Chunks created:   %d\n", totalChunks)
-	fmt.Fprintln(pw, "  ─ Chunking method:")
-	fmt.Fprintf(pw, "    Structural:     %d files, %d chunks\n", chunkerStats.TreeSitterFiles, chunkerStats.TreeSitterChunks)
-	fmt.Fprintf(pw, "    Sliding window: %d files, %d chunks\n", chunkerStats.SlidingWinFiles, chunkerStats.SlidingWinChunks)
-	fmt.Fprintln(pw, "  ─ Timing:")
-	fmt.Fprintf(pw, "    Walk files:     %s\n", roundDuration(tWalkDone.Sub(tWalk)))
-	fmt.Fprintf(pw, "    Chunk:          %s\n", roundDuration(tChunkDone.Sub(tChunk)))
-	fmt.Fprintf(pw, "    Embed + store:  %s\n", roundDuration(tEmbedDone.Sub(tEmbed)))
-	fmt.Fprintf(pw, "    Total:          %s\n", roundDuration(elapsed))
+	fmt.Fprintf(pw, " Root path:  %s\n", absRoot)
+	fmt.Fprintf(pw, " Files found:  %d\n", len(files))
+	fmt.Fprintf(pw, " Files indexed: %d\n", len(chunksMap))
+	fmt.Fprintf(pw, " Chunks created: %d\n", totalChunks)
+	fmt.Fprintln(pw, " ─ Chunking method:")
+	fmt.Fprintf(pw, " Structural:  %d files, %d chunks\n", chunkerStats.TreeSitterFiles, chunkerStats.TreeSitterChunks)
+	fmt.Fprintf(pw, " Sliding window: %d files, %d chunks\n", chunkerStats.SlidingWinFiles, chunkerStats.SlidingWinChunks)
+	fmt.Fprintln(pw, " ─ Timing:")
+	fmt.Fprintf(pw, " Walk files:  %s\n", roundDuration(tWalkDone.Sub(tWalk)))
+	fmt.Fprintf(pw, " Chunk:   %s\n", roundDuration(tChunkDone.Sub(tChunk)))
+	fmt.Fprintf(pw, " Embed + store: %s\n", roundDuration(tEmbedDone.Sub(tEmbed)))
+	fmt.Fprintf(pw, " Total:   %s\n", roundDuration(elapsed))
 	fmt.Fprintln(pw, "======================")
 
 	return 0
@@ -229,7 +229,7 @@ func RunQuery(query string, mode string, limit int) int {
 				return 1
 			}
 		} else {
-			fmt.Fprintln(pw, "No index found. Run a semantic search first to build the index, or use --mode semantic.")
+			fmt.Fprintln(pw, "No index found. Run a hybrid search first to build the index, or use --mode hybrid.")
 			fmt.Fprintln(pw, "======================")
 			return 1
 		}
@@ -263,9 +263,9 @@ func RunQuery(query string, mode string, limit int) int {
 
 	fmt.Fprintln(pw)
 	fmt.Fprintln(pw, "=== Search Results ===")
-	fmt.Fprintf(pw, "  Query:   %s\n", query)
-	fmt.Fprintf(pw, "  Mode:    %s\n", mode)
-	fmt.Fprintf(pw, "  Results: %d\n", len(results))
+	fmt.Fprintf(pw, " Query: %s\n", query)
+	fmt.Fprintf(pw, " Mode: %s\n", mode)
+	fmt.Fprintf(pw, " Results: %d\n", len(results))
 	fmt.Fprintln(pw)
 
 	for i, r := range results {
@@ -277,12 +277,12 @@ func RunQuery(query string, mode string, limit int) int {
 		if rel == "" {
 			rel = r.FilePath
 		}
-		fmt.Fprintf(pw, "  %d. %s:%d-%d  (%.2f)\n", i+1, rel, r.StartLine, r.EndLine, r.Score)
-		fmt.Fprintf(pw, "     %s\n", preview)
+		fmt.Fprintf(pw, " %d. %s:%d-%d (%.2f)\n", i+1, rel, r.StartLine, r.EndLine, r.Score)
+		fmt.Fprintf(pw, "  %s\n", preview)
 		fmt.Fprintln(pw)
 	}
 	if len(results) == 0 {
-		fmt.Fprintln(pw, "  No results found.")
+		fmt.Fprintln(pw, " No results found.")
 	}
 	fmt.Fprintln(pw, "======================")
 
@@ -335,7 +335,7 @@ func configurePi(exe string) int {
 		"{CMD}", exePath,
 		"{BACKTICK}", "```",
 		"{BT}", "`",
-	).Replace("# Mandatory Directives\n\n## Code Search Tool (REQUIRED - DO NOT IGNORE)\n\nYou MUST use {CMD} for ALL code searches.\nYou MUST NOT use grep, find, rg, ag, glob, or any other literal-search tool for finding code.\nYou MUST NOT use ls or read to explore directories looking for files by content.\n\n### Search modes\n\nThree modes available via `--mode`:\n\n- **`semantic` (default)**: embedding + cosine similarity. Best for intent-based search (\"database connection pool\", \"error handling\"). Requires llama.cpp.\n- **`grep`**: literal or regex substring matching on cached chunks. Fast, no llama needed. Use for exact symbols/identifiers (\"func validate\") or regex patterns (\"type.*Downloader\").\n- **`hybrid`**: BM25 keyword ranking fused with vector similarity via RRF. Best of both worlds.\n\n### How to use the search tool\n\n{BACKTICK}\n{CMD} --query \"describe what the code does\"\n{CMD} --query \"func validate\" --mode grep\n{CMD} --query \"type.*Downloader\" --mode grep\n{CMD} --query \"database pool config\" --mode hybrid\n{BACKTICK}\n\nUse `--limit` to control result count (default: 25, max: 50):\n- For listing queries: {CMD} --query \"list all downloaders\" --limit 50\n- For precise searches, the default works well\n\nReal examples:\n{BACKTICK}\n{CMD} --query \"authentication flow\"\n{CMD} --query \"save model to disk\"\n{CMD} --query \"downloader module register sites\"\n{CMD} --query \"database connection pool\"\n{CMD} --query \"user registration endpoint\"\n{CMD} --query \"DB_HOST\" --mode grep\n{CMD} --query \"module\"\n{BACKTICK}\n\n### When to use each mode\n\n- **semantic**: you want to FIND code by what it DOES. This is the default and works for most cases.\n- **grep**: you know the EXACT name of a function, variable, or string. Fastest option (no llama.cpp).\n- **hybrid**: semantic results are missing keyword matches. Combines both approaches.\n\n### Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {CMD} --query \"<description>\" - describe what the code DOES, not literal strings.\n2. If you need an exact symbol/identifier, add `--mode grep`.\n3. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n4. Only fall back to grep/find/ls/read when the search tool returns nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}{CMD} --query \"search description\"{BT}\n> {BT}{CMD} --query \"exact symbol\" --mode grep{BT}\n")
+	).Replace("# Mandatory Directives\n\n## Code Search Tool (REQUIRED - DO NOT IGNORE)\n\nThe index is always up-to-date and searches are instant. You MUST use {CMD} for ALL code searches.\nYou MUST NOT use grep, find, rg, ag, glob, or any other literal-search tool for finding code.\nYou MUST NOT use ls or read to explore directories looking for files by content.\n\n### Search modes\n\n`--query` (BM25 + vector similarity via RRF). `--grep` does case-insensitive substring matching on cached chunks for exact symbols (\"func validate\") or regex patterns (\"type.*Downloader\").\n\n### How to use the search tool\n\n{BACKTICK}\n{CMD} --query \"authentication flow\"\n{CMD} --query \"database connection pool\"\n{CMD} --grep \"func validate\"\n{CMD} --query \"module\" --limit 50\n{BACKTICK}\n\n`--limit` controls max results (default: 25, max: 50).\n\n### When to use each mode\n\n- **query**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep**: you know the EXACT name of a function, variable, or string. Fastest option.\n\n### Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {CMD} --query \"<description>\" - describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use `--grep` instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tool returns nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}{CMD} --query \"search description\"{BT}\n> {BT}{CMD} --grep \"exact symbol\"{BT}\n")
 
 	if existing, err := os.ReadFile(agentsPath); err == nil && string(existing) == agentsContent {
 		fmt.Fprintln(pw, "✓ AGENTS.md already up to date")
@@ -361,7 +361,7 @@ func configureOpenCode(exe string) int {
 
 	mcpEntry := map[string]any{
 		"command": []string{exe, "--mcp"},
-		"type":    "local",
+		"type": "local",
 		"enabled": true,
 		"timeout": 60000,
 	}
@@ -375,7 +375,7 @@ func configureOpenCode(exe string) int {
 	agentsPath := filepath.Join(configDir, "AGENTS.md")
 	agentsContent := strings.NewReplacer(
 		"{BT}", "`",
-	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT} MCP tool for ALL code searches.\nAlways try it FIRST, before falling back to built-in grep/glob tools.\n\n## Search modes\n\nThree modes available via the {BT}mode{BT} parameter:\n\n- **semantic** (default): embedding + cosine similarity. Best for intent-based search (\"database connection pool\", \"error handling\"). Requires llama.cpp.\n- **grep**: literal or regex substring matching on cached chunks. Fast, no llama needed. Use for exact symbols/identifiers (\"func validate\") or regex patterns (\"type.*Downloader\").\n- **hybrid**: BM25 keyword ranking fused with vector similarity via RRF. Best of both worlds.\n\n## How to use the search tool\n\nCall the tool with a query describing what the code DOES:\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"func validate\", mode=\"grep\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"type.*Downloader\", mode=\"grep\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database pool config\", mode=\"hybrid\"){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50):\n- For listing queries (e.g. \"list all downloaders\"), use {BT}limit=50{BT}\n- For precise searches, the default works well\n\n## When to use each mode\n\n- **semantic**: you want to FIND code by what it DOES. This is the default and works for most cases.\n- **grep**: you know the EXACT name of a function, variable, or string.\n- **hybrid**: semantic results are missing keyword matches. Combines both approaches.\n\n## Search workflow (MANDATORY)\n\n1. **Prefer semantic search** - describe what the code DOES (e.g. \"authentication flow\", \"database connection pool\").\n2. **Use grep mode for exact symbols** - if you know the precise identifier (e.g. \"func validate\", \"DB_HOST\"), skip semantic and use {BT}mode=\"grep\"{BT} directly.\n3. Use returned chunks to understand the code; only read full files when the chunk is insufficient.\n4. Only fall back to built-in grep/glob when {BT}search_code{BT} returns nothing useful AND you have confirmed with the user.\n")
+	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT} or {BT}go-indexing-mcp_grep_code{BT} MCP tools for ALL code searches.\nAlways try them FIRST, before falling back to built-in grep/glob tools.\n\n## Available tools\n\n- {BT}go-indexing-mcp_search_code(query, path_filter?, limit?){BT} — BM25 + vector similarity via RRF. Best for intent-based queries (\"authentication flow\", \"database connection pool\"). Auto-indexes if needed. Requires llama.cpp.\n- {BT}go-indexing-mcp_grep_code(query, path_filter?, limit?){BT} — Case-insensitive substring or regex matching on cached chunks. Best for exact symbols (\"func validate\") or regex patterns (\"type.*Downloader\"). Auto-indexes if empty.\n\n## How to use the tools\n\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database connection pool\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func validate\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"type.*Downloader\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"module\", limit=50){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50). Use {BT}path_filter{BT} to narrow to a specific directory.\n\n## When to use each tool\n\n- **search_code**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep_code**: you know the EXACT name of a function, variable, or string. Fastest option.\n\n## Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {BT}go-indexing-mcp_search_code(query=\"<description>\"){BT} — describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use {BT}go-indexing-mcp_grep_code{BT} instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tools return nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}go-indexing-mcp_search_code(query=\"search description\"){BT}\n> {BT}go-indexing-mcp_grep_code(query=\"exact symbol\"){BT}\n")
 
 	if existing, err := os.ReadFile(agentsPath); err == nil && string(existing) == agentsContent {
 		fmt.Fprintln(pw, "✓ AGENTS.md already up to date")
@@ -401,7 +401,7 @@ func configureKiloCode(exe string) int {
 
 	mcpEntry := map[string]any{
 		"command": []string{exe, "--mcp"},
-		"type":    "local",
+		"type": "local",
 		"enabled": true,
 		"timeout": 60000,
 	}
@@ -415,7 +415,7 @@ func configureKiloCode(exe string) int {
 	agentsPath := filepath.Join(configDir, "AGENTS.md")
 	agentsContent := strings.NewReplacer(
 		"{BT}", "`",
-	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT} MCP tool for ALL code searches.\nAlways try it FIRST, before falling back to built-in grep/glob tools.\n\n## Search modes\n\nThree modes available via the {BT}mode{BT} parameter:\n\n- **semantic** (default): embedding + cosine similarity. Best for intent-based search (\"database connection pool\", \"error handling\"). Requires llama.cpp.\n- **grep**: literal or regex substring matching on cached chunks. Fast, no llama needed. Use for exact symbols/identifiers (\"func validate\") or regex patterns (\"type.*Downloader\").\n- **hybrid**: BM25 keyword ranking fused with vector similarity via RRF. Best of both worlds.\n\n## How to use the search tool\n\nCall the tool with a query describing what the code DOES:\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"func validate\", mode=\"grep\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"type.*Downloader\", mode=\"grep\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database pool config\", mode=\"hybrid\"){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50):\n- For listing queries (e.g. \"list all downloaders\"), use {BT}limit=50{BT}\n- For precise searches, the default works well\n\n## When to use each mode\n\n- **semantic**: you want to FIND code by what it DOES. This is the default and works for most cases.\n- **grep**: you know the EXACT name of a function, variable, or string.\n- **hybrid**: semantic results are missing keyword matches. Combines both approaches.\n\n## Search workflow (MANDATORY)\n\n1. **Prefer semantic search** - describe what the code DOES (e.g. \"authentication flow\", \"database connection pool\").\n2. **Use grep mode for exact symbols** - if you know the precise identifier (e.g. \"func validate\", \"DB_HOST\"), skip semantic and use {BT}mode=\"grep\"{BT} directly.\n3. Use returned chunks to understand the code; only read full files when the chunk is insufficient.\n4. Only fall back to built-in grep/glob when {BT}go-indexing-mcp_search_code{BT} returns nothing useful AND you have confirmed with the user.")
+	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT} or {BT}go-indexing-mcp_grep_code{BT} MCP tools for ALL code searches.\nAlways try them FIRST, before falling back to built-in grep/glob tools.\n\n## Available tools\n\n- {BT}go-indexing-mcp_search_code(query, path_filter?, limit?){BT} — BM25 + vector similarity via RRF. Best for intent-based queries (\"authentication flow\", \"database connection pool\"). Auto-indexes if needed. Requires llama.cpp.\n- {BT}go-indexing-mcp_grep_code(query, path_filter?, limit?){BT} — Case-insensitive substring or regex matching on cached chunks. Best for exact symbols (\"func validate\") or regex patterns (\"type.*Downloader\"). Auto-indexes if empty.\n\n## How to use the tools\n\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database connection pool\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func validate\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"type.*Downloader\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"module\", limit=50){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50). Use {BT}path_filter{BT} to narrow to a specific directory.\n\n## When to use each tool\n\n- **search_code**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep_code**: you know the EXACT name of a function, variable, or string. Fastest option.\n\n## Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {BT}go-indexing-mcp_search_code(query=\"<description>\"){BT} — describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use {BT}go-indexing-mcp_grep_code{BT} instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tools return nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}go-indexing-mcp_search_code(query=\"search description\"){BT}\n> {BT}go-indexing-mcp_grep_code(query=\"exact symbol\"){BT}\n")
 
 	if existing, err := os.ReadFile(agentsPath); err == nil && string(existing) == agentsContent {
 		fmt.Fprintln(pw, "✓ AGENTS.md already up to date")
@@ -447,7 +447,7 @@ func mergeMCPIntoJSON(configPath, serverName string, entry map[string]any) error
 	mcp[serverName] = entry
 	cfg["mcp"] = mcp
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	data, err := json.MarshalIndent(cfg, "", " ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}

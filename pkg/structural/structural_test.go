@@ -48,6 +48,9 @@ func bar() {
 	if blocks[0].EndLine != 5 {
 		t.Errorf("expected first block end at 5, got %d", blocks[0].EndLine)
 	}
+	if blocks[0].HasDecorators {
+		t.Error("expected no decorators for plain Go function")
+	}
 }
 
 func TestParseBlocks_GoStruct(t *testing.T) {
@@ -424,7 +427,7 @@ func TestIsLineStructuralStart(t *testing.T) {
 		{"class Foo:", "python", true},
 		{"x = 1", "python", false},
 		{"function foo() {", "javascript", true},
-		{"const x = 1;", "javascript", false}, // const x = () => would match
+		{"const x = 1;", "javascript", false},
 	}
 
 	for _, tt := range tests {
@@ -432,5 +435,400 @@ func TestIsLineStructuralStart(t *testing.T) {
 		if got != tt.expected {
 			t.Errorf("IsLineStructuralStart(%q, %q) = %v, want %v", tt.line, tt.lang, got, tt.expected)
 		}
+	}
+}
+
+func TestParseBlocks_TypeScriptWithDecorators(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "controller.ts")
+	content := `import { Controller, Get } from '@nestjs/common';
+
+@Controller('cats')
+export class CatsController {
+    @Get()
+    @HttpCode(201)
+    findAll(): Cat[] {
+        return [];
+    }
+
+    @Post()
+    create(@Body() dto: CreateCatDto): string {
+        return 'created';
+    }
+}
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "javascript")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block (class is top-level, methods are nested), got %d", len(blocks))
+	}
+
+	if blocks[0].StartLine != 3 {
+		t.Errorf("expected class block start at line 3 (@Controller line), got %d", blocks[0].StartLine)
+	}
+
+	if !blocks[0].HasDecorators {
+		t.Error("expected class block to have decorators")
+	}
+}
+
+func TestParseBlocks_PythonWithDecorators(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.py")
+	content := `from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/api/cats', methods=['GET'])
+def get_cats():
+    return []
+
+@app.route('/api/cats', methods=['POST'])
+@app.login_required
+def create_cat():
+    return 'ok'
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "python")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks, got %d", len(blocks))
+	}
+
+	if blocks[0].StartLine != 5 {
+		t.Errorf("expected get_cats block start at line 5 (@app.route line), got %d", blocks[0].StartLine)
+	}
+
+	if blocks[1].StartLine != 9 {
+		t.Errorf("expected create_cat block start at line 9 (@app.route line), got %d", blocks[1].StartLine)
+	}
+}
+
+func TestParseBlocks_JavaWithAnnotations(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CatController.java")
+	content := `import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/cats")
+public class CatController {
+
+    @GetMapping
+    public List<Cat> getCats() {
+        return new ArrayList<>();
+    }
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public Cat createCat(@RequestBody Cat cat) {
+        return cat;
+    }
+}
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "java")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block (class is top-level, methods are nested), got %d", len(blocks))
+	}
+
+	if blocks[0].StartLine != 3 {
+		t.Errorf("expected class block start at line 3 (@RestController line), got %d", blocks[0].StartLine)
+	}
+}
+
+func TestParseBlocks_CSharpWithAttributes(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CatsController.cs")
+	content := `using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+public class CatsController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult GetCats()
+    {
+        return Ok(new List<Cat>());
+    }
+
+    [HttpPost]
+    public IActionResult CreateCat([FromBody] Cat cat)
+    {
+        return Ok(cat);
+    }
+}
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "csharp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block (class is top-level, methods are nested), got %d", len(blocks))
+	}
+
+	if blocks[0].StartLine != 3 {
+		t.Errorf("expected class block start at line 3 ([ApiController] line), got %d", blocks[0].StartLine)
+	}
+}
+
+func TestParseBlocks_RustWithAttributes(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.rs")
+	content := `use axum::prelude::*;
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new().route("/", get(handler));
+    axum::Server::bind(&"0.0.0.0:3000".parse().unwrap())
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
+}
+
+#[derive(Debug, Clone)]
+struct Cat {
+    name: String,
+}
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "rust")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks (async fn + struct), got %d", len(blocks))
+	}
+
+	if blocks[0].StartLine != 3 {
+		t.Errorf("expected async fn block start at line 3 (#[tokio::main] line), got %d", blocks[0].StartLine)
+	}
+
+	if blocks[0].EndLine != 10 {
+		t.Errorf("expected async fn block end at line 10, got %d", blocks[0].EndLine)
+	}
+
+	if blocks[1].StartLine != 12 {
+		t.Errorf("expected Cat struct block start at line 12 (#[derive] line), got %d", blocks[1].StartLine)
+	}
+
+	if !blocks[0].HasDecorators {
+		t.Error("expected async fn block to have decorators")
+	}
+
+	if !blocks[1].HasDecorators {
+		t.Error("expected struct block to have decorators")
+	}
+}
+
+func TestParseBlocks_KotlinWithAnnotations(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CatController.kt")
+	content := `import org.springframework.web.bind.annotation.*
+
+@RestController
+@RequestMapping("/api/cats")
+class CatController {
+
+    @GetMapping
+    fun getCats(): List<Cat> = listOf()
+
+    @PostMapping
+    fun createCat(): Cat = Cat()
+}
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "kotlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block (class is top-level, methods are nested), got %d", len(blocks))
+	}
+
+	if blocks[0].StartLine != 3 {
+		t.Errorf("expected class block start at line 3 (@RestController line), got %d", blocks[0].StartLine)
+	}
+}
+
+func TestParseBlocks_PHPWithAttributes(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CatController.php")
+	content := `<?php
+
+use Symfony\Component\Routing\Annotation\Route;
+
+#[Route('/api/cats')]
+class CatController
+{
+    #[Route('', methods: ['GET'])]
+    public function getCats(): array
+    {
+        return [];
+    }
+
+    #[Route('', methods: ['POST'])]
+    public function createCat(): array
+    {
+        return [];
+    }
+}
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "php")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block (class is top-level, methods are nested), got %d", len(blocks))
+	}
+
+	if blocks[0].StartLine != 5 {
+		t.Errorf("expected class block start at line 5 (#[Route] line), got %d", blocks[0].StartLine)
+	}
+}
+
+func TestParseBlocks_DecoratorNoFalsePositiveOnRegularCode(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.py")
+	content := `if condition:
+    pass
+
+@app.route('/api')
+def handler():
+    return 'ok'
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "python")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+
+	if blocks[0].StartLine != 4 {
+		t.Errorf("expected handler block start at line 4 (@app.route line), got %d, decorator should not include unrelated indented code", blocks[0].StartLine)
+	}
+
+	if !blocks[0].HasDecorators {
+		t.Error("expected handler block to have decorators")
+	}
+}
+
+func TestParseBlocks_DecoratorSkipsBlankLines(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.ts")
+	content := "@Get()\n\nfunction findAll() {}\n"
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "javascript")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(blocks))
+	}
+
+	if blocks[0].StartLine != 1 {
+		t.Errorf("expected block start at line 1 (@Get() line), got %d", blocks[0].StartLine)
+	}
+}
+
+func TestCollectDecorators_Single(t *testing.T) {
+	lines := []string{
+		"@Get()",
+		"function findAll() {",
+		"}",
+	}
+	patterns := []*regexp.Regexp{regexp.MustCompile(`^\s*@`)}
+
+	start := collectDecorators(lines, 1, patterns)
+	if start != 0 {
+		t.Errorf("expected start=0 (includes @Get line), got %d", start)
+	}
+}
+
+func TestCollectDecorators_Multiple(t *testing.T) {
+	lines := []string{
+		"@Get()",
+		"@HttpCode(201)",
+		"function findAll() {",
+		"}",
+	}
+	patterns := []*regexp.Regexp{regexp.MustCompile(`^\s*@`)}
+
+	start := collectDecorators(lines, 2, patterns)
+	if start != 0 {
+		t.Errorf("expected start=0 (includes both decorators), got %d", start)
+	}
+}
+
+func TestCollectDecorators_NoFalsePositive(t *testing.T) {
+	lines := []string{
+		"if condition:",
+		"    pass",
+		"",
+		"@app.route('/api')",
+		"def handler():",
+		"    pass",
+	}
+	patterns := []*regexp.Regexp{regexp.MustCompile(`^\s*@`)}
+
+	start := collectDecorators(lines, 4, patterns)
+	if start != 3 {
+		t.Errorf("expected start=3 (@app.route line only), got %d, should not include unrelated 'if condition:    pass' lines", start)
+	}
+}
+
+func TestCollectDecorators_NestedDecoratorsNotConsumed(t *testing.T) {
+	lines := []string{
+		"@Controller('cats')",
+		"export class CatsController {",
+		"    @Get()",
+		"    @HttpCode(201)",
+		"    findAll(): Cat[] {",
+		"    }",
+		"}",
+	}
+	patterns := []*regexp.Regexp{regexp.MustCompile(`^\s*@`)}
+
+	start := collectDecorators(lines, 1, patterns)
+	if start != 0 {
+		t.Errorf("expected start=0 (@Controller line only), got %d, should not include @Get/@HttpCode which are inside the class", start)
 	}
 }

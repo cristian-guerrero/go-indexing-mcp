@@ -3,6 +3,7 @@ package chunker
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cristian/go-indexing-mcp/pkg/structural"
@@ -280,5 +281,47 @@ func TestNew_HasStructuralSplit(t *testing.T) {
 	c := New(50, 10)
 	if !c.HasStructuralSplit() {
 		t.Error("expected HasStructuralSplit to return true")
+	}
+}
+
+func TestChunkFile_DecoratorIncludedInChunk(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app.py")
+	content := `from flask import Flask
+
+app = Flask(__name__)
+
+@app.route('/api/cats', methods=['GET'])
+@auth.required
+def get_cats():
+    return []
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	fi := walker.FileInfo{
+		Path:     path,
+		RelPath:  "app.py",
+		Hash:     "abc123",
+		Language: "python",
+		Size:     int64(len(content)),
+	}
+
+	c := New(50, 5)
+	chunks, err := c.ChunkFile(fi)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(chunks) == 0 {
+		t.Fatal("expected at least 1 chunk")
+	}
+
+	first := chunks[0]
+	if !strings.Contains(first.Content, "@app.route") || !strings.Contains(first.Content, "@auth.required") {
+		t.Errorf("chunk content should include decorators, got:\n%s", first.Content)
+	}
+
+	if !strings.Contains(first.Content, "def get_cats()") {
+		t.Errorf("chunk content should include the function, got:\n%s", first.Content)
 	}
 }

@@ -28,7 +28,7 @@
 - `pkg/ignore/` — .gitignore filter + default patterns (nested levels)
 - `pkg/walker/` — file walker with git diff, hash, branch and language detection
 - `pkg/chunker/` — sliding window + structural splitter. `ChunkFile` single or `ChunkFiles` batch
-- `pkg/structural/` — regex + brace/indent counting for structural block detection per language. No external dependencies
+- `pkg/structural/` — regex + brace/indent counting for structural block detection per language. Includes decorator/annotation backward scan. No external dependencies
 - `pkg/embedder/` — HTTP client to llama.cpp `/v1/embeddings`
 - `pkg/storage/` — gob persistence + cosine similarity + branch-isolated indices + BM25 inverted index (`bm25.go`)
 - `pkg/indexer/` — orchestrator: walk → chunk → embed → store
@@ -76,6 +76,12 @@
 - Indentation-based (Python, Ruby, YAML): detects when indentation returns to the initial level
 - Section-based (TOML, Markdown): block ends at next header/section
 - JSON: supports `{}` and `[]` as block delimiters
+- **Decorator detection**: structural blocks extend backward to include preceding decorators/annotations:
+  - `@Decorator` (JS/TS, Python, Java, Kotlin)
+  - `[Attribute]` (C#)
+  - `#[Attribute]` (PHP, Rust)
+  - Blank lines between decorators and structural start are skipped
+  - Non-decorator lines break the backward scan (no false positives with unrelated indented code)
 - If no structural blocks detected, falls back to classic sliding window
 - `ChunkFiles()` processes in batch: small files → sliding window, large files → structural split
 

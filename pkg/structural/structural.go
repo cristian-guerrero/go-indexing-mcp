@@ -9,16 +9,18 @@ import (
 )
 
 type Block struct {
-	StartLine int
-	EndLine   int
-	NodeType  string
+	StartLine    int
+	EndLine      int
+	NodeType     string
+	HasDecorators bool
 }
 
 type blockEndFunc func(lines []string, startPatterns []*regexp.Regexp, start int) int
 
 type languageDef struct {
-	StartPatterns []*regexp.Regexp
-	FindEnd       blockEndFunc
+	StartPatterns     []*regexp.Regexp
+	DecoratorPatterns []*regexp.Regexp
+	FindEnd           blockEndFunc
 }
 
 var (
@@ -40,6 +42,9 @@ var languages = map[string]languageDef{
 			regexp.MustCompile(`^\s*(?:async\s+)?def\s`),
 			regexp.MustCompile(`^\s*class\s`),
 		},
+		DecoratorPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*@`),
+		},
 		FindEnd: findIndentEnd,
 	},
 	"javascript": {
@@ -51,11 +56,14 @@ var languages = map[string]languageDef{
 			regexp.MustCompile(`^\s*(?:export\s+)?interface\s`),
 			regexp.MustCompile(`^\s*(?:export\s+)?type\s`),
 		},
+		DecoratorPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*@`),
+		},
 		FindEnd: findBraceEnd,
 	},
 	"rust": {
 		StartPatterns: []*regexp.Regexp{
-			regexp.MustCompile(`^\s*(?:pub\s+)?(?:unsafe\s+)?fn\s`),
+			regexp.MustCompile(`^\s*(?:pub\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s`),
 			regexp.MustCompile(`^\s*(?:pub\s+)?struct\s`),
 			regexp.MustCompile(`^\s*(?:pub\s+)?impl\s`),
 			regexp.MustCompile(`^\s*(?:pub\s+)?trait\s`),
@@ -63,6 +71,9 @@ var languages = map[string]languageDef{
 			regexp.MustCompile(`^\s*(?:pub\s+)?type\s`),
 			regexp.MustCompile(`^\s*(?:pub\s+)?const\s`),
 			regexp.MustCompile(`^\s*(?:pub\s+)?static\s`),
+		},
+		DecoratorPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*#\[`),
 		},
 		FindEnd: findBraceEnd,
 	},
@@ -74,6 +85,9 @@ var languages = map[string]languageDef{
 			regexp.MustCompile(`^\s*(?:(?:public|private|protected|static|final|abstract|synchronized)\s+)*record\s`),
 			regexp.MustCompile(`^\s*(?:(?:public|private|protected|static|final|abstract|synchronized)\s+)*(?:<\w+>)?\s*\w+\s*\(`),
 			regexp.MustCompile(`^\s*(?:public|private|protected)\s+.*\{$`),
+		},
+		DecoratorPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*@`),
 		},
 		FindEnd: findBraceEnd,
 	},
@@ -98,6 +112,9 @@ var languages = map[string]languageDef{
 			regexp.MustCompile(`^\s*(?:(?:public|private|protected|internal|static|virtual|override|abstract|sealed|async)\s+)*(?:void|\w+)\s+\w+\s*\(`),
 			regexp.MustCompile(`^\s*namespace\s`),
 		},
+		DecoratorPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*\[`),
+		},
 		FindEnd: findBraceEnd,
 	},
 	"ruby": {
@@ -111,6 +128,9 @@ var languages = map[string]languageDef{
 			regexp.MustCompile(`^\s*(?:public|private|protected|static|final|abstract)?\s*function\s`),
 			regexp.MustCompile(`^\s*(?:abstract\s+)?(?:class|interface|trait|enum)\s`),
 		},
+		DecoratorPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*#\[`),
+		},
 		FindEnd: findBraceEnd,
 	},
 	"swift": {
@@ -123,6 +143,9 @@ var languages = map[string]languageDef{
 	"kotlin": {
 		StartPatterns: []*regexp.Regexp{
 			regexp.MustCompile(`^\s*(?:public|private|internal|protected)?\s*(?:fun|class|interface|object)\s`),
+		},
+		DecoratorPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*@`),
 		},
 		FindEnd: findBraceEnd,
 	},
@@ -231,13 +254,41 @@ func findBlocks(lines []string, def languageDef) []Block {
 		startLine := i
 		endLine := def.FindEnd(lines, def.StartPatterns, i)
 
+		origStart := startLine
+		startLine = collectDecorators(lines, startLine, def.DecoratorPatterns)
+
 		blocks = append(blocks, Block{
-			StartLine: startLine + 1,
-			EndLine:   endLine + 1,
+			StartLine:     startLine + 1,
+			EndLine:       endLine + 1,
+			HasDecorators: startLine < origStart,
 		})
 		i = endLine + 1
 	}
 	return blocks
+}
+
+func collectDecorators(lines []string, start int, patterns []*regexp.Regexp) int {
+	if len(patterns) == 0 || start <= 0 {
+		return start
+	}
+
+	for i := start - 1; i >= 0; i-- {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		if trimmed == "" {
+			continue
+		}
+
+		if matchesAny(line, patterns) {
+			start = i
+			continue
+		}
+
+		break
+	}
+
+	return start
 }
 
 func matchesAny(line string, patterns []*regexp.Regexp) bool {

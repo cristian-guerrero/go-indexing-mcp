@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -429,11 +430,69 @@ func configureKiloCode(exe string) int {
 	return 0
 }
 
+var trailingCommaRe = regexp.MustCompile(`,(\s*[}\]])`)
+
+func stripJSONComments(s string) string {
+	var result []byte
+	i := 0
+	inString := false
+
+	for i < len(s) {
+		c := s[i]
+
+		if inString {
+			result = append(result, c)
+			if c == '\\' && i+1 < len(s) {
+				i++
+				result = append(result, s[i])
+			} else if c == '"' {
+				inString = false
+			}
+			i++
+			continue
+		}
+
+		if c == '"' {
+			inString = true
+			result = append(result, c)
+			i++
+			continue
+		}
+
+		if c == '/' && i+1 < len(s) {
+			if s[i+1] == '/' {
+				for i < len(s) && s[i] != '\n' {
+					i++
+				}
+				continue
+			}
+			if s[i+1] == '*' {
+				i += 2
+				for i+1 < len(s) && !(s[i] == '*' && s[i+1] == '/') {
+					i++
+				}
+				i += 2
+				continue
+			}
+		}
+
+		result = append(result, c)
+		i++
+	}
+
+	return string(result)
+}
+
 func mergeMCPIntoJSON(configPath, serverName string, entry map[string]any) error {
 	var cfg map[string]any
 
 	if data, err := os.ReadFile(configPath); err == nil {
-		json.Unmarshal(data, &cfg)
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			cleaned := trailingCommaRe.ReplaceAllString(stripJSONComments(string(data)), "$1")
+			if err := json.Unmarshal([]byte(cleaned), &cfg); err != nil {
+				return fmt.Errorf("parse config %s: %w", configPath, err)
+			}
+		}
 	}
 
 	if cfg == nil {

@@ -17,6 +17,7 @@ type FileInfo struct {
 	Hash     string
 	Language string
 	Size     int64
+	Deleted  bool
 }
 
 type Walker struct {
@@ -119,6 +120,12 @@ func (w *Walker) GetChangedFiles(sinceSHA string) ([]FileInfo, error) {
 		fullPath := filepath.Join(w.Root, line)
 		fi, err := os.Stat(fullPath)
 		if err != nil {
+			files = append(files, FileInfo{
+				Path:     fullPath,
+				RelPath:  line,
+				Language: lang,
+				Deleted:  true,
+			})
 			continue
 		}
 		hash, _ := fileHash(fullPath)

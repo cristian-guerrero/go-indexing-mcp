@@ -3,6 +3,7 @@ package indexer
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -67,6 +68,8 @@ func (idx *Indexer) IndexAll() error {
 	}
 
 	slog.Info("found files to index", "count", len(files))
+
+	idx.PruneStaleEntries()
 
 	chunksMap, err := idx.Chunker.ChunkFiles(files)
 	if err != nil {
@@ -156,6 +159,12 @@ func (idx *Indexer) IndexChanged() error {
 	}
 
 	for _, fi := range files {
+		if fi.Deleted {
+			idx.Storage.DeleteChunksByPath(fi.Path)
+			slog.Info("removed deleted file from index", "file", fi.RelPath)
+			continue
+		}
+
 		chunks, ok := chunksMap[fi.Path]
 		if !ok || len(chunks) == 0 {
 			continue
@@ -205,7 +214,19 @@ func (idx *Indexer) ListFiles() []string {
 	return idx.Storage.ListFiles()
 }
 
+func (idx *Indexer) PruneStaleEntries() {
+	for _, relPath := range idx.Storage.ListFiles() {
+		fullPath := filepath.Join(idx.Walker.Root, relPath)
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			idx.Storage.DeleteChunksByPath(fullPath)
+			slog.Info("pruned stale entry", "file", relPath)
+		}
+	}
+}
+
 func (idx *Indexer) Search(query string, pathFilter string, limit int, mode string) ([]storage.SearchResult, error) {
+	idx.PruneStaleEntries()
+
 	switch mode {
 	case "grep":
 		results, err := idx.Storage.SearchGrep(query, limit)

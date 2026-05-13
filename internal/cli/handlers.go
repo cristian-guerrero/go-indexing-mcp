@@ -390,28 +390,96 @@ func configureOpenCode(exe string) int {
 	return 0
 }
 
+func resolveKiloConfig(configDir string) string {
+	jsoncPath := filepath.Join(configDir, "kilo.jsonc")
+	jsonPath := filepath.Join(configDir, "kilo.json")
+	if _, err := os.Stat(jsoncPath); err == nil {
+		return jsoncPath
+	}
+	if _, err := os.Stat(jsonPath); err == nil {
+		return jsonPath
+	}
+	return jsoncPath
+}
+
+func loadJSONConfig(configPath string) (map[string]any, error) {
+	cfg := make(map[string]any)
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return nil, fmt.Errorf("read config %s: %w", configPath, err)
+	}
+
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		cleaned := trailingCommaRe.ReplaceAllString(stripJSONComments(string(data)), "$1")
+		if err := json.Unmarshal([]byte(cleaned), &cfg); err != nil {
+			return nil, fmt.Errorf("parse config %s: %w", configPath, err)
+		}
+	}
+
+	return cfg, nil
+}
+
 func configureKiloCode(exe string) int {
 	pw := progressWriter{}
 	configDir := filepath.Join(os.Getenv("USERPROFILE"), ".config", "kilo")
-	configPath := filepath.Join(configDir, "kilo.json")
+	configPath := resolveKiloConfig(configDir)
 
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		slog.Error("create kilo config dir", "error", err)
 		return 1
 	}
 
-	mcpEntry := map[string]any{
+	cfg, err := loadJSONConfig(configPath)
+	if err != nil {
+		slog.Error("load kilo config", "error", err)
+		return 1
+	}
+
+	mcp, _ := cfg["mcp"].(map[string]any)
+	if mcp == nil {
+		mcp = make(map[string]any)
+	}
+	mcp["go-indexing-mcp"] = map[string]any{
 		"command": []string{exe, "--mcp"},
 		"type": "local",
 		"enabled": true,
 		"timeout": 60000,
 	}
+	cfg["mcp"] = mcp
+	fmt.Fprintln(pw, "✓ KiloCode MCP server configured")
 
-	if err := mergeMCPIntoJSON(configPath, "go-indexing-mcp", mcpEntry); err != nil {
-		slog.Error("update kilo config", "error", err)
+	perm, _ := cfg["permission"].(map[string]any)
+	if perm == nil {
+		perm = make(map[string]any)
+	}
+	permAdded := false
+	for _, k := range []string{"go-indexing-mcp_search_code", "go-indexing-mcp_grep_code"} {
+		if _, exists := perm[k]; !exists {
+			perm[k] = map[string]any{"*": "allow"}
+			permAdded = true
+		}
+	}
+	cfg["permission"] = perm
+	if permAdded {
+		fmt.Fprintln(pw, "✓ KiloCode MCP tools auto-approved")
+	} else {
+		fmt.Fprintln(pw, "✓ KiloCode MCP tool permissions already set")
+	}
+
+	data, err := json.MarshalIndent(cfg, "", " ")
+	if err != nil {
+		slog.Error("marshal kilo config", "error", err)
 		return 1
 	}
-	fmt.Fprintln(pw, "✓ KiloCode MCP server configured")
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		slog.Error("write kilo config", "error", err)
+		return 1
+	}
+	fmt.Fprintln(pw, "✓ KiloCode config saved")
 
 	agentsPath := filepath.Join(configDir, "AGENTS.md")
 	agentsContent := strings.NewReplacer(

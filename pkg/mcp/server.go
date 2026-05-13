@@ -263,6 +263,11 @@ func (m *MCPServer) watchChecker() {
 	}
 }
 
+const (
+	msgIndexBuilding = "Index build is in progress, please retry your search in a moment"
+	msgNoIndex       = "No index found. The index could not be built (check that llama.cpp and the model are available, or that the project is a git repository)"
+)
+
 func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	query, _ := args["query"].(string)
@@ -294,41 +299,21 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 	}
 
 	stats := m.indexer.GetStats()
-	didFullIndex := false
 
 	if stats.TotalChunks == 0 {
-		slog.Info("no index found, indexing on first search")
-		if err := m.indexer.IndexAll(); err != nil {
-			slog.Error("initial index failed", "error", err)
-			return mcp.NewToolResultError(fmt.Sprintf("initial index failed: %s", err)), nil
-		}
-		didFullIndex = true
-	} else if !stats.IsIndexing {
-		lastSHA := m.indexer.Storage.GetCommitSHA()
-
-		if lastSHA == "" {
-			slog.Info("index has no commit SHA (legacy/interrupted), performing full reindex")
-			if err := m.indexer.IndexAll(); err != nil {
-				slog.Error("full reindex failed", "error", err)
-			}
-			didFullIndex = true
-		} else {
-			headSHA := m.indexer.Walker.GetHeadSHA()
-			hasNewCommits := headSHA != "" && headSHA != lastSHA
-
-			if hasNewCommits {
-				slog.Info("new commits detected, indexing changes before search", "last", lastSHA, "head", headSHA)
-				if err := m.indexer.IndexChanged(); err != nil {
-					slog.Warn("incremental index failed, continuing with existing index", "error", err)
+		if stats.IsIndexing {
+			for i := 0; i < 50; i++ {
+				time.Sleep(500 * time.Millisecond)
+				stats = m.indexer.GetStats()
+				if !stats.IsIndexing {
+					break
 				}
-			} else {
-				slog.Debug("triggering background incremental index for uncommitted changes")
-				go func() {
-					if err := m.indexer.IndexChanged(); err != nil {
-						slog.Warn("background incremental index failed", "error", err)
-					}
-				}()
 			}
+			if stats.TotalChunks == 0 {
+				return mcp.NewToolResultText(msgIndexBuilding), nil
+			}
+		} else {
+			return mcp.NewToolResultText(msgNoIndex), nil
 		}
 	}
 
@@ -336,18 +321,6 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 	if err != nil {
 		slog.Error("search failed", "error", err)
 		return mcp.NewToolResultError(fmt.Sprintf("search failed: %s", err)), nil
-	}
-
-	if len(results) == 0 && !didFullIndex {
-		slog.Info("no results found, performing full reindex and retrying search")
-		if err := m.indexer.IndexAll(); err != nil {
-			slog.Error("reindex on empty results failed", "error", err)
-		} else {
-			results, err = m.indexer.Search(query, pathFilter, limit, "hybrid")
-			if err != nil {
-				slog.Error("retry search failed", "error", err)
-			}
-		}
 	}
 
 	slog.Debug("search completed",
@@ -393,15 +366,21 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 	}
 
 	stats := m.indexer.GetStats()
+
 	if stats.TotalChunks == 0 || stats.TotalFiles == 0 {
-		slog.Info("no index found, indexing before grep")
-		if err := m.ensureLlama(); err != nil {
-			slog.Error("llama wake failed", "error", err)
-			return mcp.NewToolResultError(fmt.Sprintf("llama-server wake failed: %s", err)), nil
-		}
-		if err := m.indexer.IndexAll(); err != nil {
-			slog.Error("initial index failed", "error", err)
-			return mcp.NewToolResultError(fmt.Sprintf("initial index failed: %s", err)), nil
+		if stats.IsIndexing {
+			for i := 0; i < 50; i++ {
+				time.Sleep(500 * time.Millisecond)
+				stats = m.indexer.GetStats()
+				if !stats.IsIndexing {
+					break
+				}
+			}
+			if stats.TotalChunks == 0 || stats.TotalFiles == 0 {
+				return mcp.NewToolResultText(msgIndexBuilding), nil
+			}
+		} else {
+			return mcp.NewToolResultText(msgNoIndex), nil
 		}
 	}
 

@@ -28,6 +28,7 @@ func main() {
 	grepMode := flag.String("grep", "", "Search using grep mode (fast, no llama needed)")
 	modeFlag := flag.String("mode", "hybrid", "Search mode: 'grep' or 'hybrid' (default: hybrid, used with --query)")
 	limitFlag := flag.Int("limit", 25, "Max results (used with --query or --grep, default: 25, max: 50)")
+	listFiles := flag.Bool("list-files", false, "List all indexed files")
 	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp (skip PATH, test GPU detection)")
 	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', or 'kilocode'")
 	flag.Parse()
@@ -83,6 +84,11 @@ func main() {
 	if *generateMode {
 		setupConsoleLogger()
 		os.Exit(cli.RunGenerate())
+	}
+
+	if *listFiles {
+		setupConsoleLogger()
+		os.Exit(cli.RunListFiles())
 	}
 
 	if !*mcpMode {

@@ -11,7 +11,6 @@ import (
 
 var DefaultPatterns = []string{
 	".git",
-	".github",
 	"node_modules",
 	"__pycache__",
 	".venv",

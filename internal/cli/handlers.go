@@ -154,6 +154,49 @@ func RunGenerate() int {
 	return 0
 }
 
+func RunListFiles() int {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("load config", "error", err)
+		return 1
+	}
+
+	rootPath := cfg.Indexing.RootPath
+	if rootPath == "" {
+		rootPath = "."
+	}
+
+	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
+	dbPath := config.StoragePath(rootPath)
+
+	st, err := storage.New(dbPath, cfg.Embedding.Dimensions)
+	if err != nil {
+		slog.Error("storage init", "error", err)
+		return 1
+	}
+	defer st.Close()
+
+	branch := w.GetBranch()
+	worktree := w.GetWorktreeName()
+	if err := st.SwitchBranch(branch, worktree); err != nil {
+		slog.Warn("branch switch failed", "error", err)
+	}
+
+	files := st.ListFiles()
+	if len(files) == 0 {
+		fmt.Println("No indexed files.")
+		return 0
+	}
+
+	stats, _, _ := st.Stats()
+	fmt.Printf("Indexed files: %d, Chunks: %d\n", len(files), stats)
+	fmt.Println()
+	for _, f := range files {
+		fmt.Println(" ", f)
+	}
+	return 0
+}
+
 func RunQuery(query string, mode string, limit int) int {
 	cfg, err := config.Load()
 	if err != nil {

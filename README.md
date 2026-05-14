@@ -159,10 +159,14 @@ go-indexing-mcp --free
 |---|---|---|
 | `--mcp` | Start MCP server (stdio) |
 | `--generate` | One-shot index with report |
-| `--query <text>` | Search the index (default mode: hybrid) |
-| `--grep <text>` | Search using grep mode |
-| `--mode <mode>` | Search mode: hybrid or grep (default: hybrid, used with --query) |
+| `--query <text>` | Search the index (BM25 + vector similarity via RRF) |
+| `--grep <text>` | Search using grep mode (literal/regex on chunks) |
 | `--limit <n>` | Max results (1-50, default 25) |
+| `--path-filter <glob>` | Path filter: prefix, exact file, or glob (e.g. `*.go`, `pkg/**`) |
+| `--lang <lang>` | Filter by language (used with --grep) |
+| `--case-sensitive` | Case-sensitive matching (used with --grep) |
+| `--word` | Match whole words only (used with --grep) |
+| `--list-files` | List all indexed files |
 | `--configure <target>` | Auto-setup for pi, opencode, or kilocode |
 | `--free` | Stop llama-server, free RAM |
 | `--download-llama` | Force download llama.cpp (auto-detects GPU variant) |

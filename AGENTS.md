@@ -116,8 +116,12 @@ Do not modify README.md unless the public interface changes (flags, tools, confi
 - `--free` — stops llama-server and frees memory
 - `--download-llama` — force download llama.cpp (auto-detects GPU variant, skips PATH)
 - `--generate` — one-shot index of current directory with detailed report
-- `--query "<text>"` — search from CLI (default mode: hybrid), auto-indexes if needed
-- `--grep "<text>"` — search using grep mode
-- `--mode <hybrid|grep>` — search mode (default: hybrid, used with --query)
+- `--query "<text>"` — search from CLI (BM25 + vector similarity via RRF), auto-indexes if needed
+- `--grep "<text>"` — search using grep mode (literal/regex on chunks)
 - `--limit <n>` — max results for --query or --grep (default: 25, max: 50)
+- `--path-filter <glob>` — path filter: prefix, exact file, or glob (e.g. `*.go`, `pkg/**`)
+- `--lang <lang>` — filter by language (used with --grep)
+- `--case-sensitive` — case-sensitive matching (used with --grep)
+- `--word` — match whole words only (used with --grep)
+- `--list-files` — list all indexed files
 - `--configure <pi|opencode|kilocode>` — configure integration with Pi, OpenCode, or KiloCode (writes MCP config + global AGENTS.md)

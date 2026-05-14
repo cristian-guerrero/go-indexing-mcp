@@ -26,8 +26,8 @@ func main() {
 	generateMode := flag.Bool("generate", false, "One-shot index of current directory")
 	queryMode := flag.String("query", "", "Search the index (default mode: hybrid)")
 	grepMode := flag.String("grep", "", "Search using grep mode (fast, no llama needed)")
-	modeFlag := flag.String("mode", "hybrid", "Search mode: 'grep' or 'hybrid' (default: hybrid, used with --query)")
 	limitFlag := flag.Int("limit", 25, "Max results (used with --query or --grep, default: 25, max: 50)")
+	pathFilter := flag.String("path-filter", "", "Path filter: prefix ('pkg/'), exact file ('main.go'), or glob ('*.go', '**/*_test.go')")
 	grepLang := flag.String("lang", "", "Filter by language (used with --grep, e.g. 'go', 'python', 'typescript')")
 	grepCaseSensitive := flag.Bool("case-sensitive", false, "Case-sensitive matching (used with --grep)")
 	grepWholeWord := flag.Bool("word", false, "Match whole words only (used with --grep)")
@@ -76,12 +76,12 @@ func main() {
 
 	if *grepMode != "" {
 		setupConsoleLogger()
-		os.Exit(cli.RunQueryGrep(*grepMode, *limitFlag, *grepLang, *grepCaseSensitive, *grepWholeWord))
+		os.Exit(cli.RunQueryGrep(*grepMode, *limitFlag, *grepLang, *grepCaseSensitive, *grepWholeWord, *pathFilter))
 	}
 
 	if *queryMode != "" {
 		setupConsoleLogger()
-		os.Exit(cli.RunQuery(*queryMode, *modeFlag, *limitFlag))
+		os.Exit(cli.RunQuery(*queryMode, "hybrid", *limitFlag, *pathFilter))
 	}
 
 	if *generateMode {

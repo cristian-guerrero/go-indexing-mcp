@@ -197,7 +197,7 @@ func RunListFiles() int {
 	return 0
 }
 
-func RunQuery(query string, mode string, limit int) int {
+func RunQuery(query string, mode string, limit int, pathFilter string) int {
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("load config", "error", err)
@@ -263,7 +263,7 @@ func RunQuery(query string, mode string, limit int) int {
 				return 1
 			}
 		} else {
-			fmt.Fprintln(pw, "No index found. Run a hybrid search first to build the index, or use --mode hybrid.")
+			fmt.Fprintln(pw, "No index found. Run a hybrid search first to build the index.")
 			fmt.Fprintln(pw, "======================")
 			return 1
 		}
@@ -289,7 +289,7 @@ func RunQuery(query string, mode string, limit int) int {
 	if limit <= 0 || limit > 50 {
 		limit = 25
 	}
-	results, err := idx.Search(query, "", limit, mode)
+	results, err := idx.Search(query, pathFilter, limit, mode)
 	if err != nil {
 		slog.Error("search", "error", err)
 		return 1
@@ -323,7 +323,7 @@ func RunQuery(query string, mode string, limit int) int {
 	return 0
 }
 
-func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, wholeWord bool) int {
+func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, wholeWord bool, pathFilter string) int {
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("load config", "error", err)
@@ -358,7 +358,7 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 
 	stats := idx.GetStats()
 	if stats.TotalChunks == 0 {
-		fmt.Fprintln(pw, "No index found. Run a hybrid search first to build the index, or use --mode hybrid.")
+		fmt.Fprintln(pw, "No index found. Run a --query (hybrid) search first to build the index.")
 		fmt.Fprintln(pw, "======================")
 		return 1
 	}
@@ -373,7 +373,7 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 		CaseSensitive: caseSensitive,
 		WholeWord:     wholeWord,
 		Language:      lang,
-	}, "")
+	}, pathFilter)
 	if err != nil {
 		slog.Error("grep search", "error", err)
 		return 1
@@ -463,7 +463,7 @@ func configurePi(exe string) int {
 		"{CMD}", exePath,
 		"{BACKTICK}", "```",
 		"{BT}", "`",
-	).Replace("# Mandatory Directives\n\n## Code Search Tool (REQUIRED - DO NOT IGNORE)\n\nThe index is always up-to-date and searches are instant. You MUST use {CMD} for ALL code searches.\nYou MUST NOT use grep, find, rg, ag, glob, or any other literal-search tool for finding code.\nYou MUST NOT use ls or read to explore directories looking for files by content.\n\n### Search modes\n\n`--query` (BM25 + vector similarity via RRF). `--grep` does case-insensitive substring matching on cached chunks for exact symbols (\"func validate\") or regex patterns (\"type.*Downloader\"). Results include exact line numbers and definition lines (func, type, class) are boosted 2x.\n\n### How to use the search tool\n\n{BACKTICK}\n{CMD} --query \"authentication flow\"\n{CMD} --query \"database connection pool\"\n{CMD} --grep \"func validate\"\n{CMD} --grep \"type.*Downloader\" --lang go\n{CMD} --grep \"get\" --word\n{CMD} --grep \"Error\" --case-sensitive\n{CMD} --query \"module\" --limit 50\n{BACKTICK}\n\n`--limit` controls max results (default: 25, max: 50).\n`--lang` filters by language (go, python, typescript, etc.).\n`--word` matches whole words only (e.g. `get` won't match `getter`).\n`--case-sensitive` enables case-sensitive matching.\n`path_filter` supports glob patterns: `*.go`, `**/*_test.go`, `pkg/*.go`.\n\n### When to use each mode\n\n- **query**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep**: you know the EXACT name of a function, variable, or string. Fastest option.\n\n### Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {CMD} --query \"<description>\" - describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use `--grep` instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tool returns nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}{CMD} --query \"search description\"{BT}\n> {BT}{CMD} --grep \"exact symbol\"{BT}\n> {BT}{CMD} --grep \"exact symbol\" --lang go --word{BT}\n")
+	).Replace("# Mandatory Directives\n\n## Code Search Tool (REQUIRED - DO NOT IGNORE)\n\nThe index is always up-to-date and searches are instant. You MUST use {CMD} for ALL code searches.\nYou MUST NOT use grep, find, rg, ag, glob, or any other literal-search tool for finding code.\nYou MUST NOT use ls or read to explore directories looking for files by content.\n\n### Search modes\n\n`--query` (BM25 + vector similarity via RRF). `--grep` does case-insensitive substring matching on cached chunks for exact symbols (\"func validate\") or regex patterns (\"type.*Downloader\"). Results include exact line numbers and definition lines (func, type, class) are boosted 2x.\n\n### How to use the search tool\n\n{BACKTICK}\n{CMD} --query \"authentication flow\"\n{CMD} --query \"database connection pool\"\n{CMD} --grep \"func validate\"\n{CMD} --grep \"type.*Downloader\" --lang go\n{CMD} --grep \"get\" --word\n{CMD} --grep \"Error\" --case-sensitive\n{CMD} --query \"module\" --limit 50\n{BACKTICK}\n\n`--limit` controls max results (default: 25, max: 50).\n`--lang` filters by language (go, python, typescript, etc.).\n`--word` matches whole words only (e.g. `get` won't match `getter`).\n`--case-sensitive` enables case-sensitive matching.\n`--path-filter` supports glob patterns: `*.go`, `**/*_test.go`, `pkg/*.go`.\n\n### When to use each mode\n\n- **query**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep**: you know the EXACT name of a function, variable, or string. Fastest option.\n\n### Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {CMD} --query \"<description>\" - describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use `--grep` instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tool returns nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}{CMD} --query \"search description\"{BT}\n> {BT}{CMD} --grep \"exact symbol\"{BT}\n> {BT}{CMD} --grep \"exact symbol\" --lang go --word{BT}\n")
 
 	merged, err := mergeAgentsSection(agentsPath, agentsContent)
 	if err != nil {
@@ -491,7 +491,7 @@ func configureOpenCode(exe string) int {
 
 	mcpEntry := map[string]any{
 		"command": []string{exe, "--mcp"},
-		"type": "local",
+		"type":    "local",
 		"enabled": true,
 		"timeout": 60000,
 	}
@@ -576,7 +576,7 @@ func configureKiloCode(exe string) int {
 	}
 	mcp["go-indexing-mcp"] = map[string]any{
 		"command": []string{exe, "--mcp"},
-		"type": "local",
+		"type":    "local",
 		"enabled": true,
 		"timeout": 60000,
 	}

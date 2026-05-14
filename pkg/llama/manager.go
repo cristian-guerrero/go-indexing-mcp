@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cristian/go-indexing-mcp/pkg/config"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
 )
 
 type Manager struct {

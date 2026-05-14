@@ -1,4 +1,4 @@
-module github.com/cristian/go-indexing-mcp
+module github.com/cristian-guerrero/go-indexing-mcp
 
 go 1.26.2
 

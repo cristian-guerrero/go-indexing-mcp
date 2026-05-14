@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cristian/go-indexing-mcp/pkg/chunker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
 )
 
 var bufferPool = sync.Pool{

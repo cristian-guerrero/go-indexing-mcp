@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cristian/go-indexing-mcp/pkg/chunker"
-	"github.com/cristian/go-indexing-mcp/pkg/storage/simd"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage/simd"
 )
 
 type ChunkRecord struct {

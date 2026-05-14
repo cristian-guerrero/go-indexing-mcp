@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cristian/go-indexing-mcp/pkg/indexer"
-	"github.com/cristian/go-indexing-mcp/pkg/llama"
-	"github.com/cristian/go-indexing-mcp/pkg/storage"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/indexer"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/llama"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )

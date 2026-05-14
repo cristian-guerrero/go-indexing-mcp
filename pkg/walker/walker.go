@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cristian/go-indexing-mcp/pkg/ignore"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/ignore"
 )
 
 type FileInfo struct {

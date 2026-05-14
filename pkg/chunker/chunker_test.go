@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cristian/go-indexing-mcp/pkg/structural"
-	"github.com/cristian/go-indexing-mcp/pkg/walker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/structural"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
 func TestNew_DefaultValues(t *testing.T) {

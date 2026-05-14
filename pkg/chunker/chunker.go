@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cristian/go-indexing-mcp/pkg/structural"
-	"github.com/cristian/go-indexing-mcp/pkg/walker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/structural"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
 type Chunk struct {

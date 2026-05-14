@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cristian/go-indexing-mcp/pkg/chunker"
-	"github.com/cristian/go-indexing-mcp/pkg/config"
-	"github.com/cristian/go-indexing-mcp/pkg/embedder"
-	"github.com/cristian/go-indexing-mcp/pkg/indexer"
-	"github.com/cristian/go-indexing-mcp/pkg/llama"
-	"github.com/cristian/go-indexing-mcp/pkg/storage"
-	"github.com/cristian/go-indexing-mcp/pkg/walker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/embedder"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/indexer"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/llama"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
 func RunGenerate() int {

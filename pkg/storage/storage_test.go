@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cristian/go-indexing-mcp/pkg/chunker"
-	"github.com/cristian/go-indexing-mcp/pkg/walker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
 func TestDotProduct(t *testing.T) {

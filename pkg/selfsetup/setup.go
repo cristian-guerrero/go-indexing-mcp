@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/cristian/go-indexing-mcp/pkg/config"
-	"github.com/cristian/go-indexing-mcp/pkg/llama"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/llama"
 )
 
 type SetupUI struct {

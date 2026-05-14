@@ -8,10 +8,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cristian/go-indexing-mcp/pkg/chunker"
-	"github.com/cristian/go-indexing-mcp/pkg/embedder"
-	"github.com/cristian/go-indexing-mcp/pkg/storage"
-	"github.com/cristian/go-indexing-mcp/pkg/walker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/embedder"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
 type Indexer struct {

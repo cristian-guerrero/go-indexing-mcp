@@ -83,14 +83,11 @@ func (m *MCPServer) indexOnStartup() {
 			slog.Error("llama not available for startup index", "error", err)
 			return
 		}
-		if err := m.indexer.IndexAll(); err != nil {
-			slog.Error("startup index failed", "error", err)
-		}
+		m.runIndexAll()
 		return
 	}
 
 	lastSHA := m.indexer.Storage.GetCommitSHA()
-	headSHA := m.indexer.Walker.GetHeadSHA()
 
 	if lastSHA == "" {
 		slog.Info("interrupted index detected, resuming partial index")
@@ -98,20 +95,55 @@ func (m *MCPServer) indexOnStartup() {
 			slog.Error("llama not available for startup reindex", "error", err)
 			return
 		}
-		if err := m.indexer.IndexAll(); err != nil {
-			slog.Error("startup reindex failed", "error", err)
+		m.runIndexAll()
+	} else {
+		headSHA := m.indexer.Walker.GetHeadSHA()
+		if headSHA != "" && headSHA != lastSHA {
+			slog.Info("new commits detected, incremental index on startup", "last", lastSHA, "head", headSHA)
+			if err := m.ensureLlama(); err != nil {
+				slog.Error("llama not available for startup incremental index", "error", err)
+				return
+			}
+			m.runIndexChanged()
+		} else {
+			slog.Info("index is up to date")
 		}
-	} else if headSHA != "" && headSHA != lastSHA {
-		slog.Info("new commits detected, incremental index on startup", "last", lastSHA, "head", headSHA)
-		if err := m.ensureLlama(); err != nil {
-			slog.Error("llama not available for startup incremental index", "error", err)
-			return
+	}
+}
+
+func (m *MCPServer) runIndexAll() {
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(2 * time.Second)
+			slog.Warn("retrying full index", "attempt", attempt+1)
+			if err := m.ensureLlama(); err != nil {
+				slog.Error("llama unavailable for retry", "error", err)
+				continue
+			}
+		}
+		if err := m.indexer.IndexAll(); err != nil {
+			slog.Error("full index failed", "attempt", attempt+1, "error", err)
+			continue
+		}
+		return
+	}
+}
+
+func (m *MCPServer) runIndexChanged() {
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(2 * time.Second)
+			slog.Warn("retrying incremental index", "attempt", attempt+1)
+			if err := m.ensureLlama(); err != nil {
+				slog.Error("llama unavailable for retry", "error", err)
+				continue
+			}
 		}
 		if err := m.indexer.IndexChanged(); err != nil {
-			slog.Warn("startup incremental index failed", "error", err)
+			slog.Warn("incremental index failed", "attempt", attempt+1, "error", err)
+			continue
 		}
-	} else {
-		slog.Info("index is up to date")
+		return
 	}
 }
 
@@ -160,7 +192,7 @@ func (m *MCPServer) ensureLlama() error {
 	if m.mgr.IsRunning() {
 		return nil
 	}
-	slog.Info("waking llama-server from idle sleep")
+	slog.Info("llama-server not running, starting it")
 	return m.mgr.Start()
 }
 
@@ -226,9 +258,7 @@ func (m *MCPServer) watchChecker() {
 				slog.Warn("watch: llama not available for full index", "error", err)
 				continue
 			}
-			if err := m.indexer.IndexAll(); err != nil {
-				slog.Warn("watch: full index failed", "error", err)
-			}
+			m.runIndexAll()
 			continue
 		}
 
@@ -241,29 +271,21 @@ func (m *MCPServer) watchChecker() {
 				slog.Warn("watch: llama not available for reindex", "error", err)
 				continue
 			}
-			if err := m.indexer.IndexAll(); err != nil {
-				slog.Warn("watch: full reindex failed", "error", err)
-			}
+			m.runIndexAll()
 		} else if headSHA != "" && headSHA != lastSHA {
 			slog.Info("watch: new commits detected, indexing changes", "last", lastSHA, "head", headSHA)
 			if err := m.ensureLlama(); err != nil {
 				slog.Warn("watch: llama not available for incremental index", "error", err)
 				continue
 			}
-			if err := m.indexer.IndexChanged(); err != nil {
-				slog.Warn("watch: incremental index failed", "error", err)
-			}
+			m.runIndexChanged()
 		} else {
 			slog.Debug("watch: checking for uncommitted changes")
 			if err := m.ensureLlama(); err != nil {
 				slog.Warn("watch: llama not available for background index", "error", err)
 				continue
 			}
-			go func() {
-				if err := m.indexer.IndexChanged(); err != nil {
-					slog.Warn("watch: background incremental index failed", "error", err)
-				}
-			}()
+			go m.runIndexChanged()
 		}
 	}
 }

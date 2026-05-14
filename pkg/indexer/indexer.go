@@ -107,6 +107,8 @@ func (idx *Indexer) IndexAll() error {
 		if i > 0 && i%10 == 0 {
 			if err := idx.Storage.Save(); err != nil {
 				slog.Warn("periodic save", "error", err)
+			} else {
+				slog.Info("index progress saved", "files", i+1, "chunks", totalChunks)
 			}
 		}
 	}
@@ -208,7 +210,12 @@ func (idx *Indexer) IndexChanged() error {
 	headSHA := idx.Walker.GetHeadSHA()
 	if headSHA != "" {
 		idx.Storage.SetCommitSHA(headSHA)
-		slog.Debug("updated indexed commit", "sha", headSHA)
+	}
+
+	if err := idx.Storage.Save(); err != nil {
+		slog.Warn("index changed save", "error", err)
+	} else {
+		slog.Info("incremental index complete", "files", len(files), "sha", headSHA)
 	}
 
 	return nil

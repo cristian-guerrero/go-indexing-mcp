@@ -7,10 +7,17 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/cristian/go-indexing-mcp/pkg/chunker"
 )
+
+var bufferPool = sync.Pool{
+	New: func() any {
+		return new(bytes.Buffer)
+	},
+}
 
 type Embedder struct {
 	BaseURL    string
@@ -26,6 +33,11 @@ func New(baseURL string, dimensions, batchSize int) *Embedder {
 		Dimensions: dimensions,
 		client: &http.Client{
 			Timeout: 60 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        10,
+				MaxIdleConnsPerHost: 5,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 	}
 }
@@ -79,12 +91,15 @@ func (e *Embedder) embed(texts []string) ([][]float64, error) {
 		}
 	}
 	body := embedRequest{Input: texts}
-	data, err := json.Marshal(body)
-	if err != nil {
+
+	buf := bufferPool.Get().(*bytes.Buffer)
+	defer bufferPool.Put(buf)
+	buf.Reset()
+	if err := json.NewEncoder(buf).Encode(body); err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequest("POST", e.BaseURL+"/v1/embeddings", bytes.NewReader(data))
+	req, err := http.NewRequest("POST", e.BaseURL+"/v1/embeddings", buf)
 	if err != nil {
 		return nil, err
 	}

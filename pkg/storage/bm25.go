@@ -14,6 +14,74 @@ const (
 	rrfK   = 60.0
 )
 
+type topK[T any] struct {
+	heap []T
+	k    int
+	less func(a, b T) bool
+}
+
+func newTopK[T any](k int, less func(a, b T) bool) *topK[T] {
+	return &topK[T]{
+		heap: make([]T, 0, k+1),
+		k:    k,
+		less: less,
+	}
+}
+
+func (h *topK[T]) Push(item T) {
+	if len(h.heap) < h.k {
+		h.heap = append(h.heap, item)
+		h.siftUp(len(h.heap) - 1)
+		return
+	}
+	if !h.less(item, h.heap[0]) {
+		h.heap[0] = item
+		h.siftDown(0)
+	}
+}
+
+func (h *topK[T]) Result() []T {
+	sort.Slice(h.heap, func(i, j int) bool {
+		return !h.less(h.heap[i], h.heap[j])
+	})
+	return h.heap
+}
+
+func (h *topK[T]) siftUp(i int) {
+	item := h.heap[i]
+	for i > 0 {
+		parent := (i - 1) / 2
+		if !h.less(item, h.heap[parent]) {
+			break
+		}
+		h.heap[i] = h.heap[parent]
+		i = parent
+	}
+	h.heap[i] = item
+}
+
+func (h *topK[T]) siftDown(i int) {
+	n := len(h.heap)
+	item := h.heap[i]
+	for {
+		smallest := i
+		left := 2*i + 1
+		right := 2*i + 2
+		if left < n && h.less(h.heap[left], h.heap[smallest]) {
+			smallest = left
+		}
+		if right < n && h.less(h.heap[right], h.heap[smallest]) {
+			smallest = right
+		}
+		if smallest == i {
+			break
+		}
+		h.heap[i] = h.heap[smallest]
+		i = smallest
+	}
+	h.heap[i] = item
+}
+
 type posting struct {
 	DocID int
 	Freq  int
@@ -139,7 +207,10 @@ func (s *Storage) SearchGrep(query string, limit int) ([]SearchResult, error) {
 		score float64
 	}
 
-	var results []scored
+	tk := newTopK(limit, func(a, b scored) bool {
+		return a.score < b.score
+	})
+
 	for i, rec := range s.records {
 		var cnt int
 		if re != nil {
@@ -149,17 +220,11 @@ func (s *Storage) SearchGrep(query string, limit int) ([]SearchResult, error) {
 			cnt = strings.Count(strings.ToLower(rec.Content), strings.ToLower(query))
 		}
 		if cnt > 0 {
-			results = append(results, scored{i, float64(cnt)})
+			tk.Push(scored{i, float64(cnt)})
 		}
 	}
 
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
-	})
-
-	if len(results) > limit {
-		results = results[:limit]
-	}
+	results := tk.Result()
 
 	out := make([]SearchResult, len(results))
 	for i, r := range results {
@@ -198,6 +263,7 @@ func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]S
 		limit = 25
 	}
 
+	normalize(queryVec)
 
 	s.ensureBM25()
 	queryTerms := tokenize(query)
@@ -217,7 +283,7 @@ func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]S
 		all[i] = scored{
 			idx:    i,
 			bm25:   s.bm25.score(queryTerms, i),
-			vector: cosineSimilarity(queryVec, rec.Vector),
+			vector: dotProduct(queryVec, rec.Vector),
 		}
 	}
 
@@ -237,27 +303,21 @@ func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]S
 		vecRanks[r.idx] = rank + 1
 	}
 
-	rrfResults := make([]struct {
+	type rrfResult struct {
 		idx   int
 		score float64
-	}, len(s.records))
-	for i := range s.records {
-		rrfResults[i] = struct {
-			idx   int
-			score float64
-		}{
-			idx:   i,
-			score: 1.0/(rrfK+float64(bm25Ranks[i])) + 1.0/(rrfK+float64(vecRanks[i])),
-		}
 	}
 
-	sort.Slice(rrfResults, func(i, j int) bool {
-		return rrfResults[i].score > rrfResults[j].score
+	rrfTK := newTopK(limit, func(a, b rrfResult) bool {
+		return a.score < b.score
 	})
 
-	if len(rrfResults) > limit {
-		rrfResults = rrfResults[:limit]
+	for i := range s.records {
+		score := 1.0/(rrfK+float64(bm25Ranks[i])) + 1.0/(rrfK+float64(vecRanks[i]))
+		rrfTK.Push(rrfResult{i, score})
 	}
+
+	rrfResults := rrfTK.Result()
 
 	out := make([]SearchResult, len(rrfResults))
 	for i, r := range rrfResults {
@@ -282,25 +342,23 @@ func (s *Storage) searchLocked(query []float64, limit int) ([]SearchResult, erro
 		limit = 25
 	}
 
+	normalize(query)
 
 	type scored struct {
 		idx   int
 		score float64
 	}
 
-	var results []scored
-	for i, rec := range s.records {
-		score := cosineSimilarity(query, rec.Vector)
-		results = append(results, scored{i, score})
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
+	tk := newTopK(limit, func(a, b scored) bool {
+		return a.score < b.score
 	})
 
-	if len(results) > limit {
-		results = results[:limit]
+	for i, rec := range s.records {
+		score := dotProduct(query, rec.Vector)
+		tk.Push(scored{i, score})
 	}
+
+	results := tk.Result()
 
 	out := make([]SearchResult, len(results))
 	for i, r := range results {

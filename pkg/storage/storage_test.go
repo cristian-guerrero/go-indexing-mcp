@@ -9,7 +9,7 @@ import (
 	"github.com/cristian/go-indexing-mcp/pkg/walker"
 )
 
-func TestCosineSimilarity(t *testing.T) {
+func TestDotProduct(t *testing.T) {
 	tests := []struct {
 		name string
 		a    []float64
@@ -19,27 +19,61 @@ func TestCosineSimilarity(t *testing.T) {
 		{"identical", []float64{1, 0, 0}, []float64{1, 0, 0}, 1.0},
 		{"orthogonal", []float64{1, 0}, []float64{0, 1}, 0.0},
 		{"opposite", []float64{1, 0}, []float64{-1, 0}, -1.0},
-		{"partial", []float64{1, 1}, []float64{1, 0}, 1.0 / math.Sqrt(2)},
+		{"partial", []float64{1.0 / math.Sqrt(2), 1.0 / math.Sqrt(2)}, []float64{1, 0}, 1.0 / math.Sqrt(2)},
 		{"zero vector a", []float64{0, 0}, []float64{1, 0}, 0.0},
 		{"zero vector b", []float64{1, 0}, []float64{0, 0}, 0.0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := cosineSimilarity(tt.a, tt.b)
+			got := dotProduct(tt.a, tt.b)
 			if math.Abs(got-tt.want) > 1e-10 {
-				t.Errorf("cosineSimilarity(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+				t.Errorf("dotProduct(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
 			}
 		})
 	}
 }
 
-func TestCosineSimilarity_DifferentLengths(t *testing.T) {
-	got := cosineSimilarity([]float64{1, 0}, []float64{1, 0, 0})
+func TestDotProduct_DifferentLengths(t *testing.T) {
+	got := dotProduct([]float64{1, 0}, []float64{1, 0, 0})
 	if got != 0 {
 		t.Errorf("expected 0 for different lengths, got %v", got)
 	}
 }
+
+func TestNormalize(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []float64
+		want  float64
+	}{
+		{"unit vector unchanged", []float64{1, 0, 0}, 1.0},
+		{"scaled vector normalized", []float64{3, 4, 0}, 5.0},
+		{"zero vector unchanged", []float64{0, 0, 0}, 0.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := make([]float64, len(tt.input))
+			copy(in, tt.input)
+			normalize(in)
+			var norm float64
+			for _, v := range in {
+				norm += v * v
+			}
+			norm = math.Sqrt(norm)
+			if tt.want == 0 {
+				if norm != 0 {
+					t.Errorf("expected zero norm, got %v", norm)
+				}
+			} else if math.Abs(norm-1.0) > 1e-10 {
+				t.Errorf("expected unit norm, got %v", norm)
+			}
+		})
+	}
+}
+
+
 
 func TestNewAndClose(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.gob")

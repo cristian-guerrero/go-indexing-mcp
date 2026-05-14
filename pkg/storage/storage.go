@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/cristian/go-indexing-mcp/pkg/chunker"
+	"github.com/cristian/go-indexing-mcp/pkg/storage/simd"
 )
 
 type ChunkRecord struct {
@@ -83,6 +84,7 @@ func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]f
 		if !ok {
 			continue
 		}
+		normalize(emb)
 
 		if idx, exists := s.byID[ch.ID]; exists {
 			s.records[idx] = ChunkRecord{
@@ -331,21 +333,20 @@ func (s *Storage) findIndicesByPath(filePath string) []int {
 	return indices
 }
 
-func cosineSimilarity(a, b []float64) float64 {
-	if len(a) != len(b) {
-		return 0
+func normalize(v []float64) {
+	var norm float64
+	for i := range v {
+		norm += v[i] * v[i]
 	}
-
-	var dot, normA, normB float64
-	for i := range a {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
+	if norm == 0 {
+		return
 	}
-
-	if normA == 0 || normB == 0 {
-		return 0
+	invNorm := 1.0 / math.Sqrt(norm)
+	for i := range v {
+		v[i] *= invNorm
 	}
+}
 
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+func dotProduct(a, b []float64) float64 {
+	return simd.Dot(a, b)
 }

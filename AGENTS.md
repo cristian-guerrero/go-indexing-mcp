@@ -29,8 +29,9 @@
 - `pkg/walker/` — file walker with git diff, hash, branch and language detection
 - `pkg/chunker/` — sliding window + structural splitter. `ChunkFile` single or `ChunkFiles` batch
 - `pkg/structural/` — regex + brace/indent counting for structural block detection per language. Includes decorator/annotation backward scan. No external dependencies
-- `pkg/embedder/` — HTTP client to llama.cpp `/v1/embeddings`
-- `pkg/storage/` — gob persistence + cosine similarity + branch-isolated indices + BM25 inverted index (`bm25.go`)
+- `pkg/embedder/` — HTTP client to llama.cpp `/v1/embeddings`. Uses connection pooling (`MaxIdleConns`) and buffer pool for reduced allocations
+- `pkg/storage/` — gob persistence + normalized dot product + branch-isolated indices + BM25 inverted index (`bm25.go`). Vectors are L2-normalized at store time so cosine similarity reduces to dot product
+- `pkg/storage/simd/` — AVX2+FMA-accelerated dot product (amd64), scalar fallback (all platforms). ~18x speedup for 768-dim vectors
 - `pkg/indexer/` — orchestrator: walk → chunk → embed → store
 - `pkg/mcp/` — MCP server with tools: search_code, grep_code
 
@@ -56,10 +57,11 @@
 
 ### Implementation
 
-- `pkg/storage/bm25.go`: `tokenize()`, `buildBM25Index()`, `bm25Index.score()`, `SearchGrep()`, `SearchHybrid()`, `searchLocked()`, RRF fusion
+- `pkg/storage/bm25.go`: `tokenize()`, `buildBM25Index()`, `bm25Index.score()`, `SearchGrep()`, `SearchHybrid()`, `searchLocked()`, RRF fusion, `topK[T]` bounded min-heap for O(n log k) top-k selection
 - `BM25`: in-memory inverted index (`map[string][]posting`), k1=1.2, b=0.75
 - `grep_code`: `strings.Count` of lowercase substring on `rec.Content`, or regex if the query contains regex metacharacters
 - `search_code`: runs BM25 + vector search separately, fuses with Reciprocal Rank Fusion
+- Vector similarity: stored vectors are L2-normalized; query vectors normalized at search time; dot product via `simd.Dot()` gives cosine similarity with half the math
 - BM25 index invalidated (`s.bm25 = nil`) on UpsertChunks, DeleteChunksByPath, rebuildIndex
 
 ## Branch-isolated index

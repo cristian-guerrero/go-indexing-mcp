@@ -205,6 +205,11 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	}
 	s.path = strings.Join(parts, "-") + ext
 
+	// Clean up any leftover temp file from a crash during write
+	if _, err := os.Stat(s.path + ".tmp"); err == nil {
+		os.Remove(s.path + ".tmp")
+	}
+
 	s.records = nil
 	s.byID = make(map[string]int)
 	s.byPath = make(map[string][]int)
@@ -243,6 +248,30 @@ func (s *Storage) Close() error {
 	return s.save()
 }
 
+// Save flushes the current state to disk immediately.
+// Called periodically during indexing to preserve progress.
+func (s *Storage) Save() error {
+	return s.save()
+}
+
+// IsFileIndexed checks if all chunks for a file are already in the index
+// with a matching hash. Used to skip already-indexed files on resume.
+func (s *Storage) IsFileIndexed(filePath, fileHash string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	indices, ok := s.byPath[filePath]
+	if !ok {
+		return false
+	}
+	for _, idx := range indices {
+		if s.records[idx].FileHash != fileHash {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Storage) SetCommitSHA(sha string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -257,6 +286,11 @@ func (s *Storage) GetCommitSHA() string {
 }
 
 func (s *Storage) load() error {
+	// Clean up any leftover temp file from a crash during write
+	if _, err := os.Stat(s.path + ".tmp"); err == nil {
+		os.Remove(s.path + ".tmp")
+	}
+
 	f, err := os.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -298,17 +332,33 @@ func (s *Storage) saveLocked() error {
 		return nil
 	}
 
-	f, err := os.Create(s.path)
+	tmpPath := s.path + ".tmp"
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
 	enc := gob.NewEncoder(f)
-	return enc.Encode(StorageData{
+	if err := enc.Encode(StorageData{
 		Records:   s.records,
 		CommitSHA: s.commitSHA,
-	})
+	}); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		return err
+	}
+
+	s.dirty = false
+	return nil
 }
 
 func (s *Storage) rebuildIndex(records []ChunkRecord) {

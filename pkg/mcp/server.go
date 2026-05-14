@@ -93,7 +93,7 @@ func (m *MCPServer) indexOnStartup() {
 	headSHA := m.indexer.Walker.GetHeadSHA()
 
 	if lastSHA == "" {
-		slog.Info("index has no commit SHA, full reindex on startup")
+		slog.Info("interrupted index detected, resuming partial index")
 		if err := m.ensureLlama(); err != nil {
 			slog.Error("llama not available for startup reindex", "error", err)
 			return
@@ -236,7 +236,7 @@ func (m *MCPServer) watchChecker() {
 		headSHA := m.indexer.Walker.GetHeadSHA()
 
 		if lastSHA == "" {
-			slog.Info("watch: index has no commit SHA, performing full reindex")
+			slog.Info("watch: interrupted index detected, resuming partial index")
 			if err := m.ensureLlama(); err != nil {
 				slog.Warn("watch: llama not available for reindex", "error", err)
 				continue

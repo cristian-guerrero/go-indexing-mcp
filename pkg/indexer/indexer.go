@@ -77,7 +77,14 @@ func (idx *Indexer) IndexAll() error {
 	}
 
 	var totalChunks int
-	for _, fi := range files {
+	var indexedFiles int
+	for i, fi := range files {
+		// Skip files already in the index with matching hash (resume support)
+		if idx.Storage.IsFileIndexed(fi.Path, fi.Hash) {
+			slog.Debug("skipping already indexed file", "file", fi.RelPath)
+			continue
+		}
+
 		chunks, ok := chunksMap[fi.Path]
 		if !ok || len(chunks) == 0 {
 			continue
@@ -93,22 +100,37 @@ func (idx *Indexer) IndexAll() error {
 		}
 
 		totalChunks += len(chunks)
+		indexedFiles++
 		slog.Debug("indexed file", "file", fi.RelPath, "chunks", len(chunks))
+
+		// Save progress periodically so partial index survives shutdown
+		if i > 0 && i%10 == 0 {
+			if err := idx.Storage.Save(); err != nil {
+				slog.Warn("periodic save", "error", err)
+			}
+		}
 	}
 
+	// Update stats
 	idx.mu.Lock()
 	idx.Stats.TotalChunks = totalChunks
 	idx.Stats.TotalFiles = len(files)
 	idx.Stats.LastIndexed = "just now"
 	idx.mu.Unlock()
 
-	headSHA := idx.Walker.GetHeadSHA()
-	if headSHA != "" {
-		idx.Storage.SetCommitSHA(headSHA)
-		slog.Debug("saved indexed commit", "sha", headSHA)
+	// Final save with commit SHA
+	if indexedFiles > 0 {
+		headSHA := idx.Walker.GetHeadSHA()
+		if headSHA != "" {
+			idx.Storage.SetCommitSHA(headSHA)
+		}
+		if err := idx.Storage.Save(); err != nil {
+			slog.Warn("final save", "error", err)
+		}
+		slog.Info("index complete", "files", indexedFiles, "chunks", totalChunks)
+	} else {
+		slog.Info("all files already up to date, nothing to index")
 	}
-
-	slog.Info("index complete", "files", len(files), "chunks", totalChunks)
 	return nil
 }
 

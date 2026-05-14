@@ -86,7 +86,7 @@ Or via a run script (created during auto-setup):
 | Tool | Description | Parameters |
 |---|---|---|---|
 | `search_code` | BM25 + vector similarity via RRF. Best for intent-based queries ("authentication flow"). Auto-indexes if needed | `query` (req), `path_filter`, `limit` |
-| `grep_code` | Case-insensitive substring match on cached chunks. Best for exact symbols ("func validate") or regex patterns. Auto-indexes if empty | `query` (req), `path_filter`, `limit` |
+| `grep_code` | Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) are boosted 2x. Supports glob path filters. Auto-indexes if empty | `query` (req), `path_filter`, `lang`, `case_sensitive`, `word_boundary`, `limit` |
 
 ### Search modes
 

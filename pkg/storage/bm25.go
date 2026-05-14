@@ -82,6 +82,38 @@ func (h *topK[T]) siftDown(i int) {
 	h.heap[i] = item
 }
 
+type GrepOptions struct {
+	Query         string
+	Limit         int
+	CaseSensitive bool
+	WholeWord     bool
+	Language      string
+}
+
+type GrepMatch struct {
+	Line    int    `json:"line"`
+	Content string `json:"content"`
+}
+
+type GrepResult struct {
+	ID        string      `json:"id"`
+	FilePath  string      `json:"file_path"`
+	RelPath   string      `json:"rel_path"`
+	Language  string      `json:"language"`
+	StartLine int         `json:"start_line"`
+	EndLine   int         `json:"end_line"`
+	Content   string      `json:"content"`
+	Score     float64     `json:"score"`
+	Matches   []GrepMatch `json:"matches,omitempty"`
+}
+
+var definitionKeywords = []string{
+	"func ", "function ", "def ", "class ", "interface ", "struct ",
+	"type ", "var ", "const ", "let ", "var ", "pub fn ", "async fn ",
+	"impl ", "trait ", "enum ", "module ", "export ", "public ",
+	"private ", "protected ", "static ",
+}
+
 type posting struct {
 	DocID int
 	Freq  int
@@ -183,28 +215,47 @@ func (s *Storage) ensureBM25() {
 	s.bm25 = buildBM25Index(s.records)
 }
 
-func (s *Storage) SearchGrep(query string, limit int) ([]SearchResult, error) {
+func (s *Storage) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	limit := opts.Limit
 	if limit <= 0 {
 		limit = 25
+	}
+
+	query := opts.Query
+	if query == "" {
+		return nil, nil
+	}
+
+	flags := ""
+	if !opts.CaseSensitive {
+		flags = "(?i)"
+	}
+
+	pattern := query
+	if opts.WholeWord {
+		pattern = `\b` + query + `\b`
 	}
 
 	var (
 		re  *regexp.Regexp
 		err error
 	)
-	if hasRegexChars(query) {
-		re, err = regexp.Compile("(?i)" + query)
+	if hasRegexChars(query) || opts.WholeWord {
+		re, err = regexp.Compile(flags + pattern)
 		if err != nil {
 			re = nil
 		}
 	}
 
+	langFilter := strings.ToLower(opts.Language)
+
 	type scored struct {
-		idx   int
-		score float64
+		idx     int
+		score   float64
+		matches []GrepMatch
 	}
 
 	tk := newTopK(limit, func(a, b scored) bool {
@@ -212,24 +263,59 @@ func (s *Storage) SearchGrep(query string, limit int) ([]SearchResult, error) {
 	})
 
 	for i, rec := range s.records {
+		if langFilter != "" && !strings.EqualFold(rec.Language, langFilter) {
+			continue
+		}
+
+		lines := strings.Split(rec.Content, "\n")
+		var matchLines []GrepMatch
 		var cnt int
-		if re != nil {
-			matches := re.FindAllString(rec.Content, -1)
-			cnt = len(matches)
-		} else {
-			cnt = strings.Count(strings.ToLower(rec.Content), strings.ToLower(query))
+
+		for lineIdx, line := range lines {
+			var lineCnt int
+			if re != nil {
+				lineCnt = len(re.FindAllString(line, -1))
+			} else {
+				if opts.CaseSensitive {
+					lineCnt = strings.Count(line, query)
+				} else {
+					lineCnt = strings.Count(strings.ToLower(line), strings.ToLower(query))
+				}
+			}
+			if lineCnt > 0 {
+				cnt += lineCnt
+				matchLines = append(matchLines, GrepMatch{
+					Line:    rec.StartLine + lineIdx,
+					Content: strings.TrimRight(line, " \t\r"),
+				})
+			}
 		}
-		if cnt > 0 {
-			tk.Push(scored{i, float64(cnt)})
+
+		if cnt == 0 {
+			continue
 		}
+
+		score := float64(cnt)
+
+		for _, m := range matchLines {
+			lower := strings.ToLower(m.Content)
+			for _, kw := range definitionKeywords {
+				if strings.HasPrefix(strings.TrimLeft(lower, " \t"), kw) {
+					score *= 2.0
+					break
+				}
+			}
+		}
+
+		tk.Push(scored{idx: i, score: score, matches: matchLines})
 	}
 
 	results := tk.Result()
 
-	out := make([]SearchResult, len(results))
+	out := make([]GrepResult, len(results))
 	for i, r := range results {
 		rec := s.records[r.idx]
-		out[i] = SearchResult{
+		out[i] = GrepResult{
 			ID:        rec.ID,
 			FilePath:  rec.FilePath,
 			RelPath:   rec.RelPath,
@@ -238,6 +324,7 @@ func (s *Storage) SearchGrep(query string, limit int) ([]SearchResult, error) {
 			EndLine:   rec.EndLine,
 			Content:   rec.Content,
 			Score:     r.score,
+			Matches:   r.matches,
 		}
 	}
 

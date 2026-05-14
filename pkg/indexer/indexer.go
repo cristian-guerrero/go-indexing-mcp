@@ -258,11 +258,20 @@ func (idx *Indexer) Search(query string, pathFilter string, limit int, mode stri
 
 	switch mode {
 	case "grep":
-		results, err := idx.Storage.SearchGrep(query, limit)
+		results, err := idx.Storage.SearchGrep(storage.GrepOptions{Query: query, Limit: limit})
 		if err != nil {
 			return nil, fmt.Errorf("grep search: %w", err)
 		}
-		return idx.filterByPath(results, pathFilter), nil
+		filtered := idx.filterGrepByPath(results, pathFilter)
+		out := make([]storage.SearchResult, len(filtered))
+		for i, r := range filtered {
+			out[i] = storage.SearchResult{
+				ID: r.ID, FilePath: r.FilePath, RelPath: r.RelPath,
+				Language: r.Language, StartLine: r.StartLine, EndLine: r.EndLine,
+				Content: r.Content, Score: r.Score,
+			}
+		}
+		return out, nil
 
 	default:
 		queryVec, err := idx.Embedder.EmbedQuery(query)
@@ -275,6 +284,16 @@ func (idx *Indexer) Search(query string, pathFilter string, limit int, mode stri
 		}
 		return idx.filterByPath(results, pathFilter), nil
 	}
+}
+
+func (idx *Indexer) SearchGrep(opts storage.GrepOptions, pathFilter string) ([]storage.GrepResult, error) {
+	idx.PruneStaleEntries()
+
+	results, err := idx.Storage.SearchGrep(opts)
+	if err != nil {
+		return nil, fmt.Errorf("grep search: %w", err)
+	}
+	return idx.filterGrepByPath(results, pathFilter), nil
 }
 
 func (idx *Indexer) filterByPath(results []storage.SearchResult, pathFilter string) []storage.SearchResult {
@@ -290,11 +309,62 @@ func (idx *Indexer) filterByPath(results []storage.SearchResult, pathFilter stri
 	return filtered
 }
 
+func (idx *Indexer) filterGrepByPath(results []storage.GrepResult, pathFilter string) []storage.GrepResult {
+	if pathFilter == "" {
+		return results
+	}
+	var filtered []storage.GrepResult
+	for _, r := range results {
+		if matchesPath(r.RelPath, pathFilter) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
 func matchesPath(relPath, filter string) bool {
 	relPath = filepath.ToSlash(relPath)
 	filter = filepath.ToSlash(filter)
+
+	if hasGlobChars(filter) {
+		match, _ := filepath.Match(filter, relPath)
+		if match {
+			return true
+		}
+		if !strings.Contains(filter, "/") {
+			base := filepath.Base(relPath)
+			match, _ := filepath.Match(filter, base)
+			return match
+		}
+		if strings.HasPrefix(filter, "**/") {
+			suffix := filter[3:]
+			match, _ := filepath.Match(suffix, relPath)
+			if match {
+				return true
+			}
+			for i := 0; i < len(relPath); i++ {
+				if relPath[i] == '/' {
+					match, _ := filepath.Match(suffix, relPath[i+1:])
+					if match {
+						return true
+					}
+				}
+			}
+		}
+		return false
+	}
+
 	if len(relPath) < len(filter) {
 		return false
 	}
 	return strings.EqualFold(relPath[:len(filter)], filter)
+}
+
+func hasGlobChars(s string) bool {
+	for _, r := range s {
+		if r == '*' || r == '?' || r == '[' {
+			return true
+		}
+	}
+	return false
 }

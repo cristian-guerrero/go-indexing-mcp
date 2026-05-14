@@ -469,3 +469,187 @@ func itoa(n int) string {
 	}
 	return string(buf[i:])
 }
+
+func TestSearchGrep_BasicLiteral(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.gob")
+	s, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	chunks := []chunker.Chunk{
+		{ID: "c1", FilePath: "/p/main.go", RelPath: "main.go", Language: "go", StartLine: 1, EndLine: 5, Content: "func validate() error {\n\treturn nil\n}", FileHash: "h1"},
+		{ID: "c2", FilePath: "/p/util.go", RelPath: "util.go", Language: "go", StartLine: 1, EndLine: 3, Content: "func helper() {\n\tvalidate()\n}", FileHash: "h2"},
+	}
+	s.UpsertChunks(chunks, makeEmbeddings(chunks))
+
+	results, err := s.SearchGrep(GrepOptions{Query: "validate", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Matches == nil {
+		t.Error("expected matches to be populated")
+	}
+}
+
+func TestSearchGrep_LanguageFilter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.gob")
+	s, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	chunks := []chunker.Chunk{
+		{ID: "c1", FilePath: "/p/main.go", RelPath: "main.go", Language: "go", StartLine: 1, EndLine: 3, Content: "func main() {}", FileHash: "h1"},
+		{ID: "c2", FilePath: "/p/app.py", RelPath: "app.py", Language: "python", StartLine: 1, EndLine: 3, Content: "def main(): pass", FileHash: "h2"},
+	}
+	s.UpsertChunks(chunks, makeEmbeddings(chunks))
+
+	results, err := s.SearchGrep(GrepOptions{Query: "main", Limit: 10, Language: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result (go only), got %d", len(results))
+	}
+	if results[0].Language != "go" {
+		t.Errorf("expected go, got %s", results[0].Language)
+	}
+}
+
+func TestSearchGrep_CaseSensitive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.gob")
+	s, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	chunks := []chunker.Chunk{
+		{ID: "c1", FilePath: "/p/a.go", RelPath: "a.go", Language: "go", StartLine: 1, EndLine: 3, Content: "func Error() {}", FileHash: "h1"},
+		{ID: "c2", FilePath: "/p/b.go", RelPath: "b.go", Language: "go", StartLine: 1, EndLine: 3, Content: "func error() {}", FileHash: "h2"},
+	}
+	s.UpsertChunks(chunks, makeEmbeddings(chunks))
+
+	results, err := s.SearchGrep(GrepOptions{Query: "Error", Limit: 10, CaseSensitive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result (case-sensitive), got %d", len(results))
+	}
+	if results[0].RelPath != "a.go" {
+		t.Errorf("expected a.go, got %s", results[0].RelPath)
+	}
+}
+
+func TestSearchGrep_WholeWord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.gob")
+	s, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	chunks := []chunker.Chunk{
+		{ID: "c1", FilePath: "/p/a.go", RelPath: "a.go", Language: "go", StartLine: 1, EndLine: 3, Content: "func get() {}", FileHash: "h1"},
+		{ID: "c2", FilePath: "/p/b.go", RelPath: "b.go", Language: "go", StartLine: 1, EndLine: 3, Content: "func getter() {}", FileHash: "h2"},
+	}
+	s.UpsertChunks(chunks, makeEmbeddings(chunks))
+
+	results, err := s.SearchGrep(GrepOptions{Query: "get", Limit: 10, WholeWord: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result (whole word), got %d", len(results))
+	}
+	if results[0].RelPath != "a.go" {
+		t.Errorf("expected a.go, got %s", results[0].RelPath)
+	}
+}
+
+func TestSearchGrep_DefinitionBoost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.gob")
+	s, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	chunks := []chunker.Chunk{
+		{ID: "c1", FilePath: "/p/a.go", RelPath: "a.go", Language: "go", StartLine: 1, EndLine: 3, Content: "// validate checks input\nfmt.Println(\"validate\")", FileHash: "h1"},
+		{ID: "c2", FilePath: "/p/b.go", RelPath: "b.go", Language: "go", StartLine: 1, EndLine: 3, Content: "func validate() error {", FileHash: "h2"},
+	}
+	s.UpsertChunks(chunks, makeEmbeddings(chunks))
+
+	results, err := s.SearchGrep(GrepOptions{Query: "validate", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].RelPath != "b.go" {
+		t.Errorf("expected b.go (definition) first, got %s", results[0].RelPath)
+	}
+}
+
+func TestSearchGrep_LineMatches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.gob")
+	s, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	chunks := []chunker.Chunk{
+		{ID: "c1", FilePath: "/p/a.go", RelPath: "a.go", Language: "go", StartLine: 10, EndLine: 15, Content: "line one\nline two\nline three\nvalidate here\nline five", FileHash: "h1"},
+	}
+	s.UpsertChunks(chunks, makeEmbeddings(chunks))
+
+	results, err := s.SearchGrep(GrepOptions{Query: "validate", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if len(results[0].Matches) != 1 {
+		t.Fatalf("expected 1 match line, got %d", len(results[0].Matches))
+	}
+	if results[0].Matches[0].Line != 13 {
+		t.Errorf("expected match on line 13, got %d", results[0].Matches[0].Line)
+	}
+}
+
+func TestSearchGrep_Regex(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.gob")
+	s, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	chunks := []chunker.Chunk{
+		{ID: "c1", FilePath: "/p/a.go", RelPath: "a.go", Language: "go", StartLine: 1, EndLine: 5, Content: "type FileDownloader struct {\n\turl string\n}", FileHash: "h1"},
+		{ID: "c2", FilePath: "/p/b.go", RelPath: "b.go", Language: "go", StartLine: 1, EndLine: 5, Content: "type Reader struct {\n\tbuf []byte\n}", FileHash: "h2"},
+	}
+	s.UpsertChunks(chunks, makeEmbeddings(chunks))
+
+	results, err := s.SearchGrep(GrepOptions{Query: "type.*Down", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].RelPath != "a.go" {
+		t.Errorf("expected a.go, got %s", results[0].RelPath)
+	}
+}

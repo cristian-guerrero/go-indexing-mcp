@@ -10,6 +10,7 @@ import (
 
 	"github.com/cristian/go-indexing-mcp/pkg/indexer"
 	"github.com/cristian/go-indexing-mcp/pkg/llama"
+	"github.com/cristian/go-indexing-mcp/pkg/storage"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -163,13 +164,22 @@ func (m *MCPServer) registerTools() {
 	)
 
 	grepTool := mcp.NewTool("grep_code",
-		mcp.WithDescription("Fast literal or regex substring search on cached code chunks. Best for exact symbols like 'func validate', 'DB_HOST', or regex patterns like 'type.*Downloader'. Returns up to 25 results ranked by match frequency within each chunk. Auto-indexes if the index is empty"),
+		mcp.WithDescription("Fast literal or regex substring search on cached code chunks. Best for exact symbols like 'func validate', 'DB_HOST', or regex patterns like 'type.*Downloader'. Returns results with exact line numbers and match locations ranked by frequency. Results on definition lines (func, type, class, interface) are boosted 2x. Auto-indexes if the index is empty"),
 		mcp.WithString("query",
 			mcp.Required(),
-			mcp.Description("Literal text or regex pattern to search for. Case-insensitive. Examples: 'func validate', 'DB_HOST', 'type.*Downloader'"),
+			mcp.Description("Literal text or regex pattern to search for. Case-insensitive by default. Examples: 'func validate', 'DB_HOST', 'type.*Downloader'"),
 		),
 		mcp.WithString("path_filter",
-			mcp.Description("Optional path prefix filter to narrow results to a specific directory, e.g. 'pkg/', 'pkg/llama/', 'main.go'"),
+			mcp.Description("Path filter — supports prefix ('pkg/'), exact file ('main.go'), or glob patterns ('*.go', '**/*_test.go', 'pkg/*.go')"),
+		),
+		mcp.WithString("lang",
+			mcp.Description("Filter by language: go, python, typescript, javascript, rust, java, etc."),
+		),
+		mcp.WithBoolean("case_sensitive",
+			mcp.Description("Case-sensitive matching (default: false)"),
+		),
+		mcp.WithBoolean("word_boundary",
+			mcp.Description("Match whole words only, e.g. 'get' won't match 'getter' (default: false)"),
 		),
 		mcp.WithNumber("limit",
 			mcp.Description("Maximum number of results to return (default: 25, max: 50)"),
@@ -369,6 +379,9 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 	args := req.GetArguments()
 	query, _ := args["query"].(string)
 	pathFilter, _ := args["path_filter"].(string)
+	lang, _ := args["lang"].(string)
+	caseSensitive, _ := args["case_sensitive"].(bool)
+	wordBoundary, _ := args["word_boundary"].(bool)
 
 	limit := 25
 	if l, ok := args["limit"].(float64); ok {
@@ -382,6 +395,9 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 	slog.Debug("tool called: grep_code",
 		"query", query,
 		"path_filter", pathFilter,
+		"lang", lang,
+		"case_sensitive", caseSensitive,
+		"word_boundary", wordBoundary,
 		"limit", limit,
 	)
 
@@ -415,7 +431,13 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 		}
 	}
 
-	results, err := m.indexer.Search(query, pathFilter, limit, "grep")
+	results, err := m.indexer.SearchGrep(storage.GrepOptions{
+		Query:         query,
+		Limit:         limit,
+		CaseSensitive: caseSensitive,
+		WholeWord:     wordBoundary,
+		Language:      lang,
+	}, pathFilter)
 	if err != nil {
 		slog.Error("grep search failed", "error", err)
 		return mcp.NewToolResultError(fmt.Sprintf("grep search failed: %s", err)), nil

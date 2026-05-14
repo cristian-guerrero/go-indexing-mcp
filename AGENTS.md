@@ -53,13 +53,13 @@
 | Tool | Description | Requires llama.cpp |
 |---|---|---|
 | `search_code(query, path_filter?, limit?)` | BM25 + vector similarity via RRF. Best for intent-based queries | Yes |
-| `grep_code(query, path_filter?, limit?)` | Case-insensitive substring match on cached chunks. Best for exact symbols | No |
+| `grep_code(query, path_filter?, lang?, case_sensitive?, word_boundary?, limit?)` | Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) are boosted 2x. Supports glob path filters | No |
 
 ### Implementation
 
 - `pkg/storage/bm25.go`: `tokenize()`, `buildBM25Index()`, `bm25Index.score()`, `SearchGrep()`, `SearchHybrid()`, `searchLocked()`, RRF fusion, `topK[T]` bounded min-heap for O(n log k) top-k selection
 - `BM25`: in-memory inverted index (`map[string][]posting`), k1=1.2, b=0.75
-- `grep_code`: `strings.Count` of lowercase substring on `rec.Content`, or regex if the query contains regex metacharacters
+- `grep_code`: line-level matching with `GrepOptions` (case_sensitive, whole_word, language filter). Results include `Matches` with exact line numbers. Definition lines (`func`, `type`, `class`, `interface`, etc.) get a 2x score boost. Supports glob path patterns (`*.go`, `**/*_test.go`)
 - `search_code`: runs BM25 + vector search separately, fuses with Reciprocal Rank Fusion
 - Vector similarity: stored vectors are L2-normalized; query vectors normalized at search time; dot product via `simd.Dot()` gives cosine similarity with half the math
 - BM25 index invalidated (`s.bm25 = nil`) on UpsertChunks, DeleteChunksByPath, rebuildIndex

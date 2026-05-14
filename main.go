@@ -28,6 +28,9 @@ func main() {
 	grepMode := flag.String("grep", "", "Search using grep mode (fast, no llama needed)")
 	modeFlag := flag.String("mode", "hybrid", "Search mode: 'grep' or 'hybrid' (default: hybrid, used with --query)")
 	limitFlag := flag.Int("limit", 25, "Max results (used with --query or --grep, default: 25, max: 50)")
+	grepLang := flag.String("lang", "", "Filter by language (used with --grep, e.g. 'go', 'python', 'typescript')")
+	grepCaseSensitive := flag.Bool("case-sensitive", false, "Case-sensitive matching (used with --grep)")
+	grepWholeWord := flag.Bool("word", false, "Match whole words only (used with --grep)")
 	listFiles := flag.Bool("list-files", false, "List all indexed files")
 	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp (skip PATH, test GPU detection)")
 	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', or 'kilocode'")
@@ -73,7 +76,7 @@ func main() {
 
 	if *grepMode != "" {
 		setupConsoleLogger()
-		os.Exit(cli.RunQuery(*grepMode, "grep", *limitFlag))
+		os.Exit(cli.RunQueryGrep(*grepMode, *limitFlag, *grepLang, *grepCaseSensitive, *grepWholeWord))
 	}
 
 	if *queryMode != "" {

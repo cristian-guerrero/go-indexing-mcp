@@ -127,13 +127,7 @@ func main() {
 	w := walker.New(cfg.Indexing.RootPath, cfg.Indexing.IgnorePatterns)
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
-	dbPath := cfg.Storage.Path
-	if !filepath.IsAbs(dbPath) {
-		abs, err := filepath.Abs(dbPath)
-		if err == nil {
-			dbPath = abs
-		}
-	}
+	dbPath := config.StoragePath(cfg.Indexing.RootPath)
 
 	st, err := storage.New(dbPath, cfg.Embedding.Dimensions)
 	if err != nil {

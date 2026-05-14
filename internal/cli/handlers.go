@@ -79,13 +79,7 @@ func RunGenerate() int {
 
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
-	dbPath := cfg.Storage.Path
-	if !filepath.IsAbs(dbPath) {
-		abs, err := filepath.Abs(dbPath)
-		if err == nil {
-			dbPath = abs
-		}
-	}
+	dbPath := config.StoragePath(rootPath)
 
 	st, err := storage.New(dbPath, cfg.Embedding.Dimensions)
 	if err != nil {
@@ -194,13 +188,7 @@ func RunQuery(query string, mode string, limit int) int {
 	}
 
 	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
-	dbPath := cfg.Storage.Path
-	if !filepath.IsAbs(dbPath) {
-		abs, err := filepath.Abs(dbPath)
-		if err == nil {
-			dbPath = abs
-		}
-	}
+	dbPath := config.StoragePath(rootPath)
 
 	st, err := storage.New(dbPath, cfg.Embedding.Dimensions)
 	if err != nil {

@@ -178,7 +178,7 @@ go-indexing-mcp --free
 
 - **Small files**: sliding window chunking
 - **Large files**: structural splitter detects functions/classes/sections via regex + brace/indent counting per language
-- **Storage**: gob-serialized vectors with BM25 inverted index, isolated per git branch
+- **Storage**: gob-serialized vectors with BM25 inverted index, isolated per git branch. Stored under `~/.go-mcp/indexing/` with Pi-format encoded project paths.
 
 ### Languages
 
@@ -192,4 +192,8 @@ Uses [jina-embeddings-v2-base-code](https://huggingface.co/jinaai/jina-embedding
 
 ### Branch-isolated indexes
 
-Each git branch has its own `vectors-{branch}.gob` file. Switching branches and searching loads the correct index instantly — no waiting.
+Each git branch has its own index file (e.g. `vectors-{worktree}-{branch}.gob`). Switching branches and searching loads the correct index instantly — no waiting.
+
+Index files are stored under `~/.go-mcp/indexing/vectors/{encoded-project-path}/`, where `{encoded-project-path}` follows the Pi agent folder format:
+- Windows: `C:\project\apps\my-app` → `--C--project-apps-my-app--`
+- Unix: `/home/user/project` → `---home-user-project--`

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -33,9 +34,7 @@ type IndexingConfig struct {
 	WatchIntervalSecs  int      `json:"watch_interval_secs"`
 }
 
-type StorageConfig struct {
-	Path string `json:"path"`
-}
+type StorageConfig struct{}
 
 type EmbeddingConfig struct {
 	Model      string `json:"model"`
@@ -62,9 +61,6 @@ func DefaultConfig() *Config {
 			WatchEnabled:       true,
 			WatchIntervalSecs:  60,
 		},
-		Storage: StorageConfig{
-			Path: filepath.Join(".go-mcp", "vectors.gob"),
-		},
 		Embedding: EmbeddingConfig{
 			Model:      "jina-embeddings-v2-base-code-Q5_K_M",
 			Dimensions: 768,
@@ -76,6 +72,27 @@ func DefaultConfig() *Config {
 func McpDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".go-mcp", "indexing")
+}
+
+// EncodeProjectPath encodes an absolute path into a filesystem-safe folder name.
+// Windows: C:\project\apps\go-indexing-mcp → --C--project-apps-go-indexing-mcp--
+// Unix:    /home/user/project              → ---home-user-project--
+func EncodeProjectPath(absPath string) string {
+	s := strings.ReplaceAll(absPath, ":", "-")
+	s = strings.ReplaceAll(s, "\\", "-")
+	s = strings.ReplaceAll(s, "/", "-")
+	return "--" + s + "--"
+}
+
+// StoragePath returns the full path to the GOB index file for the given project root.
+// Stored under ~/.go-mcp/indexing/vectors/{encoded-project-root}/vectors.gob
+func StoragePath(rootPath string) string {
+	absRoot, err := filepath.Abs(rootPath)
+	if err != nil {
+		absRoot = rootPath
+	}
+	encoded := EncodeProjectPath(absRoot)
+	return filepath.Join(McpDir(), "vectors", encoded, "vectors.gob")
 }
 
 func McpBinDir() string {
@@ -163,10 +180,6 @@ func fillMissing(cfg *Config) {
 		cfg.Indexing.WatchEnabled = true
 	}
 
-	if cfg.Storage.Path == "" {
-		cfg.Storage.Path = def.Storage.Path
-	}
-
 	if cfg.Embedding.Dimensions == 0 {
 		cfg.Embedding.Dimensions = def.Embedding.Dimensions
 	}
@@ -193,5 +206,3 @@ func Save(cfg *Config) error {
 	}
 	return nil
 }
-
-

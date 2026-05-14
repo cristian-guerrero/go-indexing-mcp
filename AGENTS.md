@@ -22,7 +22,7 @@
 
 - `main.go` — flag parsing + routing to handlers
 - `internal/cli/handlers.go` — `RunGenerate()`, `RunQuery()`, `RunConfigure()` + `configurePi()`, `configureOpenCode()`, `configureKiloCode()`
-- `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`. `McpDir()`, `LlamaCppDir()`, `McpBinDir()`
+- `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`. `McpDir()`, `LlamaCppDir()`, `McpBinDir()`, `EncodeProjectPath()`, `StoragePath()`
 - `pkg/selfsetup/` — auto-setup on first run
 - `pkg/llama/` — manager: download (auto-detects GPU → CUDA/Vulkan/CPU), llama-server subprocess, health check, `IsRunning()`, `StartedProcess()`
 - `pkg/ignore/` — .gitignore filter + default patterns (nested levels)
@@ -66,8 +66,9 @@
 
 ## Branch-isolated index
 
-- Files: `vectors.gob` (main/default) or `vectors-{branch}.gob`
-- `Storage.SwitchBranch(branch)` persists and loads automatically
+- Files: `vectors.gob` (main/default) or `vectors-{worktree}-{branch}.gob`
+- Stored under `~/.go-mcp/indexing/vectors/{encoded-project-path}/` (e.g. `--C--project-apps-go-indexing-mcp--/`)
+- `Storage.SwitchBranch(branch, worktree)` persists and loads automatically
 - `CommitSHA` saved on each indexation for precise diff
 
 ## Chunking

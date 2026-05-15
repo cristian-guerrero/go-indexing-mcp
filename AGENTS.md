@@ -22,7 +22,7 @@
 
 - `main.go` — flag parsing + routing to handlers
 - `internal/cli/handlers.go` — `RunGenerate()`, `RunQuery()`, `RunConfigure()` + `configurePi()`, `configureOpenCode()`, `configureKiloCode()`
-- `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`. `McpDir()`, `LlamaCppDir()`, `McpBinDir()`, `EncodeProjectPath()`, `StoragePath()`
+- `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`. `McpDir()`, `ModelsDir()`, `LlamaCppDir()`, `McpBinDir()`, `EncodeProjectPath()`, `StoragePath()`
 - `pkg/selfsetup/` — auto-setup on first run
 - `pkg/llama/` — manager: download (auto-detects GPU → CUDA/Vulkan/CPU), llama-server subprocess, health check, `IsRunning()`, `StartedProcess()`
 - `pkg/ignore/` — .gitignore filter + default patterns (nested levels)

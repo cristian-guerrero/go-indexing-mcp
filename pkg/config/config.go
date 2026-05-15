@@ -43,11 +43,10 @@ type EmbeddingConfig struct {
 }
 
 func DefaultConfig() *Config {
-	mcpDir := McpDir()
 	return &Config{
 		Llama: LlamaConfig{
 			BinPath:   "",
-			ModelPath: filepath.Join(mcpDir, "models", "jina-embeddings-v2-base-code-Q5_K_M.gguf"),
+			ModelPath: filepath.Join(ModelsDir(), "jina-embeddings-v2-base-code-Q5_K_M.gguf"),
 			Port:      56000,
 			ExtraArgs: []string{},
 		},
@@ -72,6 +71,11 @@ func DefaultConfig() *Config {
 func McpDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".go-mcp", "indexing")
+}
+
+func ModelsDir() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".go-mcp", "models", "embeddings")
 }
 
 // EncodeProjectPath encodes an absolute path into a filesystem-safe folder name.

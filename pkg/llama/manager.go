@@ -206,7 +206,7 @@ func (m *Manager) FindOrDownloadModel() (string, error) {
 		}
 	}
 
-	modelsDir := filepath.Join(config.McpDir(), "models")
+	modelsDir := config.ModelsDir()
 	if err := os.MkdirAll(modelsDir, 0755); err != nil {
 		return "", fmt.Errorf("create models dir: %w", err)
 	}

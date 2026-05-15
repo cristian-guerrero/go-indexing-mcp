@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -352,24 +353,24 @@ func matchesPath(relPath, filter string) bool {
 	filter = filepath.ToSlash(filter)
 
 	if hasGlobChars(filter) {
-		match, _ := filepath.Match(filter, relPath)
+		match, _ := path.Match(filter, relPath)
 		if match {
 			return true
 		}
 		if !strings.Contains(filter, "/") {
 			base := filepath.Base(relPath)
-			match, _ := filepath.Match(filter, base)
+			match, _ := path.Match(filter, base)
 			return match
 		}
 		if strings.HasPrefix(filter, "**/") {
 			suffix := filter[3:]
-			match, _ := filepath.Match(suffix, relPath)
+			match, _ := path.Match(suffix, relPath)
 			if match {
 				return true
 			}
 			for i := 0; i < len(relPath); i++ {
 				if relPath[i] == '/' {
-					match, _ := filepath.Match(suffix, relPath[i+1:])
+					match, _ := path.Match(suffix, relPath[i+1:])
 					if match {
 						return true
 					}

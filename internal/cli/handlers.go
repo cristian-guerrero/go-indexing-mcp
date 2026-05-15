@@ -1,4 +1,4 @@
-﻿// Package cli implements CLI-mode handlers for --generate, --query, --grep,
+// Package cli implements CLI-mode handlers for --generate, --query, --grep,
 // --list-files, and --configure flags. Each function returns an OS exit code.
 package cli
 

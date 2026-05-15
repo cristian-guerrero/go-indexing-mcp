@@ -2,6 +2,7 @@ package walker
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -203,5 +204,192 @@ func TestWalk_EmptyDirectory(t *testing.T) {
 	}
 	if len(files) != 0 {
 		t.Errorf("expected 0 files in empty dir, got %d", len(files))
+	}
+}
+
+func TestNew_WithExtraIgnores(t *testing.T) {
+	dir := t.TempDir()
+	w := New(dir, []string{"*.log"})
+	if w == nil {
+		t.Fatal("walker should not be nil")
+	}
+	if w.IgnoreMatcher == nil {
+		t.Fatal("IgnoreMatcher should not be nil")
+	}
+}
+
+func TestGetHeadSHA_NoGitRepo(t *testing.T) {
+	dir := t.TempDir()
+	w := New(dir, nil)
+	sha := w.GetHeadSHA()
+	if sha != "" {
+		t.Errorf("expected empty SHA for non-git dir, got %q", sha)
+	}
+}
+
+func TestGetBranch_NoGitRepo(t *testing.T) {
+	dir := t.TempDir()
+	w := New(dir, nil)
+	branch := w.GetBranch()
+	if branch != "" {
+		t.Errorf("expected empty branch for non-git dir, got %q", branch)
+	}
+}
+
+func TestGetWorktreeName_NoGitRepo(t *testing.T) {
+	dir := t.TempDir()
+	w := New(dir, nil)
+	name := w.GetWorktreeName()
+	if name != "" {
+		t.Errorf("expected empty worktree for non-git dir, got %q", name)
+	}
+}
+
+func TestGetChangedFiles_FallbackWalk(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644)
+
+	w := New(dir, nil)
+	files, err := w.GetChangedFiles("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = files
+}
+
+func TestGitOps_InGitRepo(t *testing.T) {
+	dir := t.TempDir()
+
+	gitDir := filepath.Join(dir, ".git")
+	os.MkdirAll(gitDir, 0755)
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644)
+
+	if err := exec.Command("git", "-C", dir, "init", "-b", "main").Run(); err != nil {
+		t.Skip("git not available:", err)
+	}
+
+	exec.Command("git", "-C", dir, "config", "user.email", "test@test.com").Run()
+	exec.Command("git", "-C", dir, "config", "user.name", "Test").Run()
+	exec.Command("git", "-C", dir, "add", ".").Run()
+	exec.Command("git", "-C", dir, "commit", "-m", "initial").Run()
+
+	w := New(dir, nil)
+
+	t.Run("GetHeadSHA", func(t *testing.T) {
+		sha := w.GetHeadSHA()
+		if len(sha) != 40 {
+			t.Errorf("expected 40-char SHA, got %q (len=%d)", sha, len(sha))
+		}
+	})
+
+	t.Run("GetBranch", func(t *testing.T) {
+		branch := w.GetBranch()
+		if branch != "main" {
+			t.Errorf("expected 'main', got %q", branch)
+		}
+	})
+
+	t.Run("GetChangedFiles_empty", func(t *testing.T) {
+		files, err := w.GetChangedFiles("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(files) != 0 {
+			t.Errorf("expected 0 changed files after commit, got %d", len(files))
+		}
+	})
+}
+
+func TestGetChangedFiles_WithChanges(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := exec.Command("git", "-C", dir, "init", "-b", "main").Run(); err != nil {
+		t.Skip("git not available:", err)
+	}
+
+	exec.Command("git", "-C", dir, "config", "user.email", "test@test.com").Run()
+	exec.Command("git", "-C", dir, "config", "user.name", "Test").Run()
+
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644)
+	exec.Command("git", "-C", dir, "add", ".").Run()
+	exec.Command("git", "-C", dir, "commit", "-m", "initial").Run()
+
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0644)
+
+	w := New(dir, nil)
+	files, err := w.GetChangedFiles("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, f := range files {
+		if f.RelPath == "main.go" && !f.Deleted {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected main.go in changed files, got %v", files)
+	}
+}
+
+func TestGetChangedFiles_DeletedFile(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := exec.Command("git", "-C", dir, "init", "-b", "main").Run(); err != nil {
+		t.Skip("git not available:", err)
+	}
+
+	exec.Command("git", "-C", dir, "config", "user.email", "test@test.com").Run()
+	exec.Command("git", "-C", dir, "config", "user.name", "Test").Run()
+
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644)
+	exec.Command("git", "-C", dir, "add", ".").Run()
+	exec.Command("git", "-C", dir, "commit", "-m", "initial").Run()
+
+	os.Remove(filepath.Join(dir, "main.go"))
+
+	w := New(dir, nil)
+	files, err := w.GetChangedFiles("")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	found := false
+	for _, f := range files {
+		if f.RelPath == "main.go" && f.Deleted {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected deleted main.go in changed files, got %v", files)
+	}
+}
+
+func TestDetectLanguage_AdditionalCases(t *testing.T) {
+	tests := []struct {
+		path string
+		lang string
+	}{
+		{"file.jsx", "javascript"},
+		{"file.tsx", "javascript"},
+		{"file.ts", "javascript"},
+		{"file.cc", "cpp"},
+		{"file.cxx", "cpp"},
+		{"file.hpp", "cpp"},
+		{"file.kts", "kotlin"},
+		{"file.bash", "bash"},
+		{"file.scss", "css"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := detectLanguage(tt.path)
+			if got != tt.lang {
+				t.Errorf("detectLanguage(%q) = %q, want %q", tt.path, got, tt.lang)
+			}
+		})
 	}
 }

@@ -1,3 +1,5 @@
+// Package embedder provides an HTTP client for llama.cpp's /v1/embeddings endpoint.
+// It batches chunk embeddings, reuses HTTP connections, and pools encoding buffers for efficiency.
 package embedder
 
 import (
@@ -13,12 +15,14 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
 )
 
+// bufferPool reuses bytes.Buffer instances for JSON encoding to reduce GC pressure.
 var bufferPool = sync.Pool{
 	New: func() any {
 		return new(bytes.Buffer)
 	},
 }
 
+// Embedder sends text chunks to the llama.cpp embedding API and returns float64 vectors.
 type Embedder struct {
 	BaseURL    string
 	BatchSize  int
@@ -26,6 +30,8 @@ type Embedder struct {
 	client     *http.Client
 }
 
+// New creates an Embedder pointing at the given llama.cpp base URL,
+// with the specified vector dimensions and batch size for concurrent embedding.
 func New(baseURL string, dimensions, batchSize int) *Embedder {
 	return &Embedder{
 		BaseURL:    baseURL,
@@ -42,17 +48,21 @@ func New(baseURL string, dimensions, batchSize int) *Embedder {
 	}
 }
 
+// embedRequest is the JSON body for the OpenAI-compatible /v1/embeddings endpoint.
 type embedRequest struct {
 	Input []string `json:"input"`
 	Model string   `json:"model,omitempty"`
 }
 
+// embedResponse maps the OpenAI-compatible embedding API response.
 type embedResponse struct {
 	Data []struct {
 		Embedding []float64 `json:"embedding"`
 	} `json:"data"`
 }
 
+// EmbedChunks sends all chunks to the embedding API in batches, returning
+// a map of chunk ID → embedding vector. Truncates input longer than maxInputLength.
 func (e *Embedder) EmbedChunks(chunks []chunker.Chunk) (map[string][]float64, error) {
 	result := make(map[string][]float64, len(chunks))
 
@@ -81,8 +91,11 @@ func (e *Embedder) EmbedChunks(chunks []chunker.Chunk) (map[string][]float64, er
 	return result, nil
 }
 
+// maxInputLength truncates embedding inputs to prevent context-length errors from llama.cpp.
 const maxInputLength = 1200
 
+// embed sends a batch of texts to the /v1/embeddings endpoint.
+// Handles JSON encoding via buffer pool and connection pooling via http.Transport.
 func (e *Embedder) embed(texts []string) ([][]float64, error) {
 	for i, t := range texts {
 		if len(t) > maxInputLength {
@@ -133,6 +146,8 @@ func (e *Embedder) embed(texts []string) ([][]float64, error) {
 	return result, nil
 }
 
+// EmbedQuery embeds a single search query string and returns its vector.
+// The vector is not normalized here — normalization happens in storage.SearchHybrid.
 func (e *Embedder) EmbedQuery(query string) ([]float64, error) {
 	embeddings, err := e.embed([]string{query})
 	if err != nil {

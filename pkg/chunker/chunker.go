@@ -1,3 +1,6 @@
+// Package chunker splits source files into discrete chunks for embedding and indexing.
+// It uses a dual strategy: large files are split by structural blocks (functions, classes),
+// while small files or files without detectable structural blocks use a sliding window approach.
 package chunker
 
 import (
@@ -10,6 +13,8 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
+// Chunk represents a single text segment from a source file, tagged with metadata
+// for search retrieval: file path, line range, language, content hash, and a unique ID.
 type Chunk struct {
 	ID        string
 	FilePath  string
@@ -21,6 +26,7 @@ type Chunk struct {
 	FileHash  string
 }
 
+// Stats tracks how many files and chunks were produced by each splitting strategy.
 type Stats struct {
 	TreeSitterFiles int
 	SlidingWinFiles int
@@ -28,6 +34,7 @@ type Stats struct {
 	SlidingWinChunks int
 }
 
+// Chunker splits source files into chunks using structural blocks or sliding windows.
 type Chunker struct {
 	ChunkSize      int
 	ChunkOverlap   int
@@ -35,6 +42,8 @@ type Chunker struct {
 	stats          Stats
 }
 
+// New creates a Chunker with the given line-based chunk size and overlap.
+// If ChunkOverlap >= ChunkSize, it defaults to ChunkSize/4.
 func New(chunkSize, chunkOverlap int) *Chunker {
 	if chunkSize <= 0 {
 		chunkSize = 50
@@ -52,14 +61,18 @@ func New(chunkSize, chunkOverlap int) *Chunker {
 	}
 }
 
+// Stats returns cumulative chunking statistics since the last reset.
 func (c *Chunker) Stats() Stats {
 	return c.stats
 }
 
+// HasStructuralSplit returns true, indicating this chunker supports structural splitting.
 func (c *Chunker) HasStructuralSplit() bool {
 	return true
 }
 
+// ChunkFile splits a single file into chunks. Small files (<= ChunkSize lines) use
+// sliding window; larger files attempt structural splitting first, falling back to sliding window.
 func (c *Chunker) ChunkFile(fi walker.FileInfo) ([]Chunk, error) {
 	lines, err := readFileLines(fi.Path)
 	if err != nil {
@@ -83,6 +96,8 @@ func (c *Chunker) ChunkFile(fi walker.FileInfo) ([]Chunk, error) {
 	return c.structuralSplit(lines, blocks, fi), nil
 }
 
+// ChunkFiles processes a batch of files, splitting each into chunks.
+// Tracks statistics (structural vs sliding window) on the Chunker.
 func (c *Chunker) ChunkFiles(files []walker.FileInfo) (map[string][]Chunk, error) {
 	c.stats = Stats{}
 	results := make(map[string][]Chunk, len(files))
@@ -122,6 +137,7 @@ func (c *Chunker) ChunkFiles(files []walker.FileInfo) (map[string][]Chunk, error
 	return results, nil
 }
 
+// readFileLines reads a text file and returns its lines as a string slice.
 func readFileLines(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -140,6 +156,9 @@ func readFileLines(path string) ([]string, error) {
 	return lines, nil
 }
 
+// structuralSplit iterates through structural blocks, emitting each block as a chunk
+// (if it fits within ChunkSize) or splitting it further via sliding window.
+// Lines between blocks are chunked with sliding window as interstitial segments.
 func (c *Chunker) structuralSplit(lines []string, blocks []structural.Block, fi walker.FileInfo) []Chunk {
 	totalLines := len(lines)
 	var chunks []Chunk
@@ -194,6 +213,8 @@ func (c *Chunker) structuralSplit(lines []string, blocks []structural.Block, fi 
 	return chunks
 }
 
+// slidingWindow splits line range [start, end) into fixed-size chunks with overlap.
+// If the range fits within ChunkSize, a single chunk is emitted.
 func (c *Chunker) slidingWindow(lines []string, start, end int, fi walker.FileInfo) []Chunk {
 	if end-start <= c.ChunkSize {
 		rel := relPath(fi)
@@ -241,6 +262,7 @@ func (c *Chunker) slidingWindow(lines []string, start, end int, fi walker.FileIn
 	return chunks
 }
 
+// relPath returns RelPath if set, falling back to the absolute Path.
 func relPath(fi walker.FileInfo) string {
 	if fi.RelPath != "" {
 		return fi.RelPath
@@ -248,11 +270,14 @@ func relPath(fi walker.FileInfo) string {
 	return fi.Path
 }
 
+// chunkID builds a deterministic unique chunk identifier from file hash,
+// relative path, and line range. Format: hash:path:start-end.
 func chunkID(fileHash, relPath string, start, end int) string {
 	base := filepath.ToSlash(relPath)
 	return fileHash + ":" + base + ":" + itoa(start) + "-" + itoa(end)
 }
 
+// itoa converts an integer to its decimal string representation without allocation.
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

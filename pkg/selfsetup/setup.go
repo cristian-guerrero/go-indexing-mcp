@@ -1,3 +1,6 @@
+// Package selfsetup handles the first-run setup experience:
+// config creation, llama.cpp download, model download, binary self-copy,
+// PATH registration, and run script generation.
 package selfsetup
 
 import (
@@ -13,10 +16,13 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/llama"
 )
 
+// SetupUI tracks whether the setup is running interactively (terminal attached).
 type SetupUI struct {
 	Interactive bool
 }
 
+// Run performs the entire first-run setup: config, llama.cpp, model, binary copy,
+// PATH update, and run script creation. If not interactive, re-launches in a terminal.
 func Run() error {
 	ui := &SetupUI{
 		Interactive: isInteractive(),
@@ -86,11 +92,14 @@ func Run() error {
 	return nil
 }
 
+// isInteractive checks if stdout is a character device (terminal).
 func isInteractive() bool {
 	fileInfo, _ := os.Stdout.Stat()
 	return (fileInfo.Mode() & os.ModeCharDevice) != 0
 }
 
+// relaunchInTerminal re-executes the binary in a new terminal window
+// (cmd.exe on Windows, x-terminal-emulator on Linux, Terminal.app on macOS).
 func relaunchInTerminal() {
 	self, _ := os.Executable()
 
@@ -114,6 +123,7 @@ func relaunchInTerminal() {
 	cmd.Run()
 }
 
+// copySelf copies the running binary to ~/.go-mcp/indexing/bin/.
 func copySelf() error {
 	self, err := os.Executable()
 	if err != nil {
@@ -145,6 +155,8 @@ func copySelf() error {
 	return nil
 }
 
+// addToPATH appends ~/.go-mcp/indexing/bin/ to the system PATH
+// (persistently on Windows via SetEnvironmentVariable, in-process on Unix).
 func addToPATH() error {
 	binDir := config.McpBinDir()
 	pathEnv := os.Getenv("PATH")
@@ -171,12 +183,15 @@ func addToPATH() error {
 	return nil
 }
 
+// setWindowsPATH sets the user-level PATH environment variable persistently via PowerShell.
 func setWindowsPATH(newPath string) error {
 	cmd := exec.Command("powershell", "-Command",
 		fmt.Sprintf(`[Environment]::SetEnvironmentVariable("PATH", "%s", "User")`, strings.ReplaceAll(newPath, `"`, "`\"")))
 	return cmd.Run()
 }
 
+// createRunScript writes a run.sh (Unix) or run.bat (Windows) script at ~/.go-mcp/indexing/
+// that invokes the MCP server binary with --mcp flag, forwarding arguments.
 func createRunScript() error {
 	binName := "go-indexing-mcp"
 	if runtime.GOOS == "windows" {
@@ -200,6 +215,7 @@ exec "$(dirname "$0")/bin/%s" --mcp "$@"
 	return nil
 }
 
+// runScriptPath returns the path to the generated run script (run.bat on Windows, run.sh on Unix).
 func runScriptPath() string {
 	if runtime.GOOS == "windows" {
 		return filepath.Join(config.McpDir(), "run.bat")

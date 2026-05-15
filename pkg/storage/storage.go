@@ -1,3 +1,6 @@
+// Package storage provides persistent vector storage with gob serialization,
+// L2-normalized vectors (so cosine similarity = dot product), branch-isolated indices,
+// and BM25 inverted index for hybrid search. All vectors are normalized at store time.
 package storage
 
 import (
@@ -13,6 +16,7 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage/simd"
 )
 
+// ChunkRecord is a persisted chunk with its embedding vector, file metadata, and line range.
 type ChunkRecord struct {
 	ID        string
 	FilePath  string
@@ -25,6 +29,7 @@ type ChunkRecord struct {
 	Vector    []float64
 }
 
+// SearchResult is the public search result with score for ranking.
 type SearchResult struct {
 	ID        string  `json:"id"`
 	FilePath  string  `json:"file_path"`
@@ -36,11 +41,15 @@ type SearchResult struct {
 	Score     float64 `json:"score"`
 }
 
+// StorageData is the on-disk format: records + commit SHA for git tracking.
 type StorageData struct {
 	Records   []ChunkRecord
 	CommitSHA string
 }
 
+// Storage manages chunk records with O(1) lookups by ID and file path,
+// branch-isolated persistence, and an optional BM25 index for hybrid search.
+// Thread-safe via sync.RWMutex.
 type Storage struct {
 	path       string
 	basePath   string
@@ -54,6 +63,7 @@ type Storage struct {
 	bm25       *bm25Index
 }
 
+// New creates or opens a Storage with the given gob file path and vector dimensions.
 func New(dbPath string, dimensions int) (*Storage, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, fmt.Errorf("create storage dir: %w", err)
@@ -75,6 +85,8 @@ func New(dbPath string, dimensions int) (*Storage, error) {
 	return s, nil
 }
 
+// UpsertChunks inserts or updates chunks. Vectors are L2-normalized before storing.
+// On update (same chunk ID), the old record is replaced. Invalidates the BM25 cache.
 func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -120,6 +132,8 @@ func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]f
 	return nil
 }
 
+// DeleteChunksByPath removes all chunks belonging to a file path.
+// Rebuilds the byID/byPath indices and invalidates BM25 cache.
 func (s *Storage) DeleteChunksByPath(filePath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -150,12 +164,15 @@ func (s *Storage) DeleteChunksByPath(filePath string) error {
 	return nil
 }
 
+// Search performs a pure vector similarity search using dot product on normalized vectors.
+// Returns up to `limit` results ranked by similarity score.
 func (s *Storage) Search(query []float64, limit int) ([]SearchResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.searchLocked(query, limit)
 }
 
+// Stats returns the total number of chunks and unique files in the index.
 func (s *Storage) Stats() (chunks, files int, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -168,6 +185,7 @@ func (s *Storage) Stats() (chunks, files int, err error) {
 	return len(s.records), len(fileSet), nil
 }
 
+// ListFiles returns the unique relative file paths in the index.
 func (s *Storage) ListFiles() []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -183,6 +201,9 @@ func (s *Storage) ListFiles() []string {
 	return files
 }
 
+// SwitchBranch persists the current index and loads the index for a different
+// git branch/worktree. Branch files follow the pattern:
+// vectors.gob (main) or vectors-{worktree}-{branch}.gob (other branches).
 func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -244,18 +265,19 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	return nil
 }
 
+// Close persists the dirty index to disk.
 func (s *Storage) Close() error {
 	return s.save()
 }
 
 // Save flushes the current state to disk immediately.
-// Called periodically during indexing to preserve progress.
+// Called periodically during indexing to preserve progress on crash.
 func (s *Storage) Save() error {
 	return s.save()
 }
 
 // IsFileIndexed checks if all chunks for a file are already in the index
-// with a matching hash. Used to skip already-indexed files on resume.
+// with matching hashes. Used to skip already-indexed files on resume after crash.
 func (s *Storage) IsFileIndexed(filePath, fileHash string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -272,6 +294,7 @@ func (s *Storage) IsFileIndexed(filePath, fileHash string) bool {
 	return true
 }
 
+// SetCommitSHA records the git commit SHA that the current index represents.
 func (s *Storage) SetCommitSHA(sha string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -279,12 +302,15 @@ func (s *Storage) SetCommitSHA(sha string) {
 	s.dirty = true
 }
 
+// GetCommitSHA returns the last indexed git commit SHA for change detection.
 func (s *Storage) GetCommitSHA() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.commitSHA
 }
 
+// load reads the gob file from disk and rebuilds in-memory indices.
+// Supports both StorageData format (with CommitSHA) and legacy []ChunkRecord format.
 func (s *Storage) load() error {
 	// Clean up any leftover temp file from a crash during write
 	if _, err := os.Stat(s.path + ".tmp"); err == nil {
@@ -321,12 +347,15 @@ func (s *Storage) load() error {
 	return nil
 }
 
+// save persists the index to disk if dirty. Thread-safe.
 func (s *Storage) save() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.saveLocked()
 }
 
+// saveLocked writes the index to a temp file and atomically renames it,
+// preventing corruption from crashes during write.
 func (s *Storage) saveLocked() error {
 	if !s.dirty {
 		return nil
@@ -361,6 +390,8 @@ func (s *Storage) saveLocked() error {
 	return nil
 }
 
+// rebuildIndex replaces all in-memory data structures with the given records,
+// rebuilding byID and byPath lookup maps. Invalidates the BM25 cache.
 func (s *Storage) rebuildIndex(records []ChunkRecord) {
 	s.records = records
 	s.byID = make(map[string]int)
@@ -373,6 +404,8 @@ func (s *Storage) rebuildIndex(records []ChunkRecord) {
 	}
 }
 
+// findIndicesByPath does a linear scan to find all chunk indices for a file path.
+// Used as fallback when byPath map doesn't have the entry.
 func (s *Storage) findIndicesByPath(filePath string) []int {
 	var indices []int
 	for i, rec := range s.records {
@@ -383,6 +416,8 @@ func (s *Storage) findIndicesByPath(filePath string) []int {
 	return indices
 }
 
+// normalize L2-normalizes a vector in place. After normalization, dot product
+// equals cosine similarity, enabling efficient SIMD-accelerated similarity search.
 func normalize(v []float64) {
 	var norm float64
 	for i := range v {
@@ -397,6 +432,7 @@ func normalize(v []float64) {
 	}
 }
 
+// dotProduct delegates to the SIMD-accelerated (or scalar fallback) dot product.
 func dotProduct(a, b []float64) float64 {
 	return simd.Dot(a, b)
 }

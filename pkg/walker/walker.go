@@ -1,3 +1,6 @@
+// Package walker implements file system walking with git integration:
+// detects language by extension, computes content hashes, identifies git branches
+// and worktrees, and supports incremental indexing via git diff.
 package walker
 
 import (
@@ -11,6 +14,7 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/ignore"
 )
 
+// FileInfo describes a discovered source file with metadata for indexing.
 type FileInfo struct {
 	Path     string
 	RelPath  string
@@ -20,11 +24,14 @@ type FileInfo struct {
 	Deleted  bool
 }
 
+// Walker traverses directories, filtering by ignore rules and known extensions.
+// Also provides git branch, worktree, HEAD SHA, and changed-files information.
 type Walker struct {
 	Root      string
 	IgnoreMatcher *ignore.Matcher
 }
 
+// New creates a Walker rooted at the given directory with ignore patterns.
 func New(root string, extraIgnores []string) *Walker {
 	abs, _ := filepath.Abs(root)
 	return &Walker{
@@ -33,6 +40,8 @@ func New(root string, extraIgnores []string) *Walker {
 	}
 }
 
+// Walk traverses the root directory, collecting FileInfo for each file that
+// passes the ignore matcher and has a recognized programming language extension.
 func (w *Walker) Walk() ([]FileInfo, error) {
 	var files []FileInfo
 	err := filepath.Walk(w.Root, func(path string, fi os.FileInfo, err error) error {
@@ -66,6 +75,8 @@ func (w *Walker) Walk() ([]FileInfo, error) {
 	return files, err
 }
 
+// GetHeadSHA returns the current git HEAD commit SHA via git rev-parse.
+// Returns empty string if not in a git repository.
 func (w *Walker) GetHeadSHA() string {
 	cmd := exec.Command("git", "rev-parse", "HEAD")
 	cmd.Dir = w.Root
@@ -76,6 +87,8 @@ func (w *Walker) GetHeadSHA() string {
 	return strings.TrimSpace(string(out))
 }
 
+// GetWorktreeName returns the git worktree name if the project is in a linked worktree.
+// Extracted from the .git file path (e.g., .git/worktrees/<name>).
 func (w *Walker) GetWorktreeName() string {
 	cmd := exec.Command("git", "rev-parse", "--git-dir")
 	cmd.Dir = w.Root
@@ -93,6 +106,8 @@ func (w *Walker) GetWorktreeName() string {
 	return ""
 }
 
+// GetBranch returns the current git branch name via git rev-parse --abbrev-ref HEAD.
+// Returns empty string if in detached HEAD state or not a git repo.
 func (w *Walker) GetBranch() string {
 	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
 	cmd.Dir = w.Root
@@ -107,6 +122,9 @@ func (w *Walker) GetBranch() string {
 	return branch
 }
 
+// GetChangedFiles returns files modified, added, or deleted since the given SHA.
+// Uses `git diff --name-only <sha>`. If sha is empty, diffs against HEAD.
+// Falls back to full Walk() if git diff fails.
 func (w *Walker) GetChangedFiles(sinceSHA string) ([]FileInfo, error) {
 	args := []string{"diff", "--name-only"}
 	if sinceSHA != "" {
@@ -157,6 +175,8 @@ func (w *Walker) GetChangedFiles(sinceSHA string) ([]FileInfo, error) {
 	return files, nil
 }
 
+// detectLanguage maps file extensions to language names for structural parsing.
+// Returns empty string for unrecognized extensions (those files are skipped).
 func detectLanguage(path string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
@@ -209,6 +229,8 @@ func detectLanguage(path string) string {
 	}
 }
 
+// fileHash computes the first 8 bytes of SHA-256 of a file's contents.
+// Used as a fast content fingerprint for change detection and chunk IDs.
 func fileHash(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -1,4 +1,6 @@
-﻿package cli
+﻿// Package cli implements CLI-mode handlers for --generate, --query, --grep,
+// --list-files, and --configure flags. Each function returns an OS exit code.
+package cli
 
 import (
 	"encoding/json"
@@ -19,6 +21,9 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
+// RunGenerate performs a one-shot full index of the current directory.
+// Starts llama-server if needed, walks files, chunks, embeds, and stores.
+// Prints a detailed timing and statistics report on completion.
 func RunGenerate() int {
 	cfg, err := config.Load()
 	if err != nil {
@@ -154,6 +159,7 @@ func RunGenerate() int {
 	return 0
 }
 
+// RunListFiles lists all indexed files from the storage, grouped by branch.
 func RunListFiles() int {
 	cfg, err := config.Load()
 	if err != nil {
@@ -197,6 +203,8 @@ func RunListFiles() int {
 	return 0
 }
 
+// RunQuery performs a hybrid (BM25 + vector) or vector-only search on the index.
+// Auto-indexes if the index is empty or outdated (new commits detected).
 func RunQuery(query string, mode string, limit int, pathFilter string) int {
 	cfg, err := config.Load()
 	if err != nil {
@@ -323,6 +331,8 @@ func RunQuery(query string, mode string, limit int, pathFilter string) int {
 	return 0
 }
 
+// RunQueryGrep performs substring/regex matching on cached chunks.
+// Requires an existing index (built by a prior --query). No llama.cpp needed.
 func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, wholeWord bool, pathFilter string) int {
 	cfg, err := config.Load()
 	if err != nil {
@@ -417,6 +427,8 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	return 0
 }
 
+// RunConfigure sets up the MCP server integration for Pi, OpenCode, or KiloCode.
+// Writes the appropriate config file (opencode.json, kilo.json(c)) and a global AGENTS.md.
 func RunConfigure(target string) int {
 	exe, err := os.Executable()
 	if err != nil {
@@ -437,10 +449,14 @@ func RunConfigure(target string) int {
 	}
 }
 
+// progressWriter is an io.Writer that forwards writes directly to stdout.
+// Used for CLI status messages that should bypass slog.
 type progressWriter struct{}
 
 func (progressWriter) Write(p []byte) (int, error) { return os.Stdout.Write(p) }
 
+// roundDuration formats a duration for human-readable output.
+// Sub-second durations show milliseconds; longer durations show 10ms precision.
 func roundDuration(d time.Duration) string {
 	if d < time.Second {
 		return d.Round(time.Millisecond).String()
@@ -448,6 +464,7 @@ func roundDuration(d time.Duration) string {
 	return d.Round(time.Millisecond * 10).String()
 }
 
+// configurePi writes the MCP config and AGENTS.md into ~/.pi/agent/.
 func configurePi(exe string) int {
 	pw := progressWriter{}
 	agentsDir := filepath.Join(os.Getenv("USERPROFILE"), ".pi", "agent")
@@ -479,6 +496,8 @@ func configurePi(exe string) int {
 	return 0
 }
 
+// configureOpenCode adds the MCP server entry to ~/.config/opencode/opencode.json
+// and writes a global AGENTS.md with search_code/grep_code instructions.
 func configureOpenCode(exe string) int {
 	pw := progressWriter{}
 	configDir := filepath.Join(os.Getenv("USERPROFILE"), ".config", "opencode")
@@ -521,6 +540,7 @@ func configureOpenCode(exe string) int {
 	return 0
 }
 
+// resolveKiloConfig returns the path to kilo.jsonc or kilo.json, preferring jsonc.
 func resolveKiloConfig(configDir string) string {
 	jsoncPath := filepath.Join(configDir, "kilo.jsonc")
 	jsonPath := filepath.Join(configDir, "kilo.json")
@@ -533,6 +553,8 @@ func resolveKiloConfig(configDir string) string {
 	return jsoncPath
 }
 
+// loadJSONConfig reads a JSON file into a generic map, with support for
+// trailing commas and // or /* */ comments. Returns an empty map if the file doesn't exist.
 func loadJSONConfig(configPath string) (map[string]any, error) {
 	cfg := make(map[string]any)
 
@@ -554,6 +576,8 @@ func loadJSONConfig(configPath string) (map[string]any, error) {
 	return cfg, nil
 }
 
+// configureKiloCode adds the MCP server and auto-approve permissions to
+// ~/.config/kilo/kilo.json(c) and writes a global AGENTS.md.
 func configureKiloCode(exe string) int {
 	pw := progressWriter{}
 	configDir := filepath.Join(os.Getenv("USERPROFILE"), ".config", "kilo")
@@ -631,8 +655,11 @@ func configureKiloCode(exe string) int {
 	return 0
 }
 
+// trailingCommaRe matches trailing commas before closing brackets/braces in JSON.
 var trailingCommaRe = regexp.MustCompile(`,(\s*[}\]])`)
 
+// stripJSONComments removes // and /* */ style comments from a JSON string,
+// respecting string literal boundaries to avoid false positives.
 func stripJSONComments(s string) string {
 	var result []byte
 	i := 0
@@ -684,6 +711,8 @@ func stripJSONComments(s string) string {
 	return string(result)
 }
 
+// mergeMCPIntoJSON reads a JSON config file (creating it if missing), merges
+// an MCP server entry under the "mcp" key, and writes it back.
 func mergeMCPIntoJSON(configPath, serverName string, entry map[string]any) error {
 	var cfg map[string]any
 
@@ -715,15 +744,19 @@ func mergeMCPIntoJSON(configPath, serverName string, entry map[string]any) error
 	return os.WriteFile(configPath, data, 0644)
 }
 
+// toForwardPath converts backslashes to forward slashes for cross-platform paths.
 func toForwardPath(p string) string {
 	return strings.ReplaceAll(p, "\\", "/")
 }
 
+// sectionStart and sectionEnd delimit the go-indexing-mcp managed block in AGENTS.md files.
 const (
 	sectionStart = "<!-- go-indexing-mcp:start -->"
 	sectionEnd   = "<!-- go-indexing-mcp:end -->"
 )
 
+// mergeAgentsSection replaces or appends a managed section in an AGENTS.md file.
+// Returns (changed=true) if the file was modified.
 func mergeAgentsSection(agentsPath string, section string) (changed bool, err error) {
 	existing, err := os.ReadFile(agentsPath)
 	if err != nil {

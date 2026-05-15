@@ -1,3 +1,7 @@
+// Package structural detects structural code blocks (functions, classes, methods)
+// per language using regex pattern matching and brace/indent counting.
+// Supports 17 languages with decorator/annotation backward scanning.
+// No external parser dependencies — pure regex-based structural analysis.
 package structural
 
 import (
@@ -8,6 +12,8 @@ import (
 	"strings"
 )
 
+// Block represents a detected structural code block with its line range.
+// Lines are 1-indexed. HasDecorators indicates preceding decorators were found.
 type Block struct {
 	StartLine    int
 	EndLine      int
@@ -15,8 +21,13 @@ type Block struct {
 	HasDecorators bool
 }
 
+// blockEndFunc is a function that finds the end line of a structural block
+// given the lines array, start patterns, and the starting line index.
 type blockEndFunc func(lines []string, startPatterns []*regexp.Regexp, start int) int
 
+// languageDef defines how to detect blocks for a specific language:
+// start patterns match the opening line, decorator patterns capture annotations,
+// and FindEnd locates the closing line via brace depth or indentation.
 type languageDef struct {
 	StartPatterns     []*regexp.Regexp
 	DecoratorPatterns []*regexp.Regexp
@@ -182,12 +193,16 @@ var languages = map[string]languageDef{
 	},
 }
 
+// Splitter parses source files into structural blocks per language.
 type Splitter struct{}
 
+// New creates a new structural Splitter.
 func New() *Splitter {
 	return &Splitter{}
 }
 
+// ParseBlocks detects structural blocks in a single file by language.
+// Returns nil if the language is not supported or no blocks are found.
 func (s *Splitter) ParseBlocks(filePath, language string) ([]Block, error) {
 	def, ok := languages[language]
 	if !ok {
@@ -202,6 +217,7 @@ func (s *Splitter) ParseBlocks(filePath, language string) ([]Block, error) {
 	return findBlocks(lines, def), nil
 }
 
+// ParseBlocksBatch detects structural blocks for multiple files in one call.
 func (s *Splitter) ParseBlocksBatch(files []ParseFile) (map[string][]Block, error) {
 	results := make(map[string][]Block, len(files))
 	for _, f := range files {
@@ -221,11 +237,13 @@ func (s *Splitter) ParseBlocksBatch(files []ParseFile) (map[string][]Block, erro
 	return results, nil
 }
 
+// ParseFile represents a file to be parsed with its detected language.
 type ParseFile struct {
 	Path     string
 	Language string
 }
 
+// readLines reads all lines from a file into a string slice.
 func readLines(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -241,6 +259,8 @@ func readLines(path string) ([]string, error) {
 	return lines, scanner.Err()
 }
 
+// findBlocks scans lines for structural start patterns, finds each block's end,
+// and collects decorators preceding each block. Returns all detected blocks.
 func findBlocks(lines []string, def languageDef) []Block {
 	var blocks []Block
 	i := 0
@@ -267,6 +287,9 @@ func findBlocks(lines []string, def languageDef) []Block {
 	return blocks
 }
 
+// collectDecorators scans backward from start to find decorator/annotation lines
+// (e.g., @Decorator, [Attribute], #[Attribute]). Blank lines between decorators
+// are skipped. Non-decorator lines stop the backward scan to avoid false positives.
 func collectDecorators(lines []string, start int, patterns []*regexp.Regexp) int {
 	if len(patterns) == 0 || start <= 0 {
 		return start
@@ -291,6 +314,7 @@ func collectDecorators(lines []string, start int, patterns []*regexp.Regexp) int
 	return start
 }
 
+// matchesAny checks if line matches any of the given regex patterns.
 func matchesAny(line string, patterns []*regexp.Regexp) bool {
 	for _, p := range patterns {
 		if p.MatchString(line) {
@@ -300,14 +324,19 @@ func matchesAny(line string, patterns []*regexp.Regexp) bool {
 	return false
 }
 
+// findBraceEnd finds the matching closing brace for a block opening at start.
+// Tracks string literals, line comments (//), and block comments (/* */) to avoid false matches.
 func findBraceEnd(lines []string, _ []*regexp.Regexp, start int) int {
 	return findBraceEndImpl(lines, start, false)
 }
 
+// findBraceEndAny is like findBraceEnd but also tracks '[' and ']' brackets (used for JSON).
 func findBraceEndAny(lines []string, _ []*regexp.Regexp, start int) int {
 	return findBraceEndImpl(lines, start, true)
 }
 
+// findBraceEndImpl implements brace depth counting with string literal and comment awareness.
+// Returns the line index (0-based) of the closing brace that brings depth back to 0.
 func findBraceEndImpl(lines []string, start int, countBrackets bool) int {
 	depth := 0
 	inString := false
@@ -380,6 +409,8 @@ func findBraceEndImpl(lines []string, start int, countBrackets bool) int {
 	return len(lines) - 1
 }
 
+// findIndentEnd finds the end of an indentation-based block (Python, Ruby, YAML).
+// Returns the last line whose indentation is greater than the block's start line.
 func findIndentEnd(lines []string, _ []*regexp.Regexp, start int) int {
 	indent := countIndent(lines[start])
 	for i := start + 1; i < len(lines); i++ {
@@ -394,6 +425,8 @@ func findIndentEnd(lines []string, _ []*regexp.Regexp, start int) int {
 	return len(lines) - 1
 }
 
+// findSectionEnd finds the end of a section-based block (TOML, Markdown).
+// The block ends when a line matches one of the start patterns (next section heading).
 func findSectionEnd(lines []string, startPatterns []*regexp.Regexp, start int) int {
 	for i := start + 1; i < len(lines); i++ {
 		if matchesAny(lines[i], startPatterns) {
@@ -403,6 +436,8 @@ func findSectionEnd(lines []string, startPatterns []*regexp.Regexp, start int) i
 	return len(lines) - 1
 }
 
+// countIndent measures the indentation level of a line (spaces or tabs).
+// Each tab counts as 4 spaces for indentation comparison.
 func countIndent(line string) int {
 	count := 0
 	for _, ch := range line {
@@ -417,6 +452,7 @@ func countIndent(line string) int {
 	return count
 }
 
+// SupportedLanguages returns the list of languages with structural block detection.
 func SupportedLanguages() []string {
 	var langs []string
 	for l := range languages {
@@ -426,6 +462,7 @@ func SupportedLanguages() []string {
 	return langs
 }
 
+// IsLineStructuralStart checks if a given line is a structural start pattern for a language.
 func IsLineStructuralStart(line, language string) bool {
 	def, ok := languages[language]
 	if !ok {
@@ -434,4 +471,5 @@ func IsLineStructuralStart(line, language string) bool {
 	return matchesAny(line, def.StartPatterns)
 }
 
+// HasTreeSitter returns false — this package uses regex-based parsing, not Tree-sitter.
 func (s *Splitter) HasTreeSitter() bool { return false }

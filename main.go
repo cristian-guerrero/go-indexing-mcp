@@ -1,3 +1,6 @@
+// main is the entry point for go-indexing-mcp.
+// It parses CLI flags and routes to the appropriate handler:
+// self-setup, MCP server, one-shot index, search, or query-by-grep.
 package main
 
 import (
@@ -156,10 +159,14 @@ func main() {
 	}
 }
 
+// setupConsoleLogger configures slog to write structured JSON to stderr.
+// Used for CLI-mode operations where no log file exists.
 func setupConsoleLogger() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 }
 
+// setupFileLogger configures dual-output logging to both stderr and
+// ~/.go-mcp/indexing/server.log. Used in MCP server mode.
 func setupFileLogger(cfg *config.Config) error {
 	logDir := config.McpDir()
 	if err := os.MkdirAll(logDir, 0755); err != nil {

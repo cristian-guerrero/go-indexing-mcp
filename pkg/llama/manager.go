@@ -1,3 +1,5 @@
+// Package llama manages the llama.cpp server lifecycle: download, start, health check,
+// and graceful shutdown. It auto-detects GPU variants (CUDA/Vulkan/CPU) on Windows.
 package llama
 
 import (
@@ -18,6 +20,9 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
 )
 
+// Manager handles llama-server download, startup, health-check, and termination.
+// On Windows, it uses a Job Object (KILL_ON_JOB_CLOSE) to ensure the child process
+// is terminated when the parent exits.
 type Manager struct {
 	Cfg       *config.Config
 	cmd       *exec.Cmd
@@ -29,12 +34,15 @@ type Manager struct {
 	jobHandle uintptr // Windows job object (KILL_ON_JOB_CLOSE), 0 on Unix
 }
 
+// New creates a Manager from the given config.
 func New(cfg *config.Config) *Manager {
 	return &Manager{
 		Cfg: cfg,
 	}
 }
 
+// FindOrDownloadLlama locates llama-server in search order:
+// 1. Configured bin_path, 2. PATH, 3. ~/.go-mcp/llama-cpp/, 4. Download from GitHub releases.
 func (m *Manager) FindOrDownloadLlama() (string, error) {
 	binPath := m.Cfg.Llama.BinPath
 	if binPath != "" {
@@ -79,6 +87,7 @@ func (m *Manager) FindOrDownloadLlama() (string, error) {
 	return localPath, nil
 }
 
+// saveBinPath persists the discovered llama-server path to config.json.
 func (m *Manager) saveBinPath() {
 	m.Cfg.Llama.BinPath = m.BinPath
 	if err := config.Save(m.Cfg); err != nil {
@@ -86,6 +95,8 @@ func (m *Manager) saveBinPath() {
 	}
 }
 
+// downloadLlama fetches the llama-server binary from GitHub releases.
+// On Windows CUDA variants, also downloads the matching CUDA runtime DLLs.
 func (m *Manager) downloadLlama(dest string) error {
 	tag := "b4383"
 	variant := llamaVariant()
@@ -110,6 +121,7 @@ func (m *Manager) downloadLlama(dest string) error {
 	return nil
 }
 
+// downloadAndExtractZip downloads a ZIP file to a temp file and extracts it.
 func downloadAndExtractZip(url, extractDir string) error {
 	slog.Info("downloading", "url", url)
 	resp, err := http.Get(url)
@@ -141,6 +153,8 @@ func downloadAndExtractZip(url, extractDir string) error {
 	return nil
 }
 
+// llamaVariant returns the platform-specific release variant string for llama.cpp.
+// On Windows, probes for nvidia-smi (CUDA) or vulkaninfo (Vulkan), falling back to AVX2.
 func llamaVariant() string {
 	osName := runtime.GOOS
 	arch := runtime.GOARCH
@@ -164,6 +178,8 @@ func llamaVariant() string {
 	}
 }
 
+// detectWindowsVariant checks for NVIDIA GPU (nvidia-smi) or Vulkan support,
+// returning the appropriate llama.cpp variant: cuda-cu12.4, vulkan, or avx2.
 func detectWindowsVariant() string {
 	if _, err := exec.LookPath("nvidia-smi"); err == nil {
 		slog.Info("nvidia GPU detected, selecting CUDA variant")
@@ -177,6 +193,8 @@ func detectWindowsVariant() string {
 	return "avx2"
 }
 
+// modelFallbacks is an ordered list of embedding model URLs to try during download.
+// Falls through each model if download fails, so a working model is always found.
 var modelFallbacks = []struct {
 	Name string
 	URL  string
@@ -195,6 +213,8 @@ var modelFallbacks = []struct {
 	},
 }
 
+// FindOrDownloadModel searches for a GGUF embedding model in:
+// 1. Configured model_path, 2. ~/.go-mcp/models/embeddings/, 3. Download from HuggingFace.
 func (m *Manager) FindOrDownloadModel() (string, error) {
 	modelPath := m.Cfg.Llama.ModelPath
 	if modelPath != "" {
@@ -234,6 +254,7 @@ func (m *Manager) FindOrDownloadModel() (string, error) {
 	return "", fmt.Errorf("all model downloads failed")
 }
 
+// expandPath expands environment variables and ~ to the user's home directory.
 func expandPath(p string) string {
 	expanded := os.ExpandEnv(p)
 	if strings.HasPrefix(expanded, "~") {
@@ -243,6 +264,7 @@ func expandPath(p string) string {
 	return expanded
 }
 
+// downloadFile downloads a URL to a temp file, then atomically renames it to dest.
 func downloadFile(dest, url string) error {
 	tmp := dest + ".tmp"
 	f, err := os.Create(tmp)
@@ -277,6 +299,9 @@ func downloadFile(dest, url string) error {
 	return nil
 }
 
+// Start launches llama-server as a subprocess with embedding mode.
+// Finds a free port, sets up the process, waits until the health check passes (up to 120s).
+// On Windows, assigns the child to a Job Object for guaranteed cleanup on exit.
 func (m *Manager) Start() error {
 	port := m.Cfg.Llama.Port
 	if port == 0 {
@@ -339,10 +364,13 @@ func (m *Manager) Start() error {
 	return nil
 }
 
+// StartedProcess returns true if this Manager instance started the process itself
+// (as opposed to reusing an already-running llama-server).
 func (m *Manager) StartedProcess() bool {
 	return m.cmd != nil && m.cmd.Process != nil
 }
 
+// IsRunning checks whether llama-server is responding on the configured port.
 func (m *Manager) IsRunning() bool {
 	port := m.Cfg.Llama.Port
 	if port == 0 {
@@ -351,6 +379,8 @@ func (m *Manager) IsRunning() bool {
 	return m.isRunning(port)
 }
 
+// isRunning checks if llama-server is responding on the given port.
+// Returns true if the server responds with HTTP 200 or 400 to an embeddings request.
 func (m *Manager) isRunning(port int) bool {
 	client := &http.Client{Timeout: 2 * time.Second}
 	url := fmt.Sprintf("http://127.0.0.1:%d/v1/embeddings", port)
@@ -368,6 +398,8 @@ func (m *Manager) isRunning(port int) bool {
 	return resp.StatusCode == 200 || resp.StatusCode == 400
 }
 
+// waitReady polls the /v1/embeddings endpoint until the server responds
+// successfully or the timeout expires. Polls every 500ms.
 func (m *Manager) waitReady(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 1 * time.Second}
@@ -390,6 +422,8 @@ func (m *Manager) waitReady(timeout time.Duration) error {
 	return fmt.Errorf("timeout waiting for llama-server on port %d", m.Port)
 }
 
+// KillByPort stops llama-server on the configured port.
+// Tries the managed process first, then falls back to finding the process by port via netstat.
 func (m *Manager) KillByPort() error {
 	port := m.Cfg.Llama.Port
 	if port == 0 {
@@ -416,6 +450,7 @@ func (m *Manager) KillByPort() error {
 	return nil
 }
 
+// Stop terminates the managed llama-server process and cleans up the log file.
 func (m *Manager) Stop() {
 	if m.cmd != nil && m.cmd.Process != nil {
 		slog.Info("stopping llama-server", "pid", m.cmd.Process.Pid)
@@ -430,6 +465,8 @@ func (m *Manager) Stop() {
 	m.Ready = false
 }
 
+// findProcessByPort uses `netstat -ano` on Windows to find the PID listening on port.
+// Returns 0 if no process found or on non-Windows platforms.
 func findProcessByPort(port int) int {
 	if runtime.GOOS != "windows" {
 		return 0
@@ -452,6 +489,8 @@ func findProcessByPort(port int) int {
 	return 0
 }
 
+// ForceDownloadLlama downloads llama-server unconditionally (skips PATH check).
+// Used by the --download-llama flag.
 func (m *Manager) ForceDownloadLlama() (string, error) {
 	llamaDir := config.LlamaCppDir()
 	if err := os.MkdirAll(llamaDir, 0755); err != nil {
@@ -473,10 +512,13 @@ func (m *Manager) ForceDownloadLlama() (string, error) {
 	return localPath, nil
 }
 
+// BaseURL returns the full base URL for the llama.cpp API (http://127.0.0.1:{port}).
 func (m *Manager) BaseURL() string {
 	return fmt.Sprintf("http://127.0.0.1:%d", m.Port)
 }
 
+// findFreePort finds the first available TCP port in [min, max] range.
+// Used to pick a port if the configured port is busy.
 func findFreePort(min, max int) int {
 	for port := min; port <= max; port++ {
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -489,6 +531,8 @@ func findFreePort(min, max int) int {
 	return min
 }
 
+// ExtractZip extracts a ZIP archive to the given destination directory.
+// Creates directories as needed. Preserves the original file structure.
 func ExtractZip(src, dest string) error {
 	r, err := zip.OpenReader(src)
 	if err != nil {

@@ -110,6 +110,14 @@ Before committing or generating a commit message, check:
 
 Do not modify README.md unless the public interface changes (flags, tools, configuration).
 
+## Code documentation
+
+- Every exported and unexported function must have a 1-2 line doc comment explaining what it does and why (not how).
+- Every exported type and struct field must be documented.
+- Every algorithm (BM25, RRF, SIMD dot product, structural parsing, chunking) must have a top-level doc comment explaining its purpose and approach.
+- When adding new packages, files, or types, document them in the same style: concise, inline, English.
+- When adding new flags, MCP tools, or search modes, update both AGENTS.md and README.md.
+
 ## Flags
 
 - `--mcp` — starts MCP server over stdio

@@ -1,3 +1,6 @@
+// Package indexer orchestrates the full indexing pipeline:
+// walk files → chunk → embed → store. It supports full reindex,
+// incremental (changed files only), and single-path indexing.
 package indexer
 
 import (
@@ -14,6 +17,8 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
+// Indexer ties together the walker, chunker, embedder, and storage into a single pipeline.
+// Thread-safe for concurrent access; prevents overlapping index operations via mu.
 type Indexer struct {
 	Walker   *walker.Walker
 	Chunker  *chunker.Chunker
@@ -24,6 +29,7 @@ type Indexer struct {
 	Stats    IndexStats
 }
 
+// IndexStats holds cumulative indexing statistics, updated after each operation.
 type IndexStats struct {
 	TotalChunks  int
 	TotalFiles   int
@@ -31,6 +37,8 @@ type IndexStats struct {
 	IsIndexing   bool
 }
 
+// New creates an Indexer from the given pipeline components.
+// Embedder may be nil (for grep-only mode without llama.cpp).
 func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *storage.Storage) *Indexer {
 	return &Indexer{
 		Walker:   w,
@@ -43,6 +51,9 @@ func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *stora
 	}
 }
 
+// IndexAll performs a full index: walks all files, chunks, embeds, and stores them.
+// Skips files already in the index with matching hashes (resume support).
+// Saves progress periodically (every 10 files) so partial index survives shutdown.
 func (idx *Indexer) IndexAll() error {
 	idx.mu.Lock()
 	if idx.Running {
@@ -136,6 +147,7 @@ func (idx *Indexer) IndexAll() error {
 	return nil
 }
 
+// IndexPath indexes a single file by path, replacing any existing chunks for that file.
 func (idx *Indexer) IndexPath(path string) error {
 	files, err := idx.Walker.Walk()
 	if err != nil {
@@ -164,6 +176,8 @@ func (idx *Indexer) IndexPath(path string) error {
 	return fmt.Errorf("file not found: %s", path)
 }
 
+// IndexChanged performs an incremental index by diffing the current working tree
+// against the last saved commit SHA. Handles added, modified, and deleted files.
 func (idx *Indexer) IndexChanged() error {
 	sinceSHA := idx.Storage.GetCommitSHA()
 	files, err := idx.Walker.GetChangedFiles(sinceSHA)
@@ -221,6 +235,7 @@ func (idx *Indexer) IndexChanged() error {
 	return nil
 }
 
+// GetStats returns the current indexing statistics, refreshed from storage.
 func (idx *Indexer) GetStats() IndexStats {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -236,6 +251,7 @@ func (idx *Indexer) GetStats() IndexStats {
 	return idx.Stats
 }
 
+// ListFiles returns all indexed file paths from storage.
 func (idx *Indexer) ListFiles() []string {
 	if idx.Storage == nil {
 		return nil
@@ -243,6 +259,7 @@ func (idx *Indexer) ListFiles() []string {
 	return idx.Storage.ListFiles()
 }
 
+// PruneStaleEntries removes chunks for files that no longer exist on disk.
 func (idx *Indexer) PruneStaleEntries() {
 	for _, relPath := range idx.Storage.ListFiles() {
 		fullPath := filepath.Join(idx.Walker.Root, relPath)
@@ -253,6 +270,8 @@ func (idx *Indexer) PruneStaleEntries() {
 	}
 }
 
+// Search dispatches to hybrid (BM25 + vector) or grep mode based on the mode string.
+// Prunes stale entries before each search to keep results current.
 func (idx *Indexer) Search(query string, pathFilter string, limit int, mode string) ([]storage.SearchResult, error) {
 	idx.PruneStaleEntries()
 
@@ -286,6 +305,7 @@ func (idx *Indexer) Search(query string, pathFilter string, limit int, mode stri
 	}
 }
 
+// SearchGrep performs a grep-style search on indexed chunks with the given options.
 func (idx *Indexer) SearchGrep(opts storage.GrepOptions, pathFilter string) ([]storage.GrepResult, error) {
 	idx.PruneStaleEntries()
 
@@ -296,6 +316,7 @@ func (idx *Indexer) SearchGrep(opts storage.GrepOptions, pathFilter string) ([]s
 	return idx.filterGrepByPath(results, pathFilter), nil
 }
 
+// filterByPath filters search results by path using glob/prefix matching.
 func (idx *Indexer) filterByPath(results []storage.SearchResult, pathFilter string) []storage.SearchResult {
 	if pathFilter == "" {
 		return results
@@ -309,6 +330,7 @@ func (idx *Indexer) filterByPath(results []storage.SearchResult, pathFilter stri
 	return filtered
 }
 
+// filterGrepByPath filters grep results by path using glob/prefix matching.
 func (idx *Indexer) filterGrepByPath(results []storage.GrepResult, pathFilter string) []storage.GrepResult {
 	if pathFilter == "" {
 		return results
@@ -322,6 +344,9 @@ func (idx *Indexer) filterGrepByPath(results []storage.GrepResult, pathFilter st
 	return filtered
 }
 
+// matchesPath checks if relPath matches the given path filter.
+// Supports exact prefix match (case-insensitive), filepath.Match globs,
+// and **/ prefix globs for recursive directory matching.
 func matchesPath(relPath, filter string) bool {
 	relPath = filepath.ToSlash(relPath)
 	filter = filepath.ToSlash(filter)
@@ -360,6 +385,7 @@ func matchesPath(relPath, filter string) bool {
 	return strings.EqualFold(relPath[:len(filter)], filter)
 }
 
+// hasGlobChars returns true if the string contains glob metacharacters (*, ?, [).
 func hasGlobChars(s string) bool {
 	for _, r := range s {
 		if r == '*' || r == '?' || r == '[' {

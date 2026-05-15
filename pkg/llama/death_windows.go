@@ -10,11 +10,15 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// setChildDeath is a no-op on Windows; child death is handled via Job Object after Start().
 func setChildDeath(cmd *exec.Cmd) {
 	// On Windows, the child process death setup is done
 	// after Start() via assignChildToJob + Job Object.
 }
 
+// setupJob creates a Windows Job Object with KILL_ON_JOB_CLOSE flag.
+// When the parent process exits, Windows automatically terminates all processes
+// assigned to this job, preventing orphaned llama-server processes.
 func (m *Manager) setupJob() {
 	if m.jobHandle != 0 {
 		return
@@ -44,6 +48,8 @@ func (m *Manager) setupJob() {
 	m.jobHandle = uintptr(h)
 }
 
+// assignChildToJob assigns the llama-server child process to the Job Object,
+// ensuring it is killed when the parent (this process) exits.
 func (m *Manager) assignChildToJob(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil || m.jobHandle == 0 {
 		return nil
@@ -59,6 +65,7 @@ func (m *Manager) assignChildToJob(cmd *exec.Cmd) error {
 	return windows.AssignProcessToJobObject(job, child)
 }
 
+// cleanupJob closes the Job Object handle to release Windows resources.
 func (m *Manager) cleanupJob() {
 	if m.jobHandle != 0 {
 		windows.CloseHandle(windows.Handle(m.jobHandle))

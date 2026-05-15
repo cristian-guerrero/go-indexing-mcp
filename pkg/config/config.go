@@ -1,3 +1,6 @@
+// Package config manages the persistent configuration stored at
+// ~/.go-mcp/indexing/config.json. It is loaded on startup and provides
+// path helpers for all MCP data directories.
 package config
 
 import (
@@ -9,6 +12,7 @@ import (
 	"strings"
 )
 
+// Config is the root configuration structure for go-indexing-mcp.
 type Config struct {
 	Llama    LlamaConfig    `json:"llama"`
 	Indexing IndexingConfig `json:"indexing"`
@@ -16,6 +20,7 @@ type Config struct {
 	Embedding EmbeddingConfig `json:"embedding"`
 }
 
+// LlamaConfig controls the llama-server binary path, model, port, and extra arguments.
 type LlamaConfig struct {
 	BinPath   string   `json:"bin_path"`
 	ModelPath string   `json:"model_path"`
@@ -23,6 +28,7 @@ type LlamaConfig struct {
 	ExtraArgs []string `json:"extra_args"`
 }
 
+// IndexingConfig controls file walking, chunking, git integration, idle timeout, and watch intervals.
 type IndexingConfig struct {
 	RootPath           string   `json:"root_path"`
 	IgnorePatterns     []string `json:"ignore_patterns"`
@@ -34,14 +40,18 @@ type IndexingConfig struct {
 	WatchIntervalSecs  int      `json:"watch_interval_secs"`
 }
 
+// StorageConfig is reserved for future storage settings.
 type StorageConfig struct{}
 
+// EmbeddingConfig controls the embedding model name, vector dimensions, and batch size.
 type EmbeddingConfig struct {
 	Model      string `json:"model"`
 	Dimensions int    `json:"dimensions"`
 	BatchSize  int    `json:"batch_size"`
 }
 
+// DefaultConfig returns a Config with sensible default values.
+// ChunkSize: 50 lines, Overlap: 10, Port: 56000, Dimensions: 768 (jina-embeddings-v2).
 func DefaultConfig() *Config {
 	return &Config{
 		Llama: LlamaConfig{
@@ -68,11 +78,13 @@ func DefaultConfig() *Config {
 	}
 }
 
+// McpDir returns ~/.go-mcp/indexing/, the root directory for all MCP data.
 func McpDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".go-mcp", "indexing")
 }
 
+// ModelsDir returns ~/.go-mcp/models/embeddings/, where GGUF embedding models are stored.
 func ModelsDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".go-mcp", "models", "embeddings")
@@ -99,19 +111,24 @@ func StoragePath(rootPath string) string {
 	return filepath.Join(McpDir(), "vectors", encoded, "vectors.gob")
 }
 
+// McpBinDir returns ~/.go-mcp/indexing/bin/, where the self-copied binary lives.
 func McpBinDir() string {
 	return filepath.Join(McpDir(), "bin")
 }
 
+// LlamaCppDir returns ~/.go-mcp/llama-cpp/, where llama-server binaries are downloaded.
 func LlamaCppDir() string {
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".go-mcp", "llama-cpp")
 }
 
+// ConfigPath returns the full path to the config.json file.
 func ConfigPath() string {
 	return filepath.Join(McpDir(), "config.json")
 }
 
+// Load reads config from ConfigPath(), creating a default one if it doesn't exist.
+// Missing fields are filled from DefaultConfig() to ensure forward compatibility.
 func Load() (*Config, error) {
 	path := ConfigPath()
 	data, err := os.ReadFile(path)
@@ -139,6 +156,8 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// fillMissing merges default values into any zero/empty config fields.
+// This ensures forward compatibility when new fields are added.
 func fillMissing(cfg *Config) {
 	def := DefaultConfig()
 
@@ -196,6 +215,7 @@ func fillMissing(cfg *Config) {
 
 }
 
+// Save writes the config to ConfigPath() as indented JSON, creating the directory if needed.
 func Save(cfg *Config) error {
 	dir := McpDir()
 	if err := os.MkdirAll(dir, 0755); err != nil {

@@ -1,3 +1,6 @@
+// Package ignore implements file filtering using gitignore patterns plus
+// a comprehensive set of default ignore patterns for common build artifacts,
+// dependencies, and binary files. Supports nested gitignore files at the root level.
 package ignore
 
 import (
@@ -9,6 +12,8 @@ import (
 	gitignorelib "github.com/sabhiram/go-gitignore"
 )
 
+// DefaultPatterns is the built-in ignore list covering common build artifacts,
+// dependency directories, binary/library files, images, lock files, and IDE configs.
 var DefaultPatterns = []string{
 	".git",
 	"node_modules",
@@ -72,12 +77,15 @@ var DefaultPatterns = []string{
 	".terraform",
 }
 
+// Matcher evaluates whether a file path should be ignored based on
+// default patterns, user-provided patterns, and .gitignore rules at the project root.
 type Matcher struct {
 	gitIgnore  *gitignorelib.GitIgnore
 	patterns   []string
 	root       string
 }
 
+// New creates a Matcher with default + extra patterns and loads .gitignore at root.
 func New(root string, extraPatterns []string) *Matcher {
 	allPatterns := append([]string{}, DefaultPatterns...)
 	allPatterns = append(allPatterns, extraPatterns...)
@@ -91,6 +99,7 @@ func New(root string, extraPatterns []string) *Matcher {
 	}
 }
 
+// loadGitIgnore reads root/.gitignore and compiles it into a GitIgnore matcher.
 func loadGitIgnore(root string) *gitignorelib.GitIgnore {
 	path := filepath.Join(root, ".gitignore")
 	f, err := os.Open(path)
@@ -115,6 +124,8 @@ func loadGitIgnore(root string) *gitignorelib.GitIgnore {
 	return gi
 }
 
+// ShouldIgnore checks a relative path against all patterns — exact match,
+// filepath.Match glob, directory prefix, and .gitignore rules. Returns true if ignored.
 func (m *Matcher) ShouldIgnore(relPath string) bool {
 	if relPath == "" {
 		return false

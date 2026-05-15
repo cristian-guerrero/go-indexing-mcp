@@ -1,3 +1,6 @@
+// Package storage provides search algorithms: BM25 keyword ranking, grep-style
+// substring/regex matching, and hybrid search via Reciprocal Rank Fusion (RRF).
+// BM25 uses the standard k1=1.2, b=0.75 parameters. RRF uses k=60.
 package storage
 
 import (
@@ -8,18 +11,22 @@ import (
 	"unicode"
 )
 
+// BM25 parameters from the standard Okapi BM25 formula.
 const (
 	bm25K1 = 1.2
 	bm25B  = 0.75
 	rrfK   = 60.0
 )
 
+// topK implements a bounded min-heap for O(n log k) top-k selection.
+// Maintains at most k items; the root is always the smallest (to be evicted).
 type topK[T any] struct {
 	heap []T
 	k    int
 	less func(a, b T) bool
 }
 
+// newTopK creates a bounded min-heap that retains the top k items (by "less" order).
 func newTopK[T any](k int, less func(a, b T) bool) *topK[T] {
 	return &topK[T]{
 		heap: make([]T, 0, k+1),
@@ -28,6 +35,8 @@ func newTopK[T any](k int, less func(a, b T) bool) *topK[T] {
 	}
 }
 
+// Push adds an item to the min-heap. If the heap is full and the new item is
+// larger than the current minimum, replaces the minimum and sifts down.
 func (h *topK[T]) Push(item T) {
 	if len(h.heap) < h.k {
 		h.heap = append(h.heap, item)
@@ -40,6 +49,7 @@ func (h *topK[T]) Push(item T) {
 	}
 }
 
+// Result returns the top-k items sorted in descending order (best first).
 func (h *topK[T]) Result() []T {
 	sort.Slice(h.heap, func(i, j int) bool {
 		return !h.less(h.heap[i], h.heap[j])
@@ -47,6 +57,7 @@ func (h *topK[T]) Result() []T {
 	return h.heap
 }
 
+// siftUp restores heap ordering after appending to the end.
 func (h *topK[T]) siftUp(i int) {
 	item := h.heap[i]
 	for i > 0 {
@@ -60,6 +71,7 @@ func (h *topK[T]) siftUp(i int) {
 	h.heap[i] = item
 }
 
+// siftDown restores heap ordering after replacing the root.
 func (h *topK[T]) siftDown(i int) {
 	n := len(h.heap)
 	item := h.heap[i]
@@ -82,6 +94,7 @@ func (h *topK[T]) siftDown(i int) {
 	h.heap[i] = item
 }
 
+// GrepOptions controls the behavior of grep-style search.
 type GrepOptions struct {
 	Query         string
 	Limit         int
@@ -90,11 +103,13 @@ type GrepOptions struct {
 	Language      string
 }
 
+// GrepMatch represents a single matching line within a chunk.
 type GrepMatch struct {
 	Line    int    `json:"line"`
 	Content string `json:"content"`
 }
 
+// GrepResult extends SearchResult with per-line match details.
 type GrepResult struct {
 	ID        string      `json:"id"`
 	FilePath  string      `json:"file_path"`
@@ -107,6 +122,8 @@ type GrepResult struct {
 	Matches   []GrepMatch `json:"matches,omitempty"`
 }
 
+// definitionKeywords is a list of line prefixes that indicate function/type/class
+// definitions. Lines matching these prefixes get a 2x score boost in grep results.
 var definitionKeywords = []string{
 	"func ", "function ", "def ", "class ", "interface ", "struct ",
 	"type ", "var ", "const ", "let ", "var ", "pub fn ", "async fn ",
@@ -114,11 +131,14 @@ var definitionKeywords = []string{
 	"private ", "protected ", "static ",
 }
 
+// posting is a (docID, term frequency) entry in the BM25 inverted index.
 type posting struct {
 	DocID int
 	Freq  int
 }
 
+// bm25Index implements Okapi BM25 ranking with an in-memory inverted index.
+// Built lazily on first hybrid search and invalidated when records change.
 type bm25Index struct {
 	inverted  map[string][]posting
 	docLen    []int
@@ -126,6 +146,8 @@ type bm25Index struct {
 	nDocs     int
 }
 
+// tokenize splits text into lowercase alphanumeric tokens (underscore included).
+// Used by both BM25 indexing and query processing.
 func tokenize(s string) []string {
 	var tokens []string
 	var buf []rune
@@ -145,6 +167,8 @@ func tokenize(s string) []string {
 	return tokens
 }
 
+// buildBM25Index constructs the inverted index and precomputes document lengths
+// and average document length for the BM25 scoring formula.
 func buildBM25Index(records []ChunkRecord) *bm25Index {
 	idx := &bm25Index{
 		inverted: make(map[string][]posting),
@@ -176,6 +200,8 @@ func buildBM25Index(records []ChunkRecord) *bm25Index {
 	return idx
 }
 
+// score computes the Okapi BM25 score for a document given query terms.
+// Formula: sum(idf * (freq * (k1+1)) / (freq + k1 * (1 - b + b * docLen/avgDocLen)))
 func (idx *bm25Index) score(queryTerms []string, docID int) float64 {
 	var score float64
 	docLen := idx.docLen[docID]
@@ -208,6 +234,7 @@ func (idx *bm25Index) score(queryTerms []string, docID int) float64 {
 	return score
 }
 
+// ensureBM25 builds the BM25 index lazily if it has been invalidated.
 func (s *Storage) ensureBM25() {
 	if s.bm25 != nil {
 		return
@@ -215,6 +242,9 @@ func (s *Storage) ensureBM25() {
 	s.bm25 = buildBM25Index(s.records)
 }
 
+// SearchGrep performs substring or regex matching on all stored chunks.
+// Results are ranked by match count, with definition lines boosted 2x.
+// Supports case-sensitive, whole-word, and language-filter modes.
 func (s *Storage) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -331,6 +361,8 @@ func (s *Storage) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 	return out, nil
 }
 
+// hasRegexChars returns true if the string contains regex metacharacters.
+// Used to decide whether to compile query as regex or use plain string search.
 func hasRegexChars(s string) bool {
 	for _, r := range s {
 		if r == '.' || r == '+' || r == '*' || r == '?' || r == '(' || r == ')' ||
@@ -342,6 +374,9 @@ func hasRegexChars(s string) bool {
 	return false
 }
 
+// SearchHybrid combines BM25 keyword scores and vector similarity via
+// Reciprocal Rank Fusion (RRF). Both systems score all documents independently,
+// rank them, then fuse the ranks: rrf_score = 1/(k + bm25Rank) + 1/(k + vecRank).
 func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]SearchResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -424,6 +459,9 @@ func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]S
 	return out, nil
 }
 
+// searchLocked performs a pure vector similarity search (caller must hold RLock).
+// Normalizes the query vector, computes dot product against all stored vectors,
+// and returns the top-k results via the bounded min-heap.
 func (s *Storage) searchLocked(query []float64, limit int) ([]SearchResult, error) {
 	if limit <= 0 {
 		limit = 25

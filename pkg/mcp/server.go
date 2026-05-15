@@ -1,3 +1,6 @@
+// Package mcp implements the Model Context Protocol server.
+// Registers search_code and grep_code tools, handles auto-indexing on startup,
+// branch switching, idle timeout (llama-server memory free), and periodic watch.
 package mcp
 
 import (
@@ -15,6 +18,8 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
+// MCPServer wraps the MCP protocol server with indexer, llama manager, idle timeout,
+// watch checker for auto-reindexing, and branch-isolated index switching.
 type MCPServer struct {
 	server          *server.MCPServer
 	indexer         *indexer.Indexer
@@ -27,6 +32,8 @@ type MCPServer struct {
 	stopped         atomic.Bool
 }
 
+// New creates an MCPServer, registers MCP tools, and starts background goroutines
+// for idle timeout, periodic watch (if enabled), and startup index check.
 func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int, watchEnabled bool, watchIntervalSecs int) *MCPServer {
 	s := server.NewMCPServer(
 		"go-indexing-mcp",
@@ -58,6 +65,8 @@ func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int, watchEna
 	return m
 }
 
+// indexOnStartup checks the index state on MCP startup (git repos only):
+// empty → IndexAll, interrupted → IndexAll, new commits → IndexChanged, up to date → skip.
 func (m *MCPServer) indexOnStartup() {
 	if m.indexer == nil || m.indexer.Embedder == nil {
 		return
@@ -112,6 +121,7 @@ func (m *MCPServer) indexOnStartup() {
 	}
 }
 
+// runIndexAll calls IndexAll with up to 3 retries on failure.
 func (m *MCPServer) runIndexAll() {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -130,6 +140,7 @@ func (m *MCPServer) runIndexAll() {
 	}
 }
 
+// runIndexChanged calls IndexChanged with up to 3 retries on failure.
 func (m *MCPServer) runIndexChanged() {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -148,6 +159,7 @@ func (m *MCPServer) runIndexChanged() {
 	}
 }
 
+// registerTools registers the search_code and grep_code MCP tools with the server.
 func (m *MCPServer) registerTools() {
 	searchTool := mcp.NewTool("search_code",
 		mcp.WithDescription("Search code by intent using BM25 keyword ranking fused with vector similarity via RRF (k=60). Best for queries like 'authentication flow', 'database connection pool', 'user registration'. Returns up to 25 results ranked by relevance"),
@@ -190,10 +202,12 @@ func (m *MCPServer) registerTools() {
 	m.server.AddTool(grepTool, m.handleGrepSearch)
 }
 
+// touchActivity updates the last-activity timestamp to prevent idle timeout.
 func (m *MCPServer) touchActivity() {
 	m.lastActivity.Store(time.Now().UnixNano())
 }
 
+// ensureLlama checks if llama-server is running and starts it if not.
 func (m *MCPServer) ensureLlama() error {
 	m.touchActivity()
 	if m.mgr == nil {
@@ -206,6 +220,8 @@ func (m *MCPServer) ensureLlama() error {
 	return m.mgr.Start()
 }
 
+// idleChecker runs every 10s and stops llama-server after idleTimeout of inactivity,
+// freeing GPU memory. llama-server wakes on the next MCP tool call via ensureLlama.
 func (m *MCPServer) idleChecker() {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -227,6 +243,10 @@ func (m *MCPServer) idleChecker() {
 	}
 }
 
+// watchChecker runs periodically (watchInterval) and:
+// 1. Detects branch/worktree switches → SwitchBranch
+// 2. Empty index → IndexAll, 3. New commits → IndexChanged,
+// 4. Uncommitted changes → background IndexChanged.
 func (m *MCPServer) watchChecker() {
 	ticker := time.NewTicker(m.watchInterval)
 	defer ticker.Stop()
@@ -305,6 +325,9 @@ const (
 	msgNoIndex       = "No index found. The index could not be built (check that llama.cpp and the model are available, or that the project is a git repository)"
 )
 
+// handleSearch is the MCP tool handler for search_code.
+// Wakes llama-server, switches branch if needed, waits for in-progress indexing,
+// and returns JSON results.
 func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	query, _ := args["query"].(string)
@@ -375,6 +398,8 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 	return mcp.NewToolResultText(string(data)), nil
 }
 
+// handleGrepSearch is the MCP tool handler for grep_code.
+// Performs substring/regex matching on cached chunks. Does NOT need llama.cpp.
 func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	query, _ := args["query"].(string)
@@ -456,6 +481,8 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 	return mcp.NewToolResultText(string(data)), nil
 }
 
+// Serve starts the MCP stdio server. Blocks until the client disconnects.
+// On shutdown, stops llama-server if it was running.
 func (m *MCPServer) Serve() error {
 	slog.Info("starting MCP server (stdio)")
 	err := server.ServeStdio(m.server)

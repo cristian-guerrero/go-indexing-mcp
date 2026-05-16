@@ -379,7 +379,7 @@ func (m *Manager) Start() error {
 	}
 
 	if err := m.assignChildToJob(cmd); err != nil {
-		slog.Warn("failed to assign llama-server to job object, child may survive parent death", "error", err)
+		slog.Debug("assignChildToJob", "error", err)
 	}
 
 	if err := m.waitReady(120 * time.Second); err != nil {

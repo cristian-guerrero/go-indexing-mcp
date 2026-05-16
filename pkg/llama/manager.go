@@ -315,6 +315,18 @@ func (m *Manager) Start() error {
 		return nil
 	}
 
+	// Server may still be starting (503). Wait instead of starting another.
+	if findProcessByPort(port) > 0 {
+		slog.Info("waiting for existing llama-server on port", "port", port)
+		if err := m.waitReady(120 * time.Second); err != nil {
+			slog.Warn("existing llama-server never became ready", "port", port, "error", err)
+		} else {
+			slog.Info("existing llama-server is ready", "port", port)
+			m.Ready = true
+			return nil
+		}
+	}
+
 	args := []string{
 		"--port", strconv.Itoa(port),
 		"--model", m.ModelPath,
@@ -415,7 +427,9 @@ func (m *Manager) waitReady(timeout time.Duration) error {
 		resp, err := client.Do(req)
 		if err == nil {
 			resp.Body.Close()
-			return nil
+			if resp.StatusCode != 503 {
+				return nil
+			}
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -423,30 +437,30 @@ func (m *Manager) waitReady(timeout time.Duration) error {
 }
 
 // KillByPort stops llama-server on the configured port.
-// Tries the managed process first, then falls back to finding the process by port via netstat.
+// Kills the managed process first, then force-kills anything still listening on the port.
 func (m *Manager) KillByPort() error {
 	port := m.Cfg.Llama.Port
 	if port == 0 {
 		port = 56000
 	}
 
-	if !m.isRunning(port) {
-		slog.Info("no llama-server found on port", "port", port)
-		return nil
-	}
-
 	m.Port = port
 	m.Stop()
 
-	if m.isRunning(port) {
-		pid := findProcessByPort(port)
-		if pid > 0 {
-			proc, err := os.FindProcess(pid)
-			if err == nil {
-				proc.Kill()
+	pid := findProcessByPort(port)
+	if pid > 0 {
+		slog.Info("killing llama-server by port", "port", port, "pid", pid)
+		proc, err := os.FindProcess(pid)
+		if err == nil {
+			if err := proc.Kill(); err != nil {
+				return fmt.Errorf("kill process %d: %w", pid, err)
 			}
 		}
+	} else {
+		slog.Info("no llama-server found on port", "port", port)
 	}
+
+	m.Ready = false
 	return nil
 }
 

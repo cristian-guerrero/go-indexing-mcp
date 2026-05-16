@@ -227,10 +227,23 @@ func RunQuery(query string, mode string, limit int, pathFilter string) int {
 			slog.Error("model setup", "error", err)
 			return 1
 		}
+		wasRunning := mgr.IsRunning()
 		if err := mgr.Start(); err != nil {
 			slog.Error("start llama", "error", err)
 			return 1
 		}
+		startedByUs := mgr.StartedProcess()
+		if !wasRunning && startedByUs {
+			fmt.Fprintln(pw, "✓ llama-server started")
+		} else {
+			fmt.Fprintln(pw, "✓ llama-server already running, reusing")
+		}
+		defer func() {
+			if startedByUs {
+				fmt.Fprintln(pw, "Stopping llama-server...")
+				mgr.Stop()
+			}
+		}()
 	}
 
 	rootPath := cfg.Indexing.RootPath

@@ -8,7 +8,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/internal/cli"
@@ -152,6 +154,15 @@ func main() {
 
 	srv := mcp.New(idx, mgr, cfg.Indexing.IdleTimeoutSecs, cfg.Indexing.WatchEnabled, cfg.Indexing.WatchIntervalSecs)
 	slog.Info("starting MCP server")
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		slog.Info("shutting down, stopping llama-server")
+		mgr.KillByPort()
+		os.Exit(0)
+	}()
 
 	if err := srv.Serve(); err != nil {
 		slog.Error("MCP server", "error", err)

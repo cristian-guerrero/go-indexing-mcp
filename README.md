@@ -108,10 +108,17 @@ On startup and every search, the index freshness is checked automatically:
 
 ### Config
 
-The configuration file at `~/.go-mcp/indexing/config.json` supports these indexing options:
+The configuration file at `~/.go-mcp/indexing/config.json` supports these options:
 
 | Field | Default | Description |
 |---|---|---|
+| `llama.port` | `56000` | llama-server port |
+| `llama.ngl_layers` | `0` | GPU layers for llama.cpp (`-ngl`, 0 = CPU only) |
+| `llama.ctx_size` | `4096` | Context size (`-c`) |
+| `llama.batch_size` | `2048` | Batch size (`-b`) |
+| `llama.ubatch_size` | `2048` | Micro-batch size (`--ubatch-size`) |
+| `llama.pooling` | `"mean"` | Pooling mode (`--pooling`, e.g. `mean`) |
+| `llama.extra_args` | `[]` | Additional llama-server CLI arguments |
 | `watch_enabled` | `true` | Enable periodic background indexing |
 | `watch_interval_secs` | `60` | Interval between background index checks |
 | `idle_timeout_secs` | `300` | Seconds of inactivity before stopping llama.cpp (0 = disable) |

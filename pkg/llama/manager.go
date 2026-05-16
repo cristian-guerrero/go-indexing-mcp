@@ -331,11 +331,16 @@ func (m *Manager) Start() error {
 		"--port", strconv.Itoa(port),
 		"--model", m.ModelPath,
 		"--embedding",
-		"--no-webui",
-		"--mlock",
-		"--batch-size", "2048",
-		"--ubatch-size", "2048",
-		"--ctx-size", "4096",
+		// "--mlock",
+		"--batch-size", strconv.Itoa(m.Cfg.Llama.BatchSize),
+		"--ubatch-size", strconv.Itoa(m.Cfg.Llama.UBatchSize),
+		"--ctx-size", strconv.Itoa(m.Cfg.Llama.CtxSize),
+	}
+	if m.Cfg.Llama.NGLLayers > 0 {
+		args = append(args, "--n-gpu-layers", strconv.Itoa(m.Cfg.Llama.NGLLayers))
+	}
+	if m.Cfg.Llama.Pooling != "" {
+		args = append(args, "--pooling", m.Cfg.Llama.Pooling)
 	}
 	args = append(args, m.Cfg.Llama.ExtraArgs...)
 
@@ -357,7 +362,7 @@ func (m *Manager) Start() error {
 	m.cmd = cmd
 	m.logFile = logFile
 
-	slog.Info("starting llama-server", "port", port, "model", m.ModelPath, "log", logPath)
+	slog.Info("starting llama-server", "port", port, "model", m.ModelPath, "log", logPath, "cmd", strings.Join(cmd.Args, " "))
 	if err := cmd.Start(); err != nil {
 		logFile.Close()
 		return fmt.Errorf("start llama-server: %w", err)
@@ -477,6 +482,22 @@ func (m *Manager) Stop() {
 	}
 	m.cleanupJob()
 	m.Ready = false
+}
+
+// Restart stops and re-launches llama-server to free stuck memory (e.g. after a large index).
+// Only restarts if this manager started the process (as opposed to reusing an existing one).
+func (m *Manager) Restart() error {
+	if !m.StartedProcess() {
+		slog.Debug("not restarting llama-server: process was not started by us")
+		return nil
+	}
+	slog.Info("restarting llama-server to free memory")
+	m.Stop()
+	m.cmd = nil
+	if err := m.Start(); err != nil {
+		return fmt.Errorf("restart llama-server: %w", err)
+	}
+	return nil
 }
 
 // findProcessByPort uses `netstat -ano` on Windows to find the PID listening on port.

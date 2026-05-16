@@ -89,6 +89,21 @@ func TestDefaultConfig(t *testing.T) {
 		if cfg.Llama.Port != 56000 {
 			t.Errorf("Llama.Port = %d, want 56000", cfg.Llama.Port)
 		}
+		if cfg.Llama.NGLLayers != 0 {
+			t.Errorf("Llama.NGLLayers = %d, want 0", cfg.Llama.NGLLayers)
+		}
+		if cfg.Llama.CtxSize != 4096 {
+			t.Errorf("Llama.CtxSize = %d, want 4096", cfg.Llama.CtxSize)
+		}
+		if cfg.Llama.BatchSize != 2048 {
+			t.Errorf("Llama.BatchSize = %d, want 2048", cfg.Llama.BatchSize)
+		}
+		if cfg.Llama.UBatchSize != 2048 {
+			t.Errorf("Llama.UBatchSize = %d, want 2048", cfg.Llama.UBatchSize)
+		}
+		if cfg.Llama.Pooling != "mean" {
+			t.Errorf("Llama.Pooling = %q, want \"mean\"", cfg.Llama.Pooling)
+		}
 		if cfg.Llama.ExtraArgs == nil {
 			t.Error("Llama.ExtraArgs should not be nil")
 		}
@@ -223,6 +238,21 @@ func TestFillMissing_AllEmpty(t *testing.T) {
 
 	if cfg.Llama.Port != 56000 {
 		t.Errorf("Llama.Port = %d, want 56000", cfg.Llama.Port)
+	}
+	if cfg.Llama.NGLLayers != 0 {
+		t.Errorf("Llama.NGLLayers = %d, want 0", cfg.Llama.NGLLayers)
+	}
+	if cfg.Llama.CtxSize != 4096 {
+		t.Errorf("Llama.CtxSize = %d, want 4096", cfg.Llama.CtxSize)
+	}
+	if cfg.Llama.BatchSize != 2048 {
+		t.Errorf("Llama.BatchSize = %d, want 2048", cfg.Llama.BatchSize)
+	}
+	if cfg.Llama.UBatchSize != 2048 {
+		t.Errorf("Llama.UBatchSize = %d, want 2048", cfg.Llama.UBatchSize)
+	}
+	if cfg.Llama.Pooling != "mean" {
+		t.Errorf("Llama.Pooling = %q, want \"mean\"", cfg.Llama.Pooling)
 	}
 	if cfg.Indexing.ChunkSize != 50 {
 		t.Errorf("Indexing.ChunkSize = %d, want 50", cfg.Indexing.ChunkSize)

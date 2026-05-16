@@ -14,30 +14,36 @@ import (
 
 // Config is the root configuration structure for go-indexing-mcp.
 type Config struct {
-	Llama    LlamaConfig    `json:"llama"`
-	Indexing IndexingConfig `json:"indexing"`
-	Storage  StorageConfig  `json:"storage"`
+	Llama     LlamaConfig     `json:"llama"`
+	Indexing  IndexingConfig  `json:"indexing"`
+	Storage   StorageConfig   `json:"storage"`
 	Embedding EmbeddingConfig `json:"embedding"`
 }
 
-// LlamaConfig controls the llama-server binary path, model, port, and extra arguments.
+// LlamaConfig controls the llama-server binary path, model, port, GPU layers, context size,
+// batch size, pooling mode, and extra arguments.
 type LlamaConfig struct {
-	BinPath   string   `json:"bin_path"`
-	ModelPath string   `json:"model_path"`
-	Port      int      `json:"port"`
-	ExtraArgs []string `json:"extra_args"`
+	BinPath    string   `json:"bin_path"`
+	ModelPath  string   `json:"model_path"`
+	Port       int      `json:"port"`
+	NGLLayers  int      `json:"ngl_layers"`
+	CtxSize    int      `json:"ctx_size"`
+	BatchSize  int      `json:"batch_size"`
+	UBatchSize int      `json:"ubatch_size"`
+	Pooling    string   `json:"pooling"`
+	ExtraArgs  []string `json:"extra_args"`
 }
 
 // IndexingConfig controls file walking, chunking, git integration, idle timeout, and watch intervals.
 type IndexingConfig struct {
-	RootPath           string   `json:"root_path"`
-	IgnorePatterns     []string `json:"ignore_patterns"`
-	ChunkSize          int      `json:"chunk_size"`
-	ChunkOverlap       int      `json:"chunk_overlap"`
-	GitEnabled         bool     `json:"git_enabled"`
-	IdleTimeoutSecs    int      `json:"idle_timeout_secs"`
-	WatchEnabled       bool     `json:"watch_enabled"`
-	WatchIntervalSecs  int      `json:"watch_interval_secs"`
+	RootPath          string   `json:"root_path"`
+	IgnorePatterns    []string `json:"ignore_patterns"`
+	ChunkSize         int      `json:"chunk_size"`
+	ChunkOverlap      int      `json:"chunk_overlap"`
+	GitEnabled        bool     `json:"git_enabled"`
+	IdleTimeoutSecs   int      `json:"idle_timeout_secs"`
+	WatchEnabled      bool     `json:"watch_enabled"`
+	WatchIntervalSecs int      `json:"watch_interval_secs"`
 }
 
 // StorageConfig is reserved for future storage settings.
@@ -51,24 +57,30 @@ type EmbeddingConfig struct {
 }
 
 // DefaultConfig returns a Config with sensible default values.
-// ChunkSize: 50 lines, Overlap: 10, Port: 56000, Dimensions: 768 (jina-embeddings-v2).
+// ChunkSize: 50 lines, Overlap: 10, Port: 56000, CtxSize: 4096, BatchSize: 2048,
+// UBatchSize: 2048, Dimensions: 768 (jina-embeddings-v2).
 func DefaultConfig() *Config {
 	return &Config{
 		Llama: LlamaConfig{
-			BinPath:   "",
-			ModelPath: filepath.Join(ModelsDir(), "jina-embeddings-v2-base-code-Q5_K_M.gguf"),
-			Port:      56000,
-			ExtraArgs: []string{},
+			BinPath:    "",
+			ModelPath:  filepath.Join(ModelsDir(), "jina-embeddings-v2-base-code-Q5_K_M.gguf"),
+			Port:       56000,
+			NGLLayers:  99,
+			CtxSize:    4096,
+			BatchSize:  2048,
+			UBatchSize: 2048,
+			Pooling:    "mean",
+			ExtraArgs:  []string{"--no-webui", "--no-mmap"},
 		},
 		Indexing: IndexingConfig{
-			RootPath:           ".",
-			IgnorePatterns:     nil,
-			ChunkSize:          50,
-			ChunkOverlap:       10,
-			GitEnabled:         true,
-			IdleTimeoutSecs:    300,
-			WatchEnabled:       true,
-			WatchIntervalSecs:  60,
+			RootPath:          ".",
+			IgnorePatterns:    nil,
+			ChunkSize:         50,
+			ChunkOverlap:      10,
+			GitEnabled:        true,
+			IdleTimeoutSecs:   300,
+			WatchEnabled:      true,
+			WatchIntervalSecs: 60,
 		},
 		Embedding: EmbeddingConfig{
 			Model:      "jina-embeddings-v2-base-code-Q5_K_M",
@@ -182,6 +194,18 @@ func fillMissing(cfg *Config) {
 		cfg.Llama.Port = def.Llama.Port
 	}
 
+	if cfg.Llama.Pooling == "" {
+		cfg.Llama.Pooling = def.Llama.Pooling
+	}
+	if cfg.Llama.CtxSize == 0 {
+		cfg.Llama.CtxSize = def.Llama.CtxSize
+	}
+	if cfg.Llama.BatchSize == 0 {
+		cfg.Llama.BatchSize = def.Llama.BatchSize
+	}
+	if cfg.Llama.UBatchSize == 0 {
+		cfg.Llama.UBatchSize = def.Llama.UBatchSize
+	}
 	if cfg.Llama.ExtraArgs == nil {
 		cfg.Llama.ExtraArgs = []string{}
 	}

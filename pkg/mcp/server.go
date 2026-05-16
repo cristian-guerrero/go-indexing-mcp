@@ -122,7 +122,6 @@ func (m *MCPServer) indexOnStartup() {
 }
 
 // runIndexAll calls IndexAll with up to 3 retries on failure.
-// After a successful index, restarts llama-server to free stuck memory.
 func (m *MCPServer) runIndexAll() {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -137,16 +136,12 @@ func (m *MCPServer) runIndexAll() {
 			slog.Error("full index failed", "attempt", attempt+1, "error", err)
 			continue
 		}
-		slog.Info("full index complete, restarting llama-server to free memory")
-		if err := m.mgr.Restart(); err != nil {
-			slog.Warn("llama-server restart after index failed, will restart on next use", "error", err)
-		}
+		slog.Info("full index complete")
 		return
 	}
 }
 
 // runIndexChanged calls IndexChanged with up to 3 retries on failure.
-// After a successful index, restarts llama-server to free stuck memory.
 func (m *MCPServer) runIndexChanged() {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -161,10 +156,7 @@ func (m *MCPServer) runIndexChanged() {
 			slog.Warn("incremental index failed", "attempt", attempt+1, "error", err)
 			continue
 		}
-		slog.Info("incremental index complete, restarting llama-server to free memory")
-		if err := m.mgr.Restart(); err != nil {
-			slog.Warn("llama-server restart after index failed, will restart on next use", "error", err)
-		}
+		slog.Info("incremental index complete")
 		return
 	}
 }

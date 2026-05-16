@@ -159,8 +159,8 @@ func main() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		slog.Info("shutting down, stopping llama-server")
-		mgr.KillByPort()
+		slog.Info("shutting down, releasing llama-server")
+		mgr.Stop()
 		os.Exit(0)
 	}()
 

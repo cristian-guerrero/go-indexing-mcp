@@ -492,7 +492,8 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 }
 
 // Serve starts the MCP stdio server. Blocks until the client disconnects.
-// On shutdown, stops llama-server if it was running.
+// On shutdown, releases the lock reference — llama-server stays alive if other
+// MCP processes are still using it.
 func (m *MCPServer) Serve() error {
 	slog.Info("starting MCP server (stdio)")
 	err := server.ServeStdio(m.server)
@@ -502,8 +503,8 @@ func (m *MCPServer) Serve() error {
 		slog.Info("MCP server stopped (client disconnected)")
 	}
 	m.stopped.Store(true)
-	if m.mgr != nil && m.mgr.IsRunning() {
-		slog.Info("stopping llama-server on MCP server shutdown")
+	if m.mgr != nil {
+		slog.Info("releasing llama-server on MCP server shutdown")
 		m.mgr.Stop()
 	}
 	return err

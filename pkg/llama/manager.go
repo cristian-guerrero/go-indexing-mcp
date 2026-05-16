@@ -32,6 +32,7 @@ type Manager struct {
 	ModelPath string
 	BinPath   string
 	jobHandle uintptr // Windows job object (KILL_ON_JOB_CLOSE), 0 on Unix
+	lock      *Lock   // Cross-process lock for sharing llama-server across MCPs
 }
 
 // New creates a Manager from the given config.
@@ -310,32 +311,56 @@ func (m *Manager) applyVariantProfile() {
 // Start launches llama-server as a subprocess with embedding mode.
 // Finds a free port, sets up the process, waits until the health check passes (up to 120s).
 // On Windows, assigns the child to a Job Object for guaranteed cleanup on exit.
+// Uses a cross-process lock file (~/.go-mcp/llama-server.lock) so multiple MCP processes
+// share the same server — only the last process to release the lock stops it.
 func (m *Manager) Start() error {
 	m.applyVariantProfile()
+	m.lock = NewLock()
 
+	// Phase 1: Check lock file for an existing, healthy server.
+	lockData, err := m.lock.Acquire()
+	if err != nil {
+		slog.Warn("lock acquire failed (will start fresh)", "error", err)
+	}
+
+	if lockData != nil {
+		if m.isRunning(lockData.Port) {
+			m.Port = lockData.Port
+			m.Ready = true
+			if err := m.lock.AddPID(); err != nil {
+				slog.Warn("add pid to lock", "error", err)
+			}
+			slog.Info("attached to existing llama-server via lock", "port", m.Port, "pids", lockData.PIDs)
+			return nil
+		}
+		slog.Warn("lock file exists but server not responding, will start fresh", "port", lockData.Port)
+	}
+
+	// Phase 2: Determine port — reuse stale lock port if available.
 	port := m.Cfg.Llama.Port
 	if port == 0 {
-		port = findFreePort(56000, 57000)
-	}
-	m.Port = port
-
-	if m.isRunning(port) {
-		slog.Info("llama-server already running on port", "port", port)
-		m.Ready = true
-		return nil
+		if lockData != nil && lockData.Port != 0 {
+			port = lockData.Port
+		} else {
+			port = findFreePort(56000, 57000)
+		}
 	}
 
-	// Server may still be starting (503). Wait instead of starting another.
 	if findProcessByPort(port) > 0 {
 		slog.Info("waiting for existing llama-server on port", "port", port)
 		if err := m.waitReady(120 * time.Second); err != nil {
-			slog.Warn("existing llama-server never became ready", "port", port, "error", err)
+			slog.Warn("existing llama-server never became ready, will start fresh", "port", port, "error", err)
 		} else {
-			slog.Info("existing llama-server is ready", "port", port)
+			m.Port = port
 			m.Ready = true
+			m.lock.Start(port)
+			slog.Info("attached to existing llama-server", "port", port)
 			return nil
 		}
 	}
+
+	// Phase 3: Start a brand-new server.
+	m.Port = port
 
 	args := []string{
 		"--port", strconv.Itoa(port),
@@ -386,6 +411,7 @@ func (m *Manager) Start() error {
 		slog.Warn("llama-server may not be ready yet", "error", err)
 	}
 
+	m.lock.Start(port)
 	m.Ready = true
 	slog.Info("llama-server started", "pid", cmd.Process.Pid)
 	return nil
@@ -451,8 +477,8 @@ func (m *Manager) waitReady(timeout time.Duration) error {
 	return fmt.Errorf("timeout waiting for llama-server on port %d", m.Port)
 }
 
-// KillByPort stops llama-server on the configured port.
-// Kills the managed process first, then force-kills anything still listening on the port.
+// KillByPort forcefully stops llama-server on the configured port, ignoring the lock.
+// Only intended for the --free CLI flag. Normal shutdown should use Stop().
 func (m *Manager) KillByPort() error {
 	port := m.Cfg.Llama.Port
 	if port == 0 {
@@ -460,11 +486,19 @@ func (m *Manager) KillByPort() error {
 	}
 
 	m.Port = port
-	m.Stop()
+
+	if m.lock == nil {
+		m.lock = NewLock()
+	}
+	if err := m.lock.ForceClear(); err != nil {
+		slog.Debug("lock force-clear", "error", err)
+	}
+
+	m.stopProcess()
 
 	pid := findProcessByPort(port)
 	if pid > 0 {
-		slog.Info("killing llama-server by port", "port", port, "pid", pid)
+		slog.Info("force-killing llama-server by port", "port", port, "pid", pid)
 		proc, err := os.FindProcess(pid)
 		if err == nil {
 			if err := proc.Kill(); err != nil {
@@ -479,8 +513,25 @@ func (m *Manager) KillByPort() error {
 	return nil
 }
 
-// Stop terminates the managed llama-server process and cleans up the log file.
+// Stop releases the lock reference. Only terminates the actual server process
+// when this was the last MCP process using it. Other MCPs keep their connection alive.
 func (m *Manager) Stop() {
+	if m.lock != nil {
+		shouldStop, err := m.lock.Release()
+		if err != nil {
+			slog.Warn("lock release failed", "error", err)
+		}
+		if !shouldStop {
+			slog.Debug("llama-server kept alive for other processes", "port", m.Port)
+			return
+		}
+	}
+
+	m.stopProcess()
+}
+
+// stopProcess kills the managed llama-server subprocess and cleans up the log file.
+func (m *Manager) stopProcess() {
 	if m.cmd != nil && m.cmd.Process != nil {
 		slog.Info("stopping llama-server", "pid", m.cmd.Process.Pid)
 		m.cmd.Process.Kill()
@@ -495,12 +546,21 @@ func (m *Manager) Stop() {
 }
 
 // Restart stops and re-launches llama-server to free stuck memory (e.g. after a large index).
-// Only restarts if this manager started the process (as opposed to reusing an existing one).
+// Only restarts if this manager started the process AND no other MCP is using the server.
 func (m *Manager) Restart() error {
 	if !m.StartedProcess() {
 		slog.Debug("not restarting llama-server: process was not started by us")
 		return nil
 	}
+
+	if m.lock != nil {
+		pids, err := m.lock.Peek()
+		if err == nil && len(pids) > 1 {
+			slog.Debug("not restarting: other MCPs are using llama-server", "pids", pids)
+			return nil
+		}
+	}
+
 	slog.Info("restarting llama-server to free memory")
 	m.Stop()
 	m.cmd = nil

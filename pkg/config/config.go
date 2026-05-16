@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -20,12 +22,13 @@ type Config struct {
 	Embedding EmbeddingConfig `json:"embedding"`
 }
 
-// LlamaConfig controls the llama-server binary path, model, port, GPU layers, context size,
-// batch size, pooling mode, and extra arguments.
+// LlamaConfig controls the llama-server binary path, model, port, GPU variant, GPU layers,
+// context size, batch size, pooling mode, and extra arguments.
 type LlamaConfig struct {
 	BinPath    string   `json:"bin_path"`
 	ModelPath  string   `json:"model_path"`
 	Port       int      `json:"port"`
+	Variant    string   `json:"variant"`
 	NGLLayers  int      `json:"ngl_layers"`
 	CtxSize    int      `json:"ctx_size"`
 	BatchSize  int      `json:"batch_size"`
@@ -56,21 +59,110 @@ type EmbeddingConfig struct {
 	BatchSize  int    `json:"batch_size"`
 }
 
-// DefaultConfig returns a Config with sensible default values.
-// ChunkSize: 50 lines, Overlap: 10, Port: 56000, CtxSize: 4096, BatchSize: 2048,
-// UBatchSize: 2048, Dimensions: 768 (jina-embeddings-v2).
+// LlamaProfile holds the optimal llama-server parameters for a given hardware variant.
+// Used by VariantProfiles to select defaults when the variant is detected.
+type LlamaProfile struct {
+	NGLLayers  int
+	CtxSize    int
+	BatchSize  int
+	UBatchSize int
+	Pooling    string
+	ExtraArgs  []string
+}
+
+// VariantProfiles maps hardware variant names to optimal llama-server parameters.
+// Key: "cuda", "vulkan", "avx2", "metal".
+var VariantProfiles = map[string]LlamaProfile{
+	"cuda": {
+		NGLLayers:  99,
+		CtxSize:    4096,
+		BatchSize:  2048,
+		UBatchSize: 2048,
+		Pooling:    "mean",
+		ExtraArgs:  []string{"--no-webui", "--no-mmap"},
+	},
+	"vulkan": {
+		NGLLayers:  99,
+		CtxSize:    4096,
+		BatchSize:  512,
+		UBatchSize: 512,
+		Pooling:    "mean",
+		ExtraArgs:  []string{"--no-webui", "--no-mmap"},
+	},
+	"avx2": {
+		NGLLayers:  0,
+		CtxSize:    2048,
+		BatchSize:  256,
+		UBatchSize: 256,
+		Pooling:    "mean",
+		ExtraArgs:  []string{"--no-webui", "--mlock"},
+	},
+	"metal": {
+		NGLLayers:  99,
+		CtxSize:    4096,
+		BatchSize:  1024,
+		UBatchSize: 1024,
+		Pooling:    "mean",
+		ExtraArgs:  []string{"--no-webui", "--no-mmap"},
+	},
+}
+
+// DetectVariant probes the system and returns the hardware variant name:
+// "cuda", "vulkan", "avx2", "metal", or "cpu".
+func DetectVariant() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "metal"
+	case "windows", "linux":
+		if nvidiaSMIExists() {
+			return "cuda"
+		}
+		if vulkanInfoExists() {
+			return "vulkan"
+		}
+		return "avx2"
+	default:
+		return "cpu"
+	}
+}
+
+func nvidiaSMIExists() bool {
+	_, err := exec.LookPath("nvidia-smi")
+	return err == nil
+}
+
+func vulkanInfoExists() bool {
+	_, err := exec.LookPath("vulkaninfo")
+	return err == nil
+}
+
+// DefaultConfig returns a Config with sensible default values detected from the system.
+// The llama-server parameters are selected based on the detected hardware variant.
+// ChunkSize: 50 lines, Overlap: 10, Port: 56000, Dimensions: 768 (jina-embeddings-v2-base-code).
 func DefaultConfig() *Config {
+	return DefaultConfigForVariant(DetectVariant())
+}
+
+// DefaultConfigForVariant returns a Config with defaults optimized for the given variant.
+// Supported variants: "cuda", "vulkan", "avx2", "metal". Falls back to "cuda" for unknown variants.
+func DefaultConfigForVariant(variant string) *Config {
+	profile, ok := VariantProfiles[variant]
+	if !ok {
+		variant = "cuda"
+		profile = VariantProfiles["cuda"]
+	}
 	return &Config{
 		Llama: LlamaConfig{
 			BinPath:    "",
 			ModelPath:  filepath.Join(ModelsDir(), "jina-embeddings-v2-base-code-Q5_K_M.gguf"),
 			Port:       56000,
-			NGLLayers:  99,
-			CtxSize:    4096,
-			BatchSize:  2048,
-			UBatchSize: 2048,
-			Pooling:    "mean",
-			ExtraArgs:  []string{"--no-webui", "--no-mmap"},
+			Variant:    variant,
+			NGLLayers:  profile.NGLLayers,
+			CtxSize:    profile.CtxSize,
+			BatchSize:  profile.BatchSize,
+			UBatchSize: profile.UBatchSize,
+			Pooling:    profile.Pooling,
+			ExtraArgs:  profile.ExtraArgs,
 		},
 		Indexing: IndexingConfig{
 			RootPath:          ".",
@@ -88,6 +180,22 @@ func DefaultConfig() *Config {
 			BatchSize:  8,
 		},
 	}
+}
+
+// ApplyProfile overwrites the llama configuration with the profile values for the given variant.
+// Used when the system variant changes (e.g. GPU removed) to keep config in sync.
+func (c *Config) ApplyProfile(variant string) {
+	profile, ok := VariantProfiles[variant]
+	if !ok {
+		return
+	}
+	c.Llama.Variant = variant
+	c.Llama.NGLLayers = profile.NGLLayers
+	c.Llama.CtxSize = profile.CtxSize
+	c.Llama.BatchSize = profile.BatchSize
+	c.Llama.UBatchSize = profile.UBatchSize
+	c.Llama.Pooling = profile.Pooling
+	c.Llama.ExtraArgs = profile.ExtraArgs
 }
 
 // McpDir returns ~/.go-mcp/indexing/, the root directory for all MCP data.
@@ -194,6 +302,9 @@ func fillMissing(cfg *Config) {
 		cfg.Llama.Port = def.Llama.Port
 	}
 
+	if cfg.Llama.Variant == "" {
+		cfg.Llama.Variant = def.Llama.Variant
+	}
 	if cfg.Llama.Pooling == "" {
 		cfg.Llama.Pooling = def.Llama.Pooling
 	}

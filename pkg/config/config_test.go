@@ -89,17 +89,8 @@ func TestDefaultConfig(t *testing.T) {
 		if cfg.Llama.Port != 56000 {
 			t.Errorf("Llama.Port = %d, want 56000", cfg.Llama.Port)
 		}
-		if cfg.Llama.NGLLayers != 0 {
-			t.Errorf("Llama.NGLLayers = %d, want 0", cfg.Llama.NGLLayers)
-		}
-		if cfg.Llama.CtxSize != 4096 {
-			t.Errorf("Llama.CtxSize = %d, want 4096", cfg.Llama.CtxSize)
-		}
-		if cfg.Llama.BatchSize != 2048 {
-			t.Errorf("Llama.BatchSize = %d, want 2048", cfg.Llama.BatchSize)
-		}
-		if cfg.Llama.UBatchSize != 2048 {
-			t.Errorf("Llama.UBatchSize = %d, want 2048", cfg.Llama.UBatchSize)
+		if cfg.Llama.Variant == "" {
+			t.Error("Llama.Variant should not be empty")
 		}
 		if cfg.Llama.Pooling != "mean" {
 			t.Errorf("Llama.Pooling = %q, want \"mean\"", cfg.Llama.Pooling)
@@ -109,6 +100,20 @@ func TestDefaultConfig(t *testing.T) {
 		}
 		if cfg.Llama.ModelPath == "" {
 			t.Error("Llama.ModelPath should not be empty")
+		}
+		// Verify parameters match the detected variant profile
+		profile, ok := VariantProfiles[cfg.Llama.Variant]
+		if !ok {
+			t.Fatalf("unknown variant %q", cfg.Llama.Variant)
+		}
+		if cfg.Llama.NGLLayers != profile.NGLLayers {
+			t.Errorf("Llama.NGLLayers = %d, want %d for variant %q", cfg.Llama.NGLLayers, profile.NGLLayers, cfg.Llama.Variant)
+		}
+		if cfg.Llama.CtxSize != profile.CtxSize {
+			t.Errorf("Llama.CtxSize = %d, want %d for variant %q", cfg.Llama.CtxSize, profile.CtxSize, cfg.Llama.Variant)
+		}
+		if cfg.Llama.BatchSize != profile.BatchSize {
+			t.Errorf("Llama.BatchSize = %d, want %d for variant %q", cfg.Llama.BatchSize, profile.BatchSize, cfg.Llama.Variant)
 		}
 	})
 	t.Run("Indexing defaults", func(t *testing.T) {
@@ -139,6 +144,105 @@ func TestDefaultConfig(t *testing.T) {
 			t.Errorf("Embedding.BatchSize = %d, want 8", cfg.Embedding.BatchSize)
 		}
 	})
+}
+
+func TestDefaultConfigForVariant_Cuda(t *testing.T) {
+	cfg := DefaultConfigForVariant("cuda")
+	if cfg.Llama.NGLLayers != 99 {
+		t.Errorf("cuda NGLLayers = %d, want 99", cfg.Llama.NGLLayers)
+	}
+	if cfg.Llama.BatchSize != 2048 {
+		t.Errorf("cuda BatchSize = %d, want 2048", cfg.Llama.BatchSize)
+	}
+	if cfg.Llama.UBatchSize != 2048 {
+		t.Errorf("cuda UBatchSize = %d, want 2048", cfg.Llama.UBatchSize)
+	}
+	if cfg.Llama.CtxSize != 4096 {
+		t.Errorf("cuda CtxSize = %d, want 4096", cfg.Llama.CtxSize)
+	}
+	if cfg.Llama.Variant != "cuda" {
+		t.Errorf("cuda variant = %q, want \"cuda\"", cfg.Llama.Variant)
+	}
+}
+
+func TestDefaultConfigForVariant_Vulkan(t *testing.T) {
+	cfg := DefaultConfigForVariant("vulkan")
+	if cfg.Llama.NGLLayers != 99 {
+		t.Errorf("vulkan NGLLayers = %d, want 99", cfg.Llama.NGLLayers)
+	}
+	if cfg.Llama.BatchSize != 512 {
+		t.Errorf("vulkan BatchSize = %d, want 512", cfg.Llama.BatchSize)
+	}
+	if cfg.Llama.UBatchSize != 512 {
+		t.Errorf("vulkan UBatchSize = %d, want 512", cfg.Llama.UBatchSize)
+	}
+	if cfg.Llama.CtxSize != 4096 {
+		t.Errorf("vulkan CtxSize = %d, want 4096", cfg.Llama.CtxSize)
+	}
+}
+
+func TestDefaultConfigForVariant_Avx2(t *testing.T) {
+	cfg := DefaultConfigForVariant("avx2")
+	if cfg.Llama.NGLLayers != 0 {
+		t.Errorf("avx2 NGLLayers = %d, want 0", cfg.Llama.NGLLayers)
+	}
+	if cfg.Llama.BatchSize != 256 {
+		t.Errorf("avx2 BatchSize = %d, want 256", cfg.Llama.BatchSize)
+	}
+	if cfg.Llama.UBatchSize != 256 {
+		t.Errorf("avx2 UBatchSize = %d, want 256", cfg.Llama.UBatchSize)
+	}
+	if cfg.Llama.CtxSize != 2048 {
+		t.Errorf("avx2 CtxSize = %d, want 2048", cfg.Llama.CtxSize)
+	}
+}
+
+func TestDefaultConfigForVariant_Metal(t *testing.T) {
+	cfg := DefaultConfigForVariant("metal")
+	if cfg.Llama.NGLLayers != 99 {
+		t.Errorf("metal NGLLayers = %d, want 99", cfg.Llama.NGLLayers)
+	}
+	if cfg.Llama.BatchSize != 1024 {
+		t.Errorf("metal BatchSize = %d, want 1024", cfg.Llama.BatchSize)
+	}
+	if cfg.Llama.UBatchSize != 1024 {
+		t.Errorf("metal UBatchSize = %d, want 1024", cfg.Llama.UBatchSize)
+	}
+	if cfg.Llama.CtxSize != 4096 {
+		t.Errorf("metal CtxSize = %d, want 4096", cfg.Llama.CtxSize)
+	}
+}
+
+func TestDefaultConfigForVariant_Fallback(t *testing.T) {
+	cfg := DefaultConfigForVariant("unknown-variant")
+	if cfg.Llama.Variant != "cuda" {
+		t.Errorf("unknown variant fallback = %q, want \"cuda\"", cfg.Llama.Variant)
+	}
+}
+
+func TestApplyProfile(t *testing.T) {
+	cfg := DefaultConfigForVariant("cuda")
+	cfg.ApplyProfile("avx2")
+	if cfg.Llama.Variant != "avx2" {
+		t.Errorf("ApplyProfile variant = %q, want \"avx2\"", cfg.Llama.Variant)
+	}
+	if cfg.Llama.NGLLayers != 0 {
+		t.Errorf("ApplyProfile NGLLayers = %d, want 0", cfg.Llama.NGLLayers)
+	}
+	if cfg.Llama.BatchSize != 256 {
+		t.Errorf("ApplyProfile BatchSize = %d, want 256", cfg.Llama.BatchSize)
+	}
+	if cfg.Llama.CtxSize != 2048 {
+		t.Errorf("ApplyProfile CtxSize = %d, want 2048", cfg.Llama.CtxSize)
+	}
+}
+
+func TestApplyProfile_UnknownVariant(t *testing.T) {
+	cfg := DefaultConfigForVariant("cuda")
+	cfg.ApplyProfile("nonexistent")
+	if cfg.Llama.Variant != "cuda" {
+		t.Errorf("unknown variant should not change variant, got %q", cfg.Llama.Variant)
+	}
 }
 
 func TestMcpDir(t *testing.T) {
@@ -239,17 +343,8 @@ func TestFillMissing_AllEmpty(t *testing.T) {
 	if cfg.Llama.Port != 56000 {
 		t.Errorf("Llama.Port = %d, want 56000", cfg.Llama.Port)
 	}
-	if cfg.Llama.NGLLayers != 0 {
-		t.Errorf("Llama.NGLLayers = %d, want 0", cfg.Llama.NGLLayers)
-	}
-	if cfg.Llama.CtxSize != 4096 {
-		t.Errorf("Llama.CtxSize = %d, want 4096", cfg.Llama.CtxSize)
-	}
-	if cfg.Llama.BatchSize != 2048 {
-		t.Errorf("Llama.BatchSize = %d, want 2048", cfg.Llama.BatchSize)
-	}
-	if cfg.Llama.UBatchSize != 2048 {
-		t.Errorf("Llama.UBatchSize = %d, want 2048", cfg.Llama.UBatchSize)
+	if cfg.Llama.Variant == "" {
+		t.Error("Llama.Variant should not be empty after fillMissing")
 	}
 	if cfg.Llama.Pooling != "mean" {
 		t.Errorf("Llama.Pooling = %q, want \"mean\"", cfg.Llama.Pooling)
@@ -265,6 +360,21 @@ func TestFillMissing_AllEmpty(t *testing.T) {
 	}
 	if cfg.Llama.ExtraArgs == nil {
 		t.Error("ExtraArgs should not be nil after fillMissing")
+	}
+	// NGLLayers is intentionally NOT filled by fillMissing (users configure via config.json).
+	// CtxSize, BatchSize, UBatchSize are filled from the variant-specific default profile.
+	profile, ok := VariantProfiles[cfg.Llama.Variant]
+	if !ok {
+		t.Fatalf("unknown variant %q after fillMissing", cfg.Llama.Variant)
+	}
+	if cfg.Llama.CtxSize != profile.CtxSize {
+		t.Errorf("Llama.CtxSize = %d, want %d for variant %q", cfg.Llama.CtxSize, profile.CtxSize, cfg.Llama.Variant)
+	}
+	if cfg.Llama.BatchSize != profile.BatchSize {
+		t.Errorf("Llama.BatchSize = %d, want %d for variant %q", cfg.Llama.BatchSize, profile.BatchSize, cfg.Llama.Variant)
+	}
+	if cfg.Llama.UBatchSize != profile.UBatchSize {
+		t.Errorf("Llama.UBatchSize = %d, want %d for variant %q", cfg.Llama.UBatchSize, profile.UBatchSize, cfg.Llama.Variant)
 	}
 }
 

@@ -160,11 +160,20 @@ func llamaVariant() string {
 	arch := runtime.GOARCH
 
 	switch {
-	case osName == "windows" && arch == "amd64":
-		variant := detectWindowsVariant()
-		return fmt.Sprintf("win-%s-x64", variant)
 	case osName == "windows" && arch == "arm64":
 		return "win-llvm-arm64"
+	case osName == "windows" && arch == "amd64":
+		switch config.DetectVariant() {
+		case "cuda":
+			slog.Info("nvidia GPU detected, selecting CUDA variant")
+			return "win-cuda-cu12.4-x64"
+		case "vulkan":
+			slog.Info("Vulkan detected, selecting Vulkan variant")
+			return "win-vulkan-x64"
+		default:
+			slog.Info("no GPU detected, selecting CPU AVX2 variant")
+			return "win-avx2-x64"
+		}
 	case osName == "linux" && arch == "amd64":
 		return "ubuntu-x64.zip"
 	case osName == "linux" && arch == "arm64":
@@ -174,23 +183,8 @@ func llamaVariant() string {
 	case osName == "darwin" && arch == "amd64":
 		return "macos-x64.zip"
 	default:
-		return "win-avx2-x64.zip"
+		return "win-avx2-x64"
 	}
-}
-
-// detectWindowsVariant checks for NVIDIA GPU (nvidia-smi) or Vulkan support,
-// returning the appropriate llama.cpp variant: cuda-cu12.4, vulkan, or avx2.
-func detectWindowsVariant() string {
-	if _, err := exec.LookPath("nvidia-smi"); err == nil {
-		slog.Info("nvidia GPU detected, selecting CUDA variant")
-		return "cuda-cu12.4"
-	}
-	if _, err := exec.LookPath("vulkaninfo"); err == nil {
-		slog.Info("Vulkan detected, selecting Vulkan variant")
-		return "vulkan"
-	}
-	slog.Info("no GPU detected, selecting CPU AVX2 variant")
-	return "avx2"
 }
 
 // modelFallbacks is an ordered list of embedding model URLs to try during download.
@@ -299,10 +293,26 @@ func downloadFile(dest, url string) error {
 	return nil
 }
 
+// applyVariantProfile checks if the configured variant matches the detected system variant.
+// If they differ (e.g. hardware changed), applies the optimal profile for the detected variant.
+func (m *Manager) applyVariantProfile() {
+	detected := config.DetectVariant()
+	if m.Cfg.Llama.Variant != detected {
+		slog.Info("hardware variant changed, applying optimal profile",
+			"from", m.Cfg.Llama.Variant, "to", detected)
+		m.Cfg.ApplyProfile(detected)
+		if err := config.Save(m.Cfg); err != nil {
+			slog.Warn("save config after variant profile update", "error", err)
+		}
+	}
+}
+
 // Start launches llama-server as a subprocess with embedding mode.
 // Finds a free port, sets up the process, waits until the health check passes (up to 120s).
 // On Windows, assigns the child to a Job Object for guaranteed cleanup on exit.
 func (m *Manager) Start() error {
+	m.applyVariantProfile()
+
 	port := m.Cfg.Llama.Port
 	if port == 0 {
 		port = findFreePort(56000, 57000)

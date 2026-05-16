@@ -79,7 +79,7 @@ var VariantProfiles = map[string]LlamaProfile{
 		BatchSize:  2048,
 		UBatchSize: 2048,
 		Pooling:    "mean",
-		ExtraArgs:  []string{"--no-webui", "--no-mmap"},
+		ExtraArgs:  []string{"--no-webui", "--no-mmap", "-fa", "on"},
 	},
 	"vulkan": {
 		NGLLayers:  99,
@@ -87,7 +87,7 @@ var VariantProfiles = map[string]LlamaProfile{
 		BatchSize:  512,
 		UBatchSize: 512,
 		Pooling:    "mean",
-		ExtraArgs:  []string{"--no-webui", "--no-mmap"},
+		ExtraArgs:  []string{"--no-webui", "--no-mmap", "-fa", "on"},
 	},
 	"avx2": {
 		NGLLayers:  0,

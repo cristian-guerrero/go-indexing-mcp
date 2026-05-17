@@ -49,20 +49,22 @@ type StorageData struct {
 
 // Storage manages chunk records with O(1) lookups by ID and file path,
 // branch-isolated persistence, an optional BM25 index for hybrid search,
-// and a lightweight fileIndex (path→hash) for memory-free resume support.
-// Thread-safe via sync.RWMutex.
+// a trigram index for fast grep pre-filtering, and a lightweight fileIndex
+// (path→hash) for memory-free resume support. Thread-safe via sync.RWMutex.
 type Storage struct {
-	path       string
-	basePath   string
-	dimensions int
-	mu         sync.RWMutex
-	records    []ChunkRecord
-	commitSHA  string
-	byID       map[string]int
-	byPath     map[string][]int
-	dirty      bool
-	bm25       *bm25Index
-	fileIndex  map[string]string // filePath → fileHash (survives SaveAndFree)
+	path         string
+	basePath     string
+	trigramsPath string
+	dimensions   int
+	mu           sync.RWMutex
+	records      []ChunkRecord
+	commitSHA    string
+	byID         map[string]int
+	byPath       map[string][]int
+	dirty        bool
+	bm25         *bm25Index
+	trigrams     *trigramIndex
+	fileIndex    map[string]string // filePath → fileHash (survives SaveAndFree)
 }
 
 // New creates or opens a Storage with the given gob file path and vector dimensions.
@@ -72,17 +74,19 @@ func New(dbPath string, dimensions int) (*Storage, error) {
 	}
 
 	s := &Storage{
-		path:       dbPath,
-		basePath:   dbPath,
-		dimensions: dimensions,
-		byID:       make(map[string]int),
-		byPath:     make(map[string][]int),
-		fileIndex:  make(map[string]string),
+		path:         dbPath,
+		basePath:     dbPath,
+		trigramsPath: trigramsPathFromVectorsPath(dbPath),
+		dimensions:   dimensions,
+		byID:         make(map[string]int),
+		byPath:       make(map[string][]int),
+		fileIndex:    make(map[string]string),
 	}
 
 	if err := s.load(); err != nil {
 		return nil, fmt.Errorf("load storage: %w", err)
 	}
+	s.loadTrigrams()
 
 	s.dirty = false
 	return s, nil
@@ -141,6 +145,7 @@ func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]f
 
 	s.dirty = true
 	s.bm25 = nil
+	s.trigrams = nil
 	return nil
 }
 
@@ -175,6 +180,7 @@ func (s *Storage) DeleteChunksByPath(filePath string) error {
 	s.rebuildIndex(kept)
 	s.dirty = true
 	s.bm25 = nil
+	s.trigrams = nil
 	return nil
 }
 
@@ -239,6 +245,7 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 		parts = append(parts, branch)
 	}
 	s.path = strings.Join(parts, "-") + ext
+	s.trigramsPath = trigramsPathFromVectorsPath(s.path)
 
 	// Clean up any leftover temp file from a crash during write
 	if _, err := os.Stat(s.path + ".tmp"); err == nil {
@@ -250,6 +257,7 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	s.byPath = make(map[string][]int)
 	s.commitSHA = ""
 	s.dirty = false
+	s.trigrams = nil
 
 	f, err := os.Open(s.path)
 	if err != nil {
@@ -265,23 +273,26 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	if err := dec.Decode(&data); err == nil {
 		s.rebuildIndex(data.Records)
 		s.commitSHA = data.CommitSHA
-		return nil
+	} else {
+		f.Seek(0, 0)
+		var records []ChunkRecord
+		dec = gob.NewDecoder(f)
+		if err := dec.Decode(&records); err != nil {
+			return nil
+		}
+		s.rebuildIndex(records)
 	}
 
-	f.Seek(0, 0)
-	var records []ChunkRecord
-	dec = gob.NewDecoder(f)
-	if err := dec.Decode(&records); err != nil {
-		return nil
-	}
-
-	s.rebuildIndex(records)
+	s.loadTrigrams()
 	return nil
 }
 
 // Close persists the dirty index to disk.
 func (s *Storage) Close() error {
-	return s.save()
+	if err := s.save(); err != nil {
+		return err
+	}
+	return s.saveTrigrams()
 }
 
 // Save flushes the current state to disk immediately.
@@ -375,7 +386,10 @@ func (s *Storage) load() error {
 func (s *Storage) save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	return s.saveTrigramsLocked()
 }
 
 // saveLocked writes all records (merged with existing on disk) atomically.
@@ -436,12 +450,16 @@ func (s *Storage) SaveAndFree() error {
 	if err := s.saveLocked(); err != nil {
 		return err
 	}
+	if err := s.saveTrigramsLocked(); err != nil {
+		return err
+	}
 
 	// Clear in-memory records (keep fileIndex for resume)
 	s.records = nil
 	s.byID = make(map[string]int)
 	s.byPath = make(map[string][]int)
 	s.bm25 = nil
+	s.trigrams = nil
 	s.dirty = false
 
 	return nil
@@ -533,6 +551,7 @@ func (s *Storage) rebuildIndex(records []ChunkRecord) {
 	s.byID = make(map[string]int)
 	s.byPath = make(map[string][]int)
 	s.bm25 = nil
+	s.trigrams = nil
 	s.fileIndex = make(map[string]string, len(records))
 
 	for i, rec := range records {
@@ -573,4 +592,73 @@ func normalize(v []float64) {
 // dotProduct delegates to the SIMD-accelerated (or scalar fallback) dot product.
 func dotProduct(a, b []float64) float64 {
 	return simd.Dot(a, b)
+}
+
+// trigramsPathFromVectorsPath derives the trigrams gob path from the vectors gob path.
+// e.g. ".../vectors.gob" → ".../trigrams.gob"
+// e.g. ".../vectors-main-work.gob" → ".../trigrams-main-work.gob"
+func trigramsPathFromVectorsPath(vecPath string) string {
+	dir := filepath.Dir(vecPath)
+	name := filepath.Base(vecPath)
+	tName := "trigrams" + name[len("vectors"):]
+	return filepath.Join(dir, tName)
+}
+
+// loadTrigrams reads the trigram index from disk if it exists and matches current records.
+func (s *Storage) loadTrigrams() {
+	f, err := os.Open(s.trigramsPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	var data TrigramData
+	dec := gob.NewDecoder(f)
+	if err := dec.Decode(&data); err != nil {
+		return
+	}
+
+	if data.DocCount != len(s.records) {
+		return
+	}
+
+	s.trigrams = &trigramIndex{index: data.Index}
+}
+
+// saveTrigrams is a thread-safe wrapper for persisting the trigram index.
+func (s *Storage) saveTrigrams() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveTrigramsLocked()
+}
+
+// saveTrigramsLocked persists the trigram index to disk atomically.
+// Caller must hold s.mu write lock.
+func (s *Storage) saveTrigramsLocked() error {
+	if s.trigrams == nil {
+		return nil
+	}
+
+	tmpPath := s.trigramsPath + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	enc := gob.NewEncoder(f)
+	if err := enc.Encode(TrigramData{
+		Index:    s.trigrams.index,
+		DocCount: len(s.records),
+	}); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	return os.Rename(tmpPath, s.trigramsPath)
 }

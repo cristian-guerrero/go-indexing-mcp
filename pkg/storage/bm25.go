@@ -284,6 +284,23 @@ func (s *Storage) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 
 	langFilter := strings.ToLower(opts.Language)
 
+	// Build candidate set from trigram index for literal queries (no regex).
+	// nil candidateSet = scan all docs; non-nil but empty = no results.
+	var candidateSet map[int]bool
+	if re == nil && len(query) >= 3 {
+		s.ensureTrigrams()
+		candidates := s.trigrams.candidateDocs(query)
+		if candidates != nil {
+			if len(candidates) == 0 {
+				return nil, nil
+			}
+			candidateSet = make(map[int]bool, len(candidates))
+			for _, idx := range candidates {
+				candidateSet[idx] = true
+			}
+		}
+	}
+
 	type scored struct {
 		idx     int
 		score   float64
@@ -321,12 +338,15 @@ func (s *Storage) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 		}
 
 		wg.Add(1)
-		go func(records []ChunkRecord, baseIdx int) {
+		go func(records []ChunkRecord, baseIdx int, candSet map[int]bool) {
 			defer wg.Done()
 			local := make([]scored, 0)
 
 			for j, rec := range records {
 				i := baseIdx + j
+				if candSet != nil && !candSet[i] {
+					continue
+				}
 				if langFilter != "" && !strings.EqualFold(rec.Language, langFilter) {
 					continue
 				}
@@ -375,7 +395,7 @@ func (s *Storage) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 			}
 
 			ch <- batch{results: local, idx: baseIdx}
-		}(s.records[start:end], start)
+		}(s.records[start:end], start, candidateSet)
 	}
 
 	go func() {
@@ -521,6 +541,107 @@ func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]S
 	}
 
 	return out, nil
+}
+
+// trigramIndex maps lowercase trigrams to sorted doc IDs for candidate pre-filtering
+// in grep searches. Allows O(1) lookup of which chunks could contain a literal query,
+// drastically reducing the number of chunks that need full line-by-line scanning.
+type trigramIndex struct {
+	index map[string][]int
+}
+
+// TrigramData is the on-disk format for the persisted trigram index.
+type TrigramData struct {
+	Index    map[string][]int
+	DocCount int
+}
+
+// buildTrigramIndex constructs the inverted trigram index from all chunk records.
+// For each record, extracts all 3-char sliding window substrings (lowercased)
+// and maps them to the record's index. Duplicate trigrams per doc are deduped.
+// Posting lists are sorted for O(n+m) intersection.
+func buildTrigramIndex(records []ChunkRecord) *trigramIndex {
+	idx := &trigramIndex{index: make(map[string][]int)}
+	for i, rec := range records {
+		seen := make(map[string]bool)
+		content := strings.ToLower(rec.Content)
+		for j := 0; j <= len(content)-3; j++ {
+			tg := content[j : j+3]
+			if !seen[tg] {
+				seen[tg] = true
+				idx.index[tg] = append(idx.index[tg], i)
+			}
+		}
+	}
+	for _, postings := range idx.index {
+		sort.Ints(postings)
+	}
+	return idx
+}
+
+// candidateDocs returns doc IDs that contain ALL trigrams of the query.
+// Returns nil if the query is too short (<3 chars), meaning "no filter — all docs"
+// must be scanned. Returns empty slice when no docs can possibly match.
+func (idx *trigramIndex) candidateDocs(query string) []int {
+	q := strings.ToLower(query)
+	if len(q) < 3 {
+		return nil
+	}
+
+	trigrams := make([]string, 0, len(q)-2)
+	for j := 0; j <= len(q)-3; j++ {
+		trigrams = append(trigrams, q[j:j+3])
+	}
+
+	// Sort by posting list length (smallest first) for efficient intersection
+	sort.Slice(trigrams, func(i, j int) bool {
+		return len(idx.index[trigrams[i]]) < len(idx.index[trigrams[j]])
+	})
+
+	first, ok := idx.index[trigrams[0]]
+	if !ok {
+		return []int{}
+	}
+	result := make([]int, len(first))
+	copy(result, first)
+
+	for _, tg := range trigrams[1:] {
+		postings, ok := idx.index[tg]
+		if !ok {
+			return []int{}
+		}
+		result = intersectSorted(result, postings)
+		if len(result) == 0 {
+			return []int{}
+		}
+	}
+	return result
+}
+
+// intersectSorted returns the intersection of two sorted int slices.
+func intersectSorted(a, b []int) []int {
+	var result []int
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		if a[i] == b[j] {
+			result = append(result, a[i])
+			i++
+			j++
+		} else if a[i] < b[j] {
+			i++
+		} else {
+			j++
+		}
+	}
+	return result
+}
+
+// ensureTrigrams builds the trigram index lazily if it hasn't been built yet.
+func (s *Storage) ensureTrigrams() {
+	if s.trigrams != nil {
+		return
+	}
+	s.trigrams = buildTrigramIndex(s.records)
 }
 
 // searchLocked performs a pure vector similarity search (caller must hold RLock).

@@ -37,16 +37,18 @@ type LlamaConfig struct {
 	ExtraArgs  []string `json:"extra_args"`
 }
 
-// IndexingConfig controls file walking, chunking, git integration, idle timeout, and watch intervals.
+// IndexingConfig controls file walking, chunking, git integration, idle timeout,
+// watch intervals, and periodic memory freeing during indexing.
 type IndexingConfig struct {
-	RootPath          string   `json:"root_path"`
-	IgnorePatterns    []string `json:"ignore_patterns"`
-	ChunkSize         int      `json:"chunk_size"`
-	ChunkOverlap      int      `json:"chunk_overlap"`
-	GitEnabled        bool     `json:"git_enabled"`
-	IdleTimeoutSecs   int      `json:"idle_timeout_secs"`
-	WatchEnabled      bool     `json:"watch_enabled"`
-	WatchIntervalSecs int      `json:"watch_interval_secs"`
+	RootPath            string   `json:"root_path"`
+	IgnorePatterns      []string `json:"ignore_patterns"`
+	ChunkSize           int      `json:"chunk_size"`
+	ChunkOverlap        int      `json:"chunk_overlap"`
+	GitEnabled          bool     `json:"git_enabled"`
+	IdleTimeoutSecs     int      `json:"idle_timeout_secs"`
+	WatchEnabled        bool     `json:"watch_enabled"`
+	WatchIntervalSecs   int      `json:"watch_interval_secs"`
+	MemoryFreeInterval  int      `json:"memory_free_interval"`
 }
 
 // StorageConfig is reserved for future storage settings.
@@ -165,14 +167,15 @@ func DefaultConfigForVariant(variant string) *Config {
 			ExtraArgs:  profile.ExtraArgs,
 		},
 		Indexing: IndexingConfig{
-			RootPath:          ".",
-			IgnorePatterns:    nil,
-			ChunkSize:         50,
-			ChunkOverlap:      10,
-			GitEnabled:        true,
-			IdleTimeoutSecs:   300,
-			WatchEnabled:      true,
-			WatchIntervalSecs: 60,
+			RootPath:            ".",
+			IgnorePatterns:      nil,
+			ChunkSize:           50,
+			ChunkOverlap:        10,
+			GitEnabled:          true,
+			IdleTimeoutSecs:     300,
+			WatchEnabled:        true,
+			WatchIntervalSecs:   60,
+			MemoryFreeInterval:  100,
 		},
 		Embedding: EmbeddingConfig{
 			Model:      "jina-embeddings-v2-base-code-Q5_K_M",
@@ -336,6 +339,9 @@ func fillMissing(cfg *Config) {
 	if cfg.Indexing.WatchIntervalSecs == 0 {
 		cfg.Indexing.WatchIntervalSecs = 60
 		cfg.Indexing.WatchEnabled = true
+	}
+	if cfg.Indexing.MemoryFreeInterval == 0 {
+		cfg.Indexing.MemoryFreeInterval = 100
 	}
 
 	if cfg.Embedding.Dimensions == 0 {

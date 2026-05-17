@@ -147,6 +147,7 @@ func readFileLines(path string) ([]string, error) {
 
 	var lines []string
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024) // 1MB buffer for long lines (e.g. base64 data)
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}

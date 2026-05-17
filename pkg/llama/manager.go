@@ -31,8 +31,7 @@ type Manager struct {
 	Ready     bool
 	ModelPath string
 	BinPath   string
-	jobHandle uintptr // Windows job object (KILL_ON_JOB_CLOSE), 0 on Unix
-	lock      *Lock   // Cross-process lock for sharing llama-server across MCPs
+	lock      *Lock // Cross-process lock for sharing llama-server across MCPs
 }
 
 // New creates a Manager from the given config.
@@ -348,8 +347,17 @@ func (m *Manager) Start() error {
 
 	if findProcessByPort(port) > 0 {
 		slog.Info("waiting for existing llama-server on port", "port", port)
-		if err := m.waitReady(120 * time.Second); err != nil {
-			slog.Warn("existing llama-server never became ready, will start fresh", "port", port, "error", err)
+		if err := m.waitReady(10 * time.Second); err != nil {
+			slog.Warn("existing llama-server unresponsive, killing and starting fresh", "port", port, "error", err)
+			// Kill the stuck process and clear the lock before starting fresh
+			if pid := findProcessByPort(port); pid > 0 {
+				if proc, err := os.FindProcess(pid); err == nil {
+					_ = proc.Kill()
+				}
+			}
+			if m.lock != nil {
+				_ = m.lock.ForceClear()
+			}
 		} else {
 			m.Port = port
 			m.Ready = true
@@ -531,17 +539,16 @@ func (m *Manager) Stop() {
 }
 
 // stopProcess kills the managed llama-server subprocess and cleans up the log file.
+// Does NOT call Process.Wait() — on Windows this can hang if the process was already terminated.
 func (m *Manager) stopProcess() {
 	if m.cmd != nil && m.cmd.Process != nil {
 		slog.Info("stopping llama-server", "pid", m.cmd.Process.Pid)
 		m.cmd.Process.Kill()
-		m.cmd.Wait()
 	}
 	if m.logFile != nil {
 		m.logFile.Close()
 		m.logFile = nil
 	}
-	m.cleanupJob()
 	m.Ready = false
 }
 
@@ -566,6 +573,49 @@ func (m *Manager) Restart() error {
 	m.cmd = nil
 	if err := m.Start(); err != nil {
 		return fmt.Errorf("restart llama-server: %w", err)
+	}
+	return nil
+}
+
+// ForceRestart kills llama-server unconditionally (bypassing the StartedProcess and lock checks)
+// and starts a fresh instance. Used by the indexer to free memory during large indexing operations
+// even when the server was started by another process.
+func (m *Manager) ForceRestart() error {
+	slog.Info("force-restarting llama-server to free memory")
+
+	// Step 1: Kill by cmd.Process if we started it (safe since stopProcess no longer calls Wait())
+	m.stopProcess()
+
+	// Step 2: Kill by port as fallback (for when we attached via lock and m.cmd was nil)
+	port := m.Port
+	if port == 0 {
+		port = m.Cfg.Llama.Port
+	}
+	if port == 0 {
+		port = 56000
+	}
+	pid := findProcessByPort(port)
+	if pid > 0 {
+		slog.Debug("killing llama-server on port", "port", port, "pid", pid)
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+		}
+	}
+
+	// Clear lock state so Start() starts fresh
+	if m.lock != nil {
+		_ = m.lock.ForceClear()
+	}
+	m.cmd = nil
+	m.lock = nil
+	m.Ready = false
+
+	// Wait for the port to be released
+	time.Sleep(2 * time.Second)
+
+	// Start fresh
+	if err := m.Start(); err != nil {
+		return fmt.Errorf("force-restart llama-server: %w", err)
 	}
 	return nil
 }

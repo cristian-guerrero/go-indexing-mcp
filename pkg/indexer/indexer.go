@@ -14,20 +14,24 @@ import (
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/embedder"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/llama"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
-// Indexer ties together the walker, chunker, embedder, and storage into a single pipeline.
-// Thread-safe for concurrent access; prevents overlapping index operations via mu.
+// Indexer ties together the walker, chunker, embedder, storage, and llama manager
+// into a single pipeline. Supports periodic memory freeing (SaveAndFree + llama restart)
+// to keep memory bounded during large indexing operations.
 type Indexer struct {
-	Walker   *walker.Walker
-	Chunker  *chunker.Chunker
-	Embedder *embedder.Embedder
-	Storage  *storage.Storage
-	mu       sync.Mutex
-	Running  bool
-	Stats    IndexStats
+	Walker             *walker.Walker
+	Chunker            *chunker.Chunker
+	Embedder           *embedder.Embedder
+	Storage            *storage.Storage
+	Llama              *llama.Manager
+	MemoryFreeInterval int // 0 = disabled; save+clear+restart every N files
+	mu                 sync.Mutex
+	Running            bool
+	Stats              IndexStats
 }
 
 // IndexStats holds cumulative indexing statistics, updated after each operation.
@@ -40,21 +44,26 @@ type IndexStats struct {
 
 // New creates an Indexer from the given pipeline components.
 // Embedder may be nil (for grep-only mode without llama.cpp).
-func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *storage.Storage) *Indexer {
+// Llama may be nil (when no llama-server management is needed).
+// memoryFreeInterval: 0 disables periodic memory freeing.
+func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *storage.Storage, lm *llama.Manager, memoryFreeInterval int) *Indexer {
 	return &Indexer{
-		Walker:   w,
-		Chunker:  ch,
-		Embedder: em,
-		Storage:  st,
+		Walker:             w,
+		Chunker:            ch,
+		Embedder:           em,
+		Storage:            st,
+		Llama:              lm,
+		MemoryFreeInterval: memoryFreeInterval,
 		Stats: IndexStats{
 			LastIndexed: "never",
 		},
 	}
 }
 
-// IndexAll performs a full index: walks all files, chunks, embeds, and stores them.
-// Skips files already in the index with matching hashes (resume support).
-// Saves progress periodically (every 10 files) so partial index survives shutdown.
+// IndexAll performs a full index: walks all files, then chunks, embeds, and stores
+// each file one at a time. Skips files already in the index with matching hashes
+// (resume support). Periodically saves, clears in-memory records, and restarts
+// llama-server to free memory when MemoryFreeInterval > 0.
 func (idx *Indexer) IndexAll() error {
 	idx.mu.Lock()
 	if idx.Running {
@@ -83,28 +92,38 @@ func (idx *Indexer) IndexAll() error {
 
 	idx.PruneStaleEntries()
 
-	chunksMap, err := idx.Chunker.ChunkFiles(files)
-	if err != nil {
-		return fmt.Errorf("chunk files: %w", err)
-	}
-
 	var totalChunks int
 	var indexedFiles int
-	for i, fi := range files {
-		// Skip files already in the index with matching hash (resume support)
+	var indexedSinceFree int
+
+	for _, fi := range files {
 		if idx.Storage.IsFileIndexed(fi.Path, fi.Hash) {
 			slog.Debug("skipping already indexed file", "file", fi.RelPath)
 			continue
 		}
 
-		chunks, ok := chunksMap[fi.Path]
-		if !ok || len(chunks) == 0 {
+		chunks, err := idx.Chunker.ChunkFile(fi)
+		if err != nil {
+			slog.Warn("chunk file skipped", "file", fi.RelPath, "error", err)
+			continue
+		}
+		if len(chunks) == 0 {
 			continue
 		}
 
 		embeddings, err := idx.Embedder.EmbedChunks(chunks)
 		if err != nil {
-			return fmt.Errorf("embed %s: %w", fi.RelPath, err)
+			// If llama crashed, try one restart + retry before giving up
+			if idx.Llama != nil && strings.Contains(err.Error(), "connection refused") {
+				slog.Warn("llama-server unresponsive, restarting and retrying", "file", fi.RelPath, "error", err)
+				if rerr := idx.restartLlama(); rerr != nil {
+					slog.Warn("restart after embed failure", "error", rerr)
+				}
+				embeddings, err = idx.Embedder.EmbedChunks(chunks)
+			}
+			if err != nil {
+				return fmt.Errorf("embed %s: %w", fi.RelPath, err)
+			}
 		}
 
 		if err := idx.Storage.UpsertChunks(chunks, embeddings); err != nil {
@@ -113,15 +132,35 @@ func (idx *Indexer) IndexAll() error {
 
 		totalChunks += len(chunks)
 		indexedFiles++
+		indexedSinceFree++
 		slog.Debug("indexed file", "file", fi.RelPath, "chunks", len(chunks))
 
-		// Save progress periodically so partial index survives shutdown
-		if i > 0 && i%10 == 0 {
+		// Periodic save for crash resilience
+		if indexedFiles%10 == 0 {
 			if err := idx.Storage.Save(); err != nil {
 				slog.Warn("periodic save", "error", err)
 			} else {
-				slog.Info("index progress saved", "files", i+1, "chunks", totalChunks)
+				slog.Info("index progress saved", "files", indexedFiles, "chunks", totalChunks)
 			}
+		}
+
+		// Periodic memory free: save merged gob, clear Go memory, restart llama-server
+		if idx.MemoryFreeInterval > 0 && indexedSinceFree >= idx.MemoryFreeInterval {
+			slog.Info("memory free threshold reached, freeing memory",
+				"files_indexed_so_far", indexedFiles, "interval", idx.MemoryFreeInterval)
+
+			if err := idx.Storage.SaveAndFree(); err != nil {
+				slog.Warn("save and free memory", "error", err)
+			}
+
+			if idx.Llama != nil {
+				if err := idx.restartLlama(); err != nil {
+					slog.Warn("restart llama-server after memory free", "error", err)
+				}
+			}
+
+			indexedSinceFree = 0
+			slog.Info("memory freed, continuing indexing", "files_indexed_so_far", indexedFiles)
 		}
 	}
 
@@ -384,6 +423,15 @@ func matchesPath(relPath, filter string) bool {
 		return false
 	}
 	return strings.EqualFold(relPath[:len(filter)], filter)
+}
+
+// restartLlama attempts to force-restart llama-server to free its memory.
+// Errors are logged as warnings and indexing continues without the restart.
+func (idx *Indexer) restartLlama() error {
+	if idx.Llama == nil {
+		return nil
+	}
+	return idx.Llama.ForceRestart()
 }
 
 // hasGlobChars returns true if the string contains glob metacharacters (*, ?, [).

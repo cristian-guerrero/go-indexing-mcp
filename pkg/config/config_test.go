@@ -132,6 +132,9 @@ func TestDefaultConfig(t *testing.T) {
 		if cfg.Indexing.IdleTimeoutSecs != 300 {
 			t.Errorf("Indexing.IdleTimeoutSecs = %d, want 300", cfg.Indexing.IdleTimeoutSecs)
 		}
+		if cfg.Indexing.MemoryFreeInterval != 100 {
+			t.Errorf("Indexing.MemoryFreeInterval = %d, want 100", cfg.Indexing.MemoryFreeInterval)
+		}
 	})
 	t.Run("Embedding defaults", func(t *testing.T) {
 		if cfg.Embedding.Model != "jina-embeddings-v2-base-code-Q5_K_M" {

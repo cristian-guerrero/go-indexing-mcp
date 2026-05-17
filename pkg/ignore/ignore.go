@@ -76,14 +76,15 @@ var DefaultPatterns = []string{
 	".pytest_cache",
 	".gradle",
 	".terraform",
+	".raggrep",
 }
 
 // Matcher evaluates whether a file path should be ignored based on
 // default patterns, user-provided patterns, and .gitignore rules at the project root.
 type Matcher struct {
-	gitIgnore  *gitignorelib.GitIgnore
-	patterns   []string
-	root       string
+	gitIgnore *gitignorelib.GitIgnore
+	patterns  []string
+	root      string
 }
 
 // New creates a Matcher with default + extra patterns and loads .gitignore at root.

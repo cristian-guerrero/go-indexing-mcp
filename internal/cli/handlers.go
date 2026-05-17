@@ -99,7 +99,7 @@ func RunGenerate() int {
 		slog.Warn("branch switch failed, continuing", "error", err)
 	}
 
-	idx := indexer.New(w, ch, em, st)
+	idx := indexer.New(w, ch, em, st, nil, 0)
 
 	tChunk := time.Now()
 	chunksMap, err := idx.Chunker.ChunkFiles(files)
@@ -213,6 +213,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string) int {
 	}
 
 	pw := progressWriter{}
+	tStart := time.Now()
 
 	needsLlama := mode != "grep"
 
@@ -273,7 +274,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string) int {
 	}
 
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
-	idx := indexer.New(w, ch, em, st)
+	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval)
 
 	stats := idx.GetStats()
 	if stats.TotalChunks == 0 {
@@ -339,6 +340,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string) int {
 	if len(results) == 0 {
 		fmt.Fprintln(pw, " No results found.")
 	}
+	fmt.Fprintf(pw, " Total time: %s\n", roundDuration(time.Since(tStart)))
 	fmt.Fprintln(pw, "======================")
 
 	return 0
@@ -354,6 +356,7 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	}
 
 	pw := progressWriter{}
+	tStart := time.Now()
 
 	rootPath := cfg.Indexing.RootPath
 	if rootPath == "" {
@@ -377,7 +380,7 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	}
 
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
-	idx := indexer.New(w, ch, nil, st)
+	idx := indexer.New(w, ch, nil, st, nil, 0)
 
 	stats := idx.GetStats()
 	if stats.TotalChunks == 0 {
@@ -435,6 +438,7 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	if len(results) == 0 {
 		fmt.Fprintln(pw, " No results found.")
 	}
+	fmt.Fprintf(pw, " Total time: %s\n", roundDuration(time.Since(tStart)))
 	fmt.Fprintln(pw, "======================")
 
 	return 0

@@ -123,7 +123,7 @@ type GrepResult struct {
 }
 
 // definitionKeywords is a list of line prefixes that indicate function/type/class
-// definitions. Lines matching these prefixes get a 2x score boost in grep results.
+// definitions. Lines matching these prefixes get a +2 score boost in grep results.
 var definitionKeywords = []string{
 	"func ", "function ", "def ", "class ", "interface ", "struct ",
 	"type ", "var ", "const ", "let ", "var ", "pub fn ", "async fn ",
@@ -243,8 +243,8 @@ func (s *Storage) ensureBM25() {
 }
 
 // SearchGrep performs substring or regex matching on all stored chunks.
-// Results are ranked by match count, with definition lines boosted 2x.
-// Supports case-sensitive, whole-word, and language-filter modes.
+// Results are ranked by normalized match count [0,1], with definition lines
+// receiving a +2 boost. Supports case-sensitive, whole-word, and language-filter modes.
 func (s *Storage) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -288,9 +288,7 @@ func (s *Storage) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 		matches []GrepMatch
 	}
 
-	tk := newTopK(limit, func(a, b scored) bool {
-		return a.score < b.score
-	})
+	var all []scored
 
 	for i, rec := range s.records {
 		if langFilter != "" && !strings.EqualFold(rec.Language, langFilter) {
@@ -331,19 +329,36 @@ func (s *Storage) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 			lower := strings.ToLower(m.Content)
 			for _, kw := range definitionKeywords {
 				if strings.HasPrefix(strings.TrimLeft(lower, " \t"), kw) {
-					score *= 2.0
+					score += 2.0
 					break
 				}
 			}
 		}
 
-		tk.Push(scored{idx: i, score: score, matches: matchLines})
+		all = append(all, scored{idx: i, score: score, matches: matchLines})
 	}
 
-	results := tk.Result()
+	var maxScore float64
+	for _, r := range all {
+		if r.score > maxScore {
+			maxScore = r.score
+		}
+	}
+	for i := range all {
+		if maxScore > 0 {
+			all[i].score /= maxScore
+		}
+	}
 
-	out := make([]GrepResult, len(results))
-	for i, r := range results {
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].score > all[j].score
+	})
+	if len(all) > limit {
+		all = all[:limit]
+	}
+
+	out := make([]GrepResult, len(all))
+	for i, r := range all {
 		rec := s.records[r.idx]
 		out[i] = GrepResult{
 			ID:        rec.ID,

@@ -40,15 +40,45 @@ func New(root string, extraIgnores []string) *Walker {
 	}
 }
 
+// getSubmodulePaths reads .gitmodules at the repo root and returns the set of
+// submodule directory paths (normalized to forward slashes). These directories
+// are skipped during Walk to avoid indexing external dependencies.
+func (w *Walker) getSubmodulePaths() map[string]bool {
+	paths := make(map[string]bool)
+	data, err := os.ReadFile(filepath.Join(w.Root, ".gitmodules"))
+	if err != nil {
+		return paths
+	}
+	// Parse git config format: [submodule "name"] / path = some/path
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "path = ") {
+			continue
+		}
+		p := strings.TrimPrefix(line, "path = ")
+		if p != "" {
+			paths[filepath.ToSlash(p)] = true
+		}
+	}
+	return paths
+}
+
 // Walk traverses the root directory, collecting FileInfo for each file that
 // passes the ignore matcher and has a recognized programming language extension.
+// Submodule directories (from .gitmodules) are skipped entirely.
 func (w *Walker) Walk() ([]FileInfo, error) {
 	var files []FileInfo
+	submodules := w.getSubmodulePaths()
+
 	err := filepath.Walk(w.Root, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
 		if fi.IsDir() {
+			rel, _ := filepath.Rel(w.Root, path)
+			if submodules[filepath.ToSlash(rel)] {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		rel, _ := filepath.Rel(w.Root, path)

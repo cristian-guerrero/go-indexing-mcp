@@ -66,6 +66,7 @@ var DefaultPatterns = []string{
 	"Pipfile.lock",
 	"poetry.lock",
 	".gitkeep",
+	".gitmodules",
 	".go-mcp",
 	".DS_Store",
 	"Thumbs.db",

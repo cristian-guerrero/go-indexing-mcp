@@ -6,8 +6,10 @@ package storage
 import (
 	"math"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -290,52 +292,99 @@ func (s *Storage) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 
 	var all []scored
 
-	for i, rec := range s.records {
-		if langFilter != "" && !strings.EqualFold(rec.Language, langFilter) {
-			continue
+	if len(s.records) == 0 {
+		return nil, nil
+	}
+
+	numWorkers := runtime.GOMAXPROCS(0) / 2
+	if numWorkers < 1 {
+		numWorkers = 1
+	}
+
+	type batch struct {
+		results []scored
+		idx     int
+	}
+	ch := make(chan batch, numWorkers)
+
+	batchSize := (len(s.records) + numWorkers - 1) / numWorkers
+	var wg sync.WaitGroup
+
+	for w := 0; w < numWorkers; w++ {
+		start := w * batchSize
+		end := start + batchSize
+		if end > len(s.records) {
+			end = len(s.records)
+		}
+		if start >= end {
+			break
 		}
 
-		lines := strings.Split(rec.Content, "\n")
-		var matchLines []GrepMatch
-		var cnt int
+		wg.Add(1)
+		go func(records []ChunkRecord, baseIdx int) {
+			defer wg.Done()
+			local := make([]scored, 0)
 
-		for lineIdx, line := range lines {
-			var lineCnt int
-			if re != nil {
-				lineCnt = len(re.FindAllString(line, -1))
-			} else {
-				if opts.CaseSensitive {
-					lineCnt = strings.Count(line, query)
-				} else {
-					lineCnt = strings.Count(strings.ToLower(line), strings.ToLower(query))
+			for j, rec := range records {
+				i := baseIdx + j
+				if langFilter != "" && !strings.EqualFold(rec.Language, langFilter) {
+					continue
 				}
-			}
-			if lineCnt > 0 {
-				cnt += lineCnt
-				matchLines = append(matchLines, GrepMatch{
-					Line:    rec.StartLine + lineIdx,
-					Content: strings.TrimRight(line, " \t\r"),
-				})
-			}
-		}
 
-		if cnt == 0 {
-			continue
-		}
+				lines := strings.Split(rec.Content, "\n")
+				var matchLines []GrepMatch
+				var cnt int
 
-		score := float64(cnt)
-
-		for _, m := range matchLines {
-			lower := strings.ToLower(m.Content)
-			for _, kw := range definitionKeywords {
-				if strings.HasPrefix(strings.TrimLeft(lower, " \t"), kw) {
-					score += 2.0
-					break
+				for lineIdx, line := range lines {
+					var lineCnt int
+					if re != nil {
+						lineCnt = len(re.FindAllString(line, -1))
+					} else {
+						if opts.CaseSensitive {
+							lineCnt = strings.Count(line, query)
+						} else {
+							lineCnt = strings.Count(strings.ToLower(line), strings.ToLower(query))
+						}
+					}
+					if lineCnt > 0 {
+						cnt += lineCnt
+						matchLines = append(matchLines, GrepMatch{
+							Line:    rec.StartLine + lineIdx,
+							Content: strings.TrimRight(line, " \t\r"),
+						})
+					}
 				}
-			}
-		}
 
-		all = append(all, scored{idx: i, score: score, matches: matchLines})
+				if cnt == 0 {
+					continue
+				}
+
+				score := float64(cnt)
+
+				for _, m := range matchLines {
+					lower := strings.ToLower(m.Content)
+					for _, kw := range definitionKeywords {
+						if strings.HasPrefix(strings.TrimLeft(lower, " \t"), kw) {
+							score += 2.0
+							break
+						}
+					}
+				}
+
+				local = append(local, scored{idx: i, score: score, matches: matchLines})
+			}
+
+			ch <- batch{results: local, idx: baseIdx}
+		}(s.records[start:end], start)
+	}
+
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	for br := range ch {
+		all = append(all, br.results...)
 	}
 
 	var maxScore float64

@@ -141,9 +141,9 @@ func main() {
 	w := walker.New(cfg.Indexing.RootPath, cfg.Indexing.IgnorePatterns)
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
-	dbPath := config.StoragePath(cfg.Indexing.RootPath)
+	dbDir := config.StorageDir(cfg.Indexing.RootPath)
 
-	st, err := storage.New(dbPath, cfg.Embedding.Dimensions)
+	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
 		slog.Error("storage init", "error", err)
 		os.Exit(1)

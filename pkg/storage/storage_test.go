@@ -2,7 +2,6 @@ package storage
 
 import (
 	"math"
-	"path/filepath"
 	"testing"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
@@ -76,8 +75,7 @@ func TestNormalize(t *testing.T) {
 
 
 func TestNewAndClose(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	s, err := New(t.TempDir(), 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,8 +111,8 @@ func makeEmbeddings(chunks []chunker.Chunk) map[string][]float64 {
 }
 
 func TestUpsertAndSearch(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,8 +140,8 @@ func TestUpsertAndSearch(t *testing.T) {
 }
 
 func TestUpsert_UpdateExisting(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,8 +164,8 @@ func TestUpsert_UpdateExisting(t *testing.T) {
 }
 
 func TestDeleteChunksByPath(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,8 +192,8 @@ func TestDeleteChunksByPath(t *testing.T) {
 }
 
 func TestStats(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,8 +219,8 @@ func TestStats(t *testing.T) {
 }
 
 func TestListFiles(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,8 +243,8 @@ func TestListFiles(t *testing.T) {
 }
 
 func TestCommitSHA(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +256,7 @@ func TestCommitSHA(t *testing.T) {
 
 	s.Close()
 
-	s2, err := New(path, 4)
+	s2, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,8 +268,8 @@ func TestCommitSHA(t *testing.T) {
 }
 
 func TestSearchLimit(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,8 +294,8 @@ func TestSearchLimit(t *testing.T) {
 }
 
 func TestSearchResultOrder(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,9 +323,9 @@ func TestSearchResultOrder(t *testing.T) {
 }
 
 func TestPersistence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
+	baseDir := t.TempDir()
 
-	s1, err := New(path, 4)
+	s1, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +335,7 @@ func TestPersistence(t *testing.T) {
 	s1.SetCommitSHA("persist-test")
 	s1.Close()
 
-	s2, err := New(path, 4)
+	s2, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,10 +351,9 @@ func TestPersistence(t *testing.T) {
 }
 
 func TestSwitchBranch(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "vectors.gob")
+	baseDir := t.TempDir()
 
-	s, err := New(path, 4)
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +395,7 @@ func TestSwitchBranch(t *testing.T) {
 
 	s.Close()
 
-	s2, err := New(path, 4)
+	s2, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,8 +411,8 @@ func TestSwitchBranch(t *testing.T) {
 }
 
 func TestSearchResultFields(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,8 +468,8 @@ func itoa(n int) string {
 }
 
 func TestSearchGrep_BasicLiteral(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,8 +494,8 @@ func TestSearchGrep_BasicLiteral(t *testing.T) {
 }
 
 func TestSearchGrep_LanguageFilter(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,8 +520,8 @@ func TestSearchGrep_LanguageFilter(t *testing.T) {
 }
 
 func TestSearchGrep_CaseSensitive(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -549,8 +546,8 @@ func TestSearchGrep_CaseSensitive(t *testing.T) {
 }
 
 func TestSearchGrep_WholeWord(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,8 +572,8 @@ func TestSearchGrep_WholeWord(t *testing.T) {
 }
 
 func TestSearchGrep_DefinitionBoost(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,8 +598,8 @@ func TestSearchGrep_DefinitionBoost(t *testing.T) {
 }
 
 func TestSearchGrep_LineMatches(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,8 +626,8 @@ func TestSearchGrep_LineMatches(t *testing.T) {
 }
 
 func TestSearchGrep_Regex(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "test.gob")
-	s, err := New(path, 4)
+	baseDir := t.TempDir()
+	s, err := New(baseDir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}

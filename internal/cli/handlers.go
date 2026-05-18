@@ -84,9 +84,9 @@ func RunGenerate() int {
 
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
-	dbPath := config.StoragePath(rootPath)
+	dbDir := config.StorageDir(rootPath)
 
-	st, err := storage.New(dbPath, cfg.Embedding.Dimensions)
+	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
 		slog.Error("storage init", "error", err)
 		return 1
@@ -173,9 +173,9 @@ func RunListFiles() int {
 	}
 
 	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
-	dbPath := config.StoragePath(rootPath)
+	dbDir := config.StorageDir(rootPath)
 
-	st, err := storage.New(dbPath, cfg.Embedding.Dimensions)
+	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
 		slog.Error("storage init", "error", err)
 		return 1
@@ -253,9 +253,9 @@ func RunQuery(query string, mode string, limit int, pathFilter string) int {
 	}
 
 	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
-	dbPath := config.StoragePath(rootPath)
+	dbDir := config.StorageDir(rootPath)
 
-	st, err := storage.New(dbPath, cfg.Embedding.Dimensions)
+	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
 		slog.Error("storage init", "error", err)
 		return 1
@@ -364,9 +364,9 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	}
 
 	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
-	dbPath := config.StoragePath(rootPath)
+	dbDir := config.StorageDir(rootPath)
 
-	st, err := storage.New(dbPath, cfg.Embedding.Dimensions)
+	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
 		slog.Error("storage init", "error", err)
 		return 1

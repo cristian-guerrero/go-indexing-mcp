@@ -6,6 +6,7 @@ package storage
 import (
 	"encoding/gob"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage/simd"
 )
 
@@ -41,9 +43,17 @@ type SearchResult struct {
 	Score     float64 `json:"score"`
 }
 
-// StorageData is the on-disk format: records + commit SHA for git tracking.
+// StorageData is the on-disk format for the legacy single-file layout:
+// records + commit SHA for git tracking.
 type StorageData struct {
 	Records   []ChunkRecord
+	CommitSHA string
+}
+
+// StorageManifest is the on-disk per-file format: file index + commit SHA.
+// The heavy chunk records are stored in separate per-file gobs under chunks/.
+type StorageManifest struct {
+	FileIndex map[string]string // filePath → fileHash
 	CommitSHA string
 }
 
@@ -51,33 +61,50 @@ type StorageData struct {
 // branch-isolated persistence, an optional BM25 index for hybrid search,
 // and a lightweight fileIndex (path→hash) for memory-free resume support.
 // Thread-safe via sync.RWMutex.
+//
+// Disk layout:
+//
+//	{baseDir}/
+//	  manifest.gob              # StorageManifest (fileIndex + commitSHA)
+//	  manifest-{branch}.gob     # branch-specific manifest
+//	  chunks/                   # per-file chunk gobs (main branch)
+//	    {encoded-rel-path}.gob
+//	  chunks-{branch}/          # per-file chunk gobs (other branches)
+//	    {encoded-rel-path}.gob
 type Storage struct {
-	path       string
-	basePath   string
-	dimensions int
-	mu         sync.RWMutex
-	records    []ChunkRecord
-	commitSHA  string
-	byID       map[string]int
-	byPath     map[string][]int
-	dirty      bool
-	bm25       *bm25Index
-	fileIndex  map[string]string // filePath → fileHash (survives SaveAndFree)
+	baseDir      string
+	manifestPath string
+	chunksDir    string
+	dimensions   int
+	mu           sync.RWMutex
+	records      []ChunkRecord
+	commitSHA    string
+	byID         map[string]int
+	byPath       map[string][]int
+	dirtyFiles   map[string]bool // relPath → needs re-saving on disk; true = dirty
+	dirty        bool            // manifest-level dirty (commitSHA change)
+	bm25         *bm25Index
+	fileIndex    map[string]string // filePath → fileHash (survives SaveAndFree)
 }
 
-// New creates or opens a Storage with the given gob file path and vector dimensions.
-func New(dbPath string, dimensions int) (*Storage, error) {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
-		return nil, fmt.Errorf("create storage dir: %w", err)
+// New creates or opens a Storage with the given base directory and vector dimensions.
+// The base directory follows the format from config.StorageDir.
+// Supports automatic migration from the legacy single-file format.
+func New(baseDir string, dimensions int) (*Storage, error) {
+	chunksDir := filepath.Join(baseDir, "chunks")
+	if err := os.MkdirAll(chunksDir, 0755); err != nil {
+		return nil, fmt.Errorf("create chunks dir: %w", err)
 	}
 
 	s := &Storage{
-		path:       dbPath,
-		basePath:   dbPath,
-		dimensions: dimensions,
-		byID:       make(map[string]int),
-		byPath:     make(map[string][]int),
-		fileIndex:  make(map[string]string),
+		baseDir:      baseDir,
+		manifestPath: filepath.Join(baseDir, "manifest.gob"),
+		chunksDir:    chunksDir,
+		dimensions:   dimensions,
+		byID:         make(map[string]int),
+		byPath:       make(map[string][]int),
+		fileIndex:    make(map[string]string),
+		dirtyFiles:   make(map[string]bool),
 	}
 
 	if err := s.load(); err != nil {
@@ -89,8 +116,9 @@ func New(dbPath string, dimensions int) (*Storage, error) {
 }
 
 // UpsertChunks inserts or updates chunks. Vectors are L2-normalized before storing.
-// On update (same chunk ID), the old record is replaced. Invalidates the BM25 cache
-// and updates the lightweight fileIndex for memory-free resume support.
+// On update (same chunk ID), the old record is replaced. Invalidates the BM25 cache,
+// updates the lightweight fileIndex for memory-free resume support, and marks the
+// file's chunk gob as dirty for the next per-file save.
 func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -137,6 +165,10 @@ func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]f
 			s.fileIndex = make(map[string]string)
 		}
 		s.fileIndex[chunks[0].FilePath] = chunks[0].FileHash
+		// Mark this file's chunk gob as dirty
+		if chunks[0].RelPath != "" {
+			s.dirtyFiles[chunks[0].RelPath] = true
+		}
 	}
 
 	s.dirty = true
@@ -145,8 +177,9 @@ func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]f
 }
 
 // DeleteChunksByPath removes all chunks belonging to a file path.
-// Rebuilds the byID/byPath indices, invalidates BM25 cache, and
-// removes the entry from the lightweight fileIndex.
+// Rebuilds the byID/byPath indices, invalidates BM25 cache, marks the
+// file's chunk gob for deletion on next save, and removes the entry
+// from the lightweight fileIndex.
 func (s *Storage) DeleteChunksByPath(filePath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -158,6 +191,15 @@ func (s *Storage) DeleteChunksByPath(filePath string) error {
 	}
 	if len(indices) == 0 {
 		return nil
+	}
+
+	// Capture relPath before rebuilding (use first chunk as representative)
+	var relPath string
+	for _, idx := range indices {
+		if s.records[idx].RelPath != "" {
+			relPath = s.records[idx].RelPath
+			break
+		}
 	}
 
 	del := make(map[int]bool)
@@ -175,6 +217,12 @@ func (s *Storage) DeleteChunksByPath(filePath string) error {
 	s.rebuildIndex(kept)
 	s.dirty = true
 	s.bm25 = nil
+
+	// Mark for chunk file deletion on next save
+	if relPath != "" {
+		s.dirtyFiles[relPath] = true
+	}
+
 	return nil
 }
 
@@ -215,9 +263,25 @@ func (s *Storage) ListFiles() []string {
 	return files
 }
 
+// branchSuffix builds the filename suffix for non-main git branches.
+// Returns "" for main, "-{worktree}-{branch}" for other branches.
+func branchSuffix(branch, worktree string) string {
+	var parts []string
+	if worktree != "" {
+		parts = append(parts, worktree)
+	}
+	if branch != "" && branch != "main" {
+		parts = append(parts, branch)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "-" + strings.Join(parts, "-")
+}
+
 // SwitchBranch persists the current index and loads the index for a different
-// git branch/worktree. Branch files follow the pattern:
-// vectors.gob (main) or vectors-{worktree}-{branch}.gob (other branches).
+// git branch/worktree. Uses branch-specific manifest and chunks directories:
+// manifest.gob + chunks/ (main) or manifest-{branch}.gob + chunks-{branch}/.
 func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -228,55 +292,25 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 		}
 	}
 
-	ext := filepath.Ext(s.basePath)
-	base := s.basePath[:len(s.basePath)-len(ext)]
+	suffix := branchSuffix(branch, worktree)
+	s.manifestPath = filepath.Join(s.baseDir, "manifest"+suffix+".gob")
+	s.chunksDir = filepath.Join(s.baseDir, "chunks"+suffix)
 
-	parts := []string{base}
-	if worktree != "" {
-		parts = append(parts, worktree)
+	if err := os.MkdirAll(s.chunksDir, 0755); err != nil {
+		return fmt.Errorf("create branch chunks dir: %w", err)
 	}
-	if branch != "" && branch != "main" {
-		parts = append(parts, branch)
-	}
-	s.path = strings.Join(parts, "-") + ext
 
-	// Clean up any leftover temp file from a crash during write
-	if _, err := os.Stat(s.path + ".tmp"); err == nil {
-		os.Remove(s.path + ".tmp")
-	}
+	// Clean up leftover temp files
+	cleanupTempFiles(s.chunksDir)
 
 	s.records = nil
 	s.byID = make(map[string]int)
 	s.byPath = make(map[string][]int)
 	s.commitSHA = ""
 	s.dirty = false
+	s.dirtyFiles = make(map[string]bool)
 
-	f, err := os.Open(s.path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	defer f.Close()
-
-	var data StorageData
-	dec := gob.NewDecoder(f)
-	if err := dec.Decode(&data); err == nil {
-		s.rebuildIndex(data.Records)
-		s.commitSHA = data.CommitSHA
-		return nil
-	}
-
-	f.Seek(0, 0)
-	var records []ChunkRecord
-	dec = gob.NewDecoder(f)
-	if err := dec.Decode(&records); err != nil {
-		return nil
-	}
-
-	s.rebuildIndex(records)
-	return nil
+	return s.loadPerFile()
 }
 
 // Close persists the dirty index to disk.
@@ -333,15 +367,62 @@ func (s *Storage) GetCommitSHA() string {
 	return s.commitSHA
 }
 
-// load reads the gob file from disk and rebuilds in-memory indices.
-// Supports both StorageData format (with CommitSHA) and legacy []ChunkRecord format.
+// load reads the index from disk. Tries the per-file format first (manifest.gob + chunks/),
+// then falls back to the legacy single-file format (vectors.gob) and migrates it.
 func (s *Storage) load() error {
-	// Clean up any leftover temp file from a crash during write
-	if _, err := os.Stat(s.path + ".tmp"); err == nil {
-		os.Remove(s.path + ".tmp")
+	// Try per-file format first
+	if err := s.loadPerFile(); err == nil {
+		return nil
 	}
 
-	f, err := os.Open(s.path)
+	// Fallback: try legacy single-file format and migrate
+	legacyPath := filepath.Join(s.baseDir, "vectors.gob")
+	f, err := os.Open(legacyPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return nil // no legacy file, start fresh
+	}
+	defer f.Close()
+
+	slog.Info("migrating from legacy single-file format to per-file layout",
+		"legacy", legacyPath, "chunks_dir", s.chunksDir)
+
+	var data StorageData
+	dec := gob.NewDecoder(f)
+	if err := dec.Decode(&data); err == nil {
+		s.rebuildIndex(data.Records)
+		s.commitSHA = data.CommitSHA
+	} else {
+		f.Seek(0, 0)
+		var records []ChunkRecord
+		dec = gob.NewDecoder(f)
+		if err := dec.Decode(&records); err != nil {
+			return nil // corrupt legacy file, start fresh
+		}
+		s.rebuildIndex(records)
+	}
+
+	// Migrate: save in new format, then remove legacy file
+	if len(s.records) > 0 {
+		if err := s.saveLocked(); err != nil {
+			slog.Warn("migration save failed, keeping legacy file", "error", err)
+			return nil
+		}
+		os.Remove(legacyPath)
+		os.Remove(filepath.Join(s.baseDir, "vectors.gob.tmp"))
+		slog.Info("migration complete, legacy file removed", "path", legacyPath)
+	}
+
+	s.dirty = false
+	return nil
+}
+
+// loadPerFile reads the index from the per-file format (manifest.gob + chunks/*.gob).
+// Returns an error if the manifest file doesn't exist or the format is incompatible.
+func (s *Storage) loadPerFile() error {
+	f, err := os.Open(s.manifestPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -350,63 +431,145 @@ func (s *Storage) load() error {
 	}
 	defer f.Close()
 
-	var data StorageData
+	var manifest StorageManifest
 	dec := gob.NewDecoder(f)
-	if err := dec.Decode(&data); err == nil {
-		s.rebuildIndex(data.Records)
-		s.commitSHA = data.CommitSHA
-		s.dirty = false
-		return nil
+	if err := dec.Decode(&manifest); err != nil {
+		return fmt.Errorf("decode manifest: %w", err)
 	}
 
-	f.Seek(0, 0)
-	var records []ChunkRecord
-	dec = gob.NewDecoder(f)
-	if err := dec.Decode(&records); err != nil {
+	s.fileIndex = manifest.FileIndex
+	s.commitSHA = manifest.CommitSHA
+
+	// Iterate all gob files in chunksDir and load records
+	entries, err := os.ReadDir(s.chunksDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
 
-	s.rebuildIndex(records)
-	s.dirty = false
+	var allRecords []ChunkRecord
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".gob" {
+			continue
+		}
+		chunkPath := filepath.Join(s.chunksDir, entry.Name())
+		records, err := loadChunkFile(chunkPath)
+		if err != nil {
+			slog.Warn("skipping corrupt chunk file", "path", chunkPath, "error", err)
+			continue
+		}
+		allRecords = append(allRecords, records...)
+	}
+
+	s.rebuildIndex(allRecords)
 	return nil
 }
 
-// save persists the index to disk (merged with existing on disk). Thread-safe.
+// save persists dirty chunk files and the manifest to disk. Thread-safe.
 func (s *Storage) save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.saveLocked()
 }
 
-// saveLocked writes all records (merged with existing on disk) atomically.
+// saveLocked writes dirty chunk files as per-file gobs and updates the manifest.
 // Caller must hold s.mu write lock.
 func (s *Storage) saveLocked() error {
-	if !s.dirty && len(s.records) == 0 {
+	if !s.dirty && len(s.dirtyFiles) == 0 {
 		return nil
 	}
 
-	// Load existing records from disk and merge — ensures periodic/final saves
-	// don't overwrite data that was already persisted by SaveAndFree.
-	existing := s.loadRecordsFromDiskLocked()
-	merged := mergeRecordsLocked(existing, s.records)
+	// Write dirty chunk files (or delete if no records remain for that file)
+	for relPath := range s.dirtyFiles {
+		if relPath == "" {
+			continue
+		}
 
-	// Commit SHA: prefer current, fall back to persisted
-	sha := s.commitSHA
-	if sha == "" {
-		_ = s.loadCommitSHALocked(&sha)
+		// Find records for this file by matching RelPath
+		var fileRecords []ChunkRecord
+		for _, rec := range s.records {
+			if rec.RelPath == relPath {
+				fileRecords = append(fileRecords, rec)
+			}
+		}
+
+		chunkPath := filepath.Join(s.chunksDir, config.EncodeFilePath(relPath))
+		if len(fileRecords) == 0 {
+			// File was deleted
+			os.Remove(chunkPath)
+			os.Remove(chunkPath + ".tmp")
+		} else {
+			if err := writeChunkFile(chunkPath, fileRecords); err != nil {
+				return fmt.Errorf("write chunk file %s: %w", relPath, err)
+			}
+		}
 	}
 
-	tmpPath := s.path + ".tmp"
+	// Build fileIndex from current records
+	s.fileIndex = make(map[string]string, len(s.records))
+	for _, rec := range s.records {
+		s.fileIndex[rec.FilePath] = rec.FileHash
+	}
+
+	// Write manifest with current commit SHA
+	sha := s.commitSHA
+	manifest := StorageManifest{
+		FileIndex: s.fileIndex,
+		CommitSHA: sha,
+	}
+	if err := writeManifestFile(s.manifestPath, manifest); err != nil {
+		return fmt.Errorf("write manifest: %w", err)
+	}
+
+	s.dirtyFiles = make(map[string]bool)
+	s.dirty = false
+	return nil
+}
+
+// SaveAndFree persists all dirty chunk files and the manifest, then clears
+// in-memory records, byID, byPath, BM25, and dirtyFiles to free Go memory.
+// The lightweight fileIndex is preserved so IsFileIndexed continues to work
+// for resume support. Should be called periodically during large indexing.
+func (s *Storage) SaveAndFree() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+
+	// Rebuild fileIndex before clearing records (saveLocked already did this,
+	// but ensure it's current even if saveLocked was a no-op)
+	if s.fileIndex == nil || len(s.fileIndex) == 0 {
+		s.fileIndex = make(map[string]string, len(s.records))
+		for _, rec := range s.records {
+			s.fileIndex[rec.FilePath] = rec.FileHash
+		}
+	}
+
+	// Clear in-memory records (keep fileIndex for resume)
+	s.records = nil
+	s.byID = make(map[string]int)
+	s.byPath = make(map[string][]int)
+	s.bm25 = nil
+	s.dirtyFiles = make(map[string]bool)
+	s.dirty = false
+
+	return nil
+}
+
+// writeChunkFile atomically writes a slice of ChunkRecords to a per-file gob.
+func writeChunkFile(path string, records []ChunkRecord) error {
+	tmpPath := path + ".tmp"
 	f, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
 
 	enc := gob.NewEncoder(f)
-	if err := enc.Encode(StorageData{
-		Records:   merged,
-		CommitSHA: sha,
-	}); err != nil {
+	if err := enc.Encode(records); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
 		return err
@@ -417,113 +580,59 @@ func (s *Storage) saveLocked() error {
 		return err
 	}
 
-	if err := os.Rename(tmpPath, s.path); err != nil {
-		return err
-	}
-
-	s.dirty = false
-	return nil
+	return os.Rename(tmpPath, path)
 }
 
-// SaveAndFree persists all records (merged with existing on disk), then clears
-// in-memory records, byID, byPath, and BM25 to free Go memory. The lightweight
-// fileIndex is preserved so IsFileIndexed continues to work for resume support.
-// Should be called periodically during large indexing operations.
-func (s *Storage) SaveAndFree() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if err := s.saveLocked(); err != nil {
-		return err
-	}
-
-	// Clear in-memory records (keep fileIndex for resume)
-	s.records = nil
-	s.byID = make(map[string]int)
-	s.byPath = make(map[string][]int)
-	s.bm25 = nil
-	s.dirty = false
-
-	return nil
-}
-
-// loadRecordsFromDiskLocked reads existing records from the gob file.
-// Caller must hold s.mu (write lock). Returns nil if file doesn't exist or on error.
-func (s *Storage) loadRecordsFromDiskLocked() []ChunkRecord {
-	f, err := os.Open(s.path)
+// loadChunkFile reads a per-file gob containing []ChunkRecord.
+func loadChunkFile(path string) ([]ChunkRecord, error) {
+	f, err := os.Open(path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer f.Close()
 
-	var data StorageData
-	dec := gob.NewDecoder(f)
-	if err := dec.Decode(&data); err == nil {
-		return data.Records
-	}
-
-	f.Seek(0, 0)
 	var records []ChunkRecord
-	dec = gob.NewDecoder(f)
+	dec := gob.NewDecoder(f)
 	if err := dec.Decode(&records); err != nil {
-		return nil
+		return nil, err
 	}
-	return records
+	return records, nil
 }
 
-// loadCommitSHALocked reads the commit SHA from the gob file if not already set.
-// Caller must hold s.mu (write lock).
-func (s *Storage) loadCommitSHALocked(sha *string) error {
-	f, err := os.Open(s.path)
+// writeManifestFile atomically writes a StorageManifest to a gob file.
+func writeManifestFile(path string, manifest StorageManifest) error {
+	tmpPath := path + ".tmp"
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	var data StorageData
-	dec := gob.NewDecoder(f)
-	if err := dec.Decode(&data); err != nil {
+	enc := gob.NewEncoder(f)
+	if err := enc.Encode(manifest); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
 		return err
 	}
-	*sha = data.CommitSHA
-	return nil
+
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	return os.Rename(tmpPath, path)
 }
 
-// mergeRecordsLocked merges incoming records into existing, with incoming taking
-// precedence by chunk ID. Returns a new slice without modifying inputs.
-func mergeRecordsLocked(existing, incoming []ChunkRecord) []ChunkRecord {
-	if len(existing) == 0 {
-		out := make([]ChunkRecord, len(incoming))
-		copy(out, incoming)
-		return out
+// cleanupTempFiles removes any leftover .tmp files in the given directory.
+func cleanupTempFiles(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
 	}
-	if len(incoming) == 0 {
-		out := make([]ChunkRecord, len(existing))
-		copy(out, existing)
-		return out
-	}
-
-	// Build index of existing records by ID
-	byID := make(map[string]int, len(existing))
-	for i, rec := range existing {
-		byID[rec.ID] = i
-	}
-
-	// Start with a copy of existing
-	merged := make([]ChunkRecord, len(existing))
-	copy(merged, existing)
-
-	// Merge incoming: update existing or append new
-	for _, rec := range incoming {
-		if idx, ok := byID[rec.ID]; ok {
-			merged[idx] = rec
-		} else {
-			byID[rec.ID] = len(merged)
-			merged = append(merged, rec)
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".tmp") {
+			os.Remove(filepath.Join(dir, entry.Name()))
 		}
 	}
-
-	return merged
 }
 
 // rebuildIndex replaces all in-memory data structures with the given records,

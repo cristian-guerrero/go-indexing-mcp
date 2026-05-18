@@ -22,6 +22,52 @@ func setTempHome(t *testing.T) string {
 	return dir
 }
 
+func TestStorageDir_EndsWithEncodedProject(t *testing.T) {
+	setTempHome(t)
+	dir := StorageDir("/test/project")
+	absRoot, _ := filepath.Abs("/test/project")
+	encoded := EncodeProjectPath(absRoot)
+	if !strings.HasSuffix(dir, encoded) {
+		t.Errorf("StorageDir %q should end with encoded path %q", dir, encoded)
+	}
+	if !strings.Contains(filepath.Base(dir), encoded) {
+		t.Errorf("StorageDir base %q should be encoded path %q", filepath.Base(dir), encoded)
+	}
+}
+
+func TestStorageDir_UnderMcpDir(t *testing.T) {
+	setTempHome(t)
+	dir := StorageDir("/test/project")
+	mcpDir := McpDir()
+	if !strings.HasPrefix(dir, mcpDir) {
+		t.Errorf("StorageDir %q should be under McpDir %q", dir, mcpDir)
+	}
+}
+
+func TestEncodeFilePath_Windows(t *testing.T) {
+	got := EncodeFilePath(`src\main.go`)
+	want := `src-main.go.gob`
+	if got != want {
+		t.Errorf("EncodeFilePath = %q, want %q", got, want)
+	}
+}
+
+func TestEncodeFilePath_Unix(t *testing.T) {
+	got := EncodeFilePath(`src/main.go`)
+	want := `src-main.go.gob`
+	if got != want {
+		t.Errorf("EncodeFilePath = %q, want %q", got, want)
+	}
+}
+
+func TestEncodeFilePath_WithColon(t *testing.T) {
+	got := EncodeFilePath(`C:src/main.go`)
+	want := `C-src-main.go.gob`
+	if got != want {
+		t.Errorf("EncodeFilePath = %q, want %q", got, want)
+	}
+}
+
 func TestEncodeProjectPath_Windows(t *testing.T) {
 	got := EncodeProjectPath(`C:\project\apps\go-indexing-mcp`)
 	want := `--C--project-apps-go-indexing-mcp--`

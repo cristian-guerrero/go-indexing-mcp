@@ -59,8 +59,8 @@ type StorageManifest struct {
 
 // Storage manages chunk records with O(1) lookups by ID and file path,
 // branch-isolated persistence, an optional BM25 index for hybrid search,
-// and a lightweight fileIndex (path→hash) for memory-free resume support.
-// Thread-safe via sync.RWMutex.
+// a trigram index for fast grep pre-filtering, and a lightweight fileIndex
+// (path→hash) for memory-free resume support. Thread-safe via sync.RWMutex.
 //
 // Disk layout:
 //
@@ -75,6 +75,7 @@ type Storage struct {
 	baseDir      string
 	manifestPath string
 	chunksDir    string
+	trigramsPath string
 	dimensions   int
 	mu           sync.RWMutex
 	records      []ChunkRecord
@@ -84,6 +85,7 @@ type Storage struct {
 	dirtyFiles   map[string]bool // relPath → needs re-saving on disk; true = dirty
 	dirty        bool            // manifest-level dirty (commitSHA change)
 	bm25         *bm25Index
+	trigrams     *trigramIndex
 	fileIndex    map[string]string // filePath → fileHash (survives SaveAndFree)
 }
 
@@ -100,6 +102,7 @@ func New(baseDir string, dimensions int) (*Storage, error) {
 		baseDir:      baseDir,
 		manifestPath: filepath.Join(baseDir, "manifest.gob"),
 		chunksDir:    chunksDir,
+		trigramsPath: filepath.Join(baseDir, "trigrams.gob"),
 		dimensions:   dimensions,
 		byID:         make(map[string]int),
 		byPath:       make(map[string][]int),
@@ -110,6 +113,7 @@ func New(baseDir string, dimensions int) (*Storage, error) {
 	if err := s.load(); err != nil {
 		return nil, fmt.Errorf("load storage: %w", err)
 	}
+	s.loadTrigrams()
 
 	s.dirty = false
 	return s, nil
@@ -173,6 +177,7 @@ func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]f
 
 	s.dirty = true
 	s.bm25 = nil
+	s.trigrams = nil
 	return nil
 }
 
@@ -217,6 +222,7 @@ func (s *Storage) DeleteChunksByPath(filePath string) error {
 	s.rebuildIndex(kept)
 	s.dirty = true
 	s.bm25 = nil
+	s.trigrams = nil
 
 	// Mark for chunk file deletion on next save
 	if relPath != "" {
@@ -295,6 +301,7 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	suffix := branchSuffix(branch, worktree)
 	s.manifestPath = filepath.Join(s.baseDir, "manifest"+suffix+".gob")
 	s.chunksDir = filepath.Join(s.baseDir, "chunks"+suffix)
+	s.trigramsPath = filepath.Join(s.baseDir, "trigrams"+suffix+".gob")
 
 	if err := os.MkdirAll(s.chunksDir, 0755); err != nil {
 		return fmt.Errorf("create branch chunks dir: %w", err)
@@ -309,13 +316,21 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	s.commitSHA = ""
 	s.dirty = false
 	s.dirtyFiles = make(map[string]bool)
+	s.trigrams = nil
 
-	return s.loadPerFile()
+	if err := s.loadPerFile(); err != nil {
+		return err
+	}
+	s.loadTrigrams()
+	return nil
 }
 
 // Close persists the dirty index to disk.
 func (s *Storage) Close() error {
-	return s.save()
+	if err := s.save(); err != nil {
+		return err
+	}
+	return s.saveTrigrams()
 }
 
 // Save flushes the current state to disk immediately.
@@ -471,7 +486,10 @@ func (s *Storage) loadPerFile() error {
 func (s *Storage) save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		return err
+	}
+	return s.saveTrigramsLocked()
 }
 
 // saveLocked writes dirty chunk files as per-file gobs and updates the manifest.
@@ -539,6 +557,9 @@ func (s *Storage) SaveAndFree() error {
 	if err := s.saveLocked(); err != nil {
 		return err
 	}
+	if err := s.saveTrigramsLocked(); err != nil {
+		return err
+	}
 
 	// Rebuild fileIndex before clearing records (saveLocked already did this,
 	// but ensure it's current even if saveLocked was a no-op)
@@ -554,6 +575,7 @@ func (s *Storage) SaveAndFree() error {
 	s.byID = make(map[string]int)
 	s.byPath = make(map[string][]int)
 	s.bm25 = nil
+	s.trigrams = nil
 	s.dirtyFiles = make(map[string]bool)
 	s.dirty = false
 
@@ -642,6 +664,7 @@ func (s *Storage) rebuildIndex(records []ChunkRecord) {
 	s.byID = make(map[string]int)
 	s.byPath = make(map[string][]int)
 	s.bm25 = nil
+	s.trigrams = nil
 	s.fileIndex = make(map[string]string, len(records))
 
 	for i, rec := range records {
@@ -682,4 +705,73 @@ func normalize(v []float64) {
 // dotProduct delegates to the SIMD-accelerated (or scalar fallback) dot product.
 func dotProduct(a, b []float64) float64 {
 	return simd.Dot(a, b)
+}
+
+// trigramsPathFromVectorsPath derives the trigrams gob path from the vectors gob path.
+// e.g. ".../vectors.gob" → ".../trigrams.gob"
+// e.g. ".../vectors-main-work.gob" → ".../trigrams-main-work.gob"
+func trigramsPathFromVectorsPath(vecPath string) string {
+	dir := filepath.Dir(vecPath)
+	name := filepath.Base(vecPath)
+	tName := "trigrams" + name[len("vectors"):]
+	return filepath.Join(dir, tName)
+}
+
+// loadTrigrams reads the trigram index from disk if it exists and matches current records.
+func (s *Storage) loadTrigrams() {
+	f, err := os.Open(s.trigramsPath)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	var data TrigramData
+	dec := gob.NewDecoder(f)
+	if err := dec.Decode(&data); err != nil {
+		return
+	}
+
+	if data.DocCount != len(s.records) {
+		return
+	}
+
+	s.trigrams = &trigramIndex{index: data.Index}
+}
+
+// saveTrigrams is a thread-safe wrapper for persisting the trigram index.
+func (s *Storage) saveTrigrams() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveTrigramsLocked()
+}
+
+// saveTrigramsLocked persists the trigram index to disk atomically.
+// Caller must hold s.mu write lock.
+func (s *Storage) saveTrigramsLocked() error {
+	if s.trigrams == nil {
+		return nil
+	}
+
+	tmpPath := s.trigramsPath + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	enc := gob.NewEncoder(f)
+	if err := enc.Encode(TrigramData{
+		Index:    s.trigrams.index,
+		DocCount: len(s.records),
+	}); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+
+	return os.Rename(tmpPath, s.trigramsPath)
 }

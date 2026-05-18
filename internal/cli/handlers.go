@@ -24,7 +24,7 @@ import (
 // RunGenerate performs a one-shot full index of the current directory.
 // Starts llama-server if needed, walks files, chunks, embeds, and stores.
 // Prints a detailed timing and statistics report on completion.
-func RunGenerate() int {
+func RunGenerate(rootDir string) int {
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("load config", "error", err)
@@ -68,7 +68,7 @@ func RunGenerate() int {
 		}
 	}()
 
-	rootPath := cfg.Indexing.RootPath
+	rootPath := resolveRootDir(rootDir, cfg.Indexing.RootPath)
 	if rootPath == "" {
 		rootPath = "."
 	}
@@ -84,7 +84,7 @@ func RunGenerate() int {
 
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
-	dbDir := config.StorageDir(rootPath)
+	dbDir := config.StoragePath(rootPath)
 
 	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
@@ -160,20 +160,20 @@ func RunGenerate() int {
 }
 
 // RunListFiles lists all indexed files from the storage, grouped by branch.
-func RunListFiles() int {
+func RunListFiles(rootDir string) int {
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("load config", "error", err)
 		return 1
 	}
 
-	rootPath := cfg.Indexing.RootPath
+	rootPath := resolveRootDir(rootDir, cfg.Indexing.RootPath)
 	if rootPath == "" {
 		rootPath = "."
 	}
 
 	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
-	dbDir := config.StorageDir(rootPath)
+	dbDir := config.StoragePath(rootPath)
 
 	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
@@ -205,7 +205,7 @@ func RunListFiles() int {
 
 // RunQuery performs a hybrid (BM25 + vector) or vector-only search on the index.
 // Auto-indexes if the index is empty or outdated (new commits detected).
-func RunQuery(query string, mode string, limit int, pathFilter string) int {
+func RunQuery(query string, mode string, limit int, pathFilter string, rootDir string) int {
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("load config", "error", err)
@@ -247,13 +247,13 @@ func RunQuery(query string, mode string, limit int, pathFilter string) int {
 		}()
 	}
 
-	rootPath := cfg.Indexing.RootPath
+	rootPath := resolveRootDir(rootDir, cfg.Indexing.RootPath)
 	if rootPath == "" {
 		rootPath = "."
 	}
 
 	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
-	dbDir := config.StorageDir(rootPath)
+	dbDir := config.StoragePath(rootPath)
 
 	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
@@ -348,7 +348,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string) int {
 
 // RunQueryGrep performs substring/regex matching on cached chunks.
 // Requires an existing index (built by a prior --query). No llama.cpp needed.
-func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, wholeWord bool, pathFilter string) int {
+func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, wholeWord bool, pathFilter string, rootDir string) int {
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("load config", "error", err)
@@ -358,13 +358,13 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	pw := progressWriter{}
 	tStart := time.Now()
 
-	rootPath := cfg.Indexing.RootPath
+	rootPath := resolveRootDir(rootDir, cfg.Indexing.RootPath)
 	if rootPath == "" {
 		rootPath = "."
 	}
 
 	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
-	dbDir := config.StorageDir(rootPath)
+	dbDir := config.StoragePath(rootPath)
 
 	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
@@ -808,4 +808,12 @@ func mergeAgentsSection(agentsPath string, section string) (changed bool, err er
 	}
 	newContent += sectionStart + "\n" + section + "\n" + sectionEnd + "\n"
 	return true, os.WriteFile(agentsPath, []byte(newContent), 0644)
+}
+
+// resolveRootDir returns the CLI-provided root directory if set, otherwise the config value.
+func resolveRootDir(cliDir, configDir string) string {
+	if cliDir != "" {
+		return cliDir
+	}
+	return configDir
 }

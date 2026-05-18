@@ -2,89 +2,90 @@
 
 #include "textflag.h"
 
-// func dotAVX2(a, b []float64) float64
+// func dotAVX2(a, b []float32) float32
 //
-// Computes dot product using AVX2 + FMA.
-// Unrolls 4x (16 float64s per iteration) for ILP.
-TEXT ·dotAVX2(SB), NOSPLIT, $0-56
+// Computes dot product using AVX2 + FMA on single-precision floats.
+// Unrolls 4x (32 floats per iteration) for ILP.
+TEXT ·dotAVX2(SB), NOSPLIT, $0-52
 	MOVQ a_base+0(FP), AX
 	MOVQ b_base+24(FP), BX
 	MOVQ a_len+8(FP), CX
 
-	VXORPD Y0, Y0, Y0
-	VXORPD Y1, Y1, Y1
-	VXORPD Y2, Y2, Y2
-	VXORPD Y3, Y3, Y3
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	VXORPS Y2, Y2, Y2
+	VXORPS Y3, Y3, Y3
 
-	CMPQ CX, $16
-	JL   block4
+	CMPQ CX, $32
+	JL   block8
 
 	MOVQ CX, R8
-	SHRQ $4, CX
+	SHRQ $5, CX
 
-loop16:
-	VMOVUPD (AX), Y4
-	VMOVUPD (BX), Y5
-	VFMADD231PD Y4, Y5, Y0
+loop32:
+	VMOVUPS (AX), Y4
+	VMOVUPS (BX), Y5
+	VFMADD231PS Y4, Y5, Y0
 
-	VMOVUPD 32(AX), Y6
-	VMOVUPD 32(BX), Y7
-	VFMADD231PD Y6, Y7, Y1
+	VMOVUPS 32(AX), Y6
+	VMOVUPS 32(BX), Y7
+	VFMADD231PS Y6, Y7, Y1
 
-	VMOVUPD 64(AX), Y8
-	VMOVUPD 64(BX), Y9
-	VFMADD231PD Y8, Y9, Y2
+	VMOVUPS 64(AX), Y8
+	VMOVUPS 64(BX), Y9
+	VFMADD231PS Y8, Y9, Y2
 
-	VMOVUPD 96(AX), Y10
-	VMOVUPD 96(BX), Y11
-	VFMADD231PD Y10, Y11, Y3
+	VMOVUPS 96(AX), Y10
+	VMOVUPS 96(BX), Y11
+	VFMADD231PS Y10, Y11, Y3
 
 	ADDQ $128, AX
 	ADDQ $128, BX
 	DECQ CX
-	JNZ loop16
+	JNZ loop32
 
-	VADDPD Y1, Y0, Y0
-	VADDPD Y3, Y2, Y2
-	VADDPD Y2, Y0, Y0
+	VADDPS Y1, Y0, Y0
+	VADDPS Y3, Y2, Y2
+	VADDPS Y2, Y0, Y0
 
 	MOVQ R8, CX
-	ANDQ $15, CX
+	ANDQ $31, CX
 
-block4:
+block8:
 	MOVQ CX, DX
-	SHRQ $2, DX
+	SHRQ $3, DX
 	JZ   scalar
 
-loop4:
-	VMOVUPD (AX), Y4
-	VMOVUPD (BX), Y5
-	VFMADD231PD Y4, Y5, Y0
+loop8:
+	VMOVUPS (AX), Y4
+	VMOVUPS (BX), Y5
+	VFMADD231PS Y4, Y5, Y0
 
 	ADDQ $32, AX
 	ADDQ $32, BX
 	DECQ DX
-	JNZ loop4
+	JNZ loop8
 
 scalar:
-	ANDQ $3, CX
+	ANDQ $7, CX
 	JZ   done
 
 scalar_loop:
-	MOVSD (AX), X4
-	MOVSD (BX), X5
-	MULSD X5, X4
-	ADDSD X4, X0
+	MOVSS (AX), X4
+	MOVSS (BX), X5
+	MULSS X5, X4
+	ADDSS X4, X0
 
-	ADDQ $8, AX
-	ADDQ $8, BX
+	ADDQ $4, AX
+	ADDQ $4, BX
 	DECQ CX
 	JNZ scalar_loop
 
 done:
-	VHADDPD Y0, Y0, Y0
 	VEXTRACTF128 $1, Y0, X1
-	VADDSD X1, X0, X0
+	VADDPS X1, X0, X0
+	VHADDPS X0, X0, X0
+	VHADDPS X0, X0, X0
 
-	MOVQ X0, ret+48(FP)
+	MOVSS X0, ret+48(FP)
 	RET

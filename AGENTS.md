@@ -18,13 +18,11 @@
 - Windows: validate paths with `filepath.Abs`
 - Commits and comments in English
 
-## Files modified in per-file storage refactor
+## Files modified in single-file storage refactor
 
-- `pkg/config/config.go` — added `StorageDir()`, `EncodeFilePath()` for per-file layout support
-- `pkg/storage/storage.go` — replaced single `vectors.gob` with `manifest.gob` + `chunks/*.gob` per-file format; added `StorageManifest` type; `saveLocked()` writes per-file gobs + manifest; `load()` tries per-file first, falls back to legacy migration; `dirtyFiles` map tracks per-file changes; `SwitchBranch()` uses `manifest-{branch}.gob` + `chunks-{branch}/` dirs
-- `main.go` — uses `config.StorageDir()` instead of `config.StoragePath()` for `storage.New()`
+- `pkg/storage/storage.go` — single `vectors.gob` (or `vectors-{branch}.gob`) per branch; `StorageData` type; `saveLocked()` atomically writes all records to one gob; minimal disk I/O for max indexing/search speed
+- `main.go` — uses `config.StoragePath()` for `storage.New()`
 - `internal/cli/handlers.go` — same
-- `pkg/storage/storage_test.go` — updated to pass base dir to `New()`
 
 ## Structure
 
@@ -38,7 +36,7 @@
 - `pkg/chunker/` — sliding window + structural splitter. `ChunkFile` single or `ChunkFiles` batch
 - `pkg/structural/` — regex + brace/indent counting for structural block detection per language. Includes decorator/annotation backward scan. No external dependencies
 - `pkg/embedder/` — HTTP client to llama.cpp `/v1/embeddings`. Uses connection pooling (`MaxIdleConns`) and buffer pool for reduced allocations
-- `pkg/storage/` — gob persistence + normalized dot product + branch-isolated indices + BM25 inverted index (`bm25.go`) + lightweight `fileIndex` for memory-free resume. **Per-file storage layout**: `manifest.gob` (fileIndex + commitSHA) + `chunks/{encoded-rel-path}.gob` (per-source-file chunk records). Branch isolation via `manifest-{branch}.gob` + `chunks-{branch}/`. `SaveAndFree()` writes dirty chunk files and manifest, then clears in-memory state (records, byID, byPath, BM25, dirtyFiles) but keeps `fileIndex` so `IsFileIndexed()` still works. Vectors are L2-normalized at store time so cosine similarity reduces to dot product. Includes automatic migration from legacy single-file (`vectors.gob`) to per-file format.
+- `pkg/storage/` — gob persistence + normalized dot product + branch-isolated indices + BM25 inverted index (`bm25.go`) + lightweight `fileIndex` for memory-free resume. Single `vectors.gob` (or `vectors-{branch}.gob`) per branch. `SaveAndFree()` writes all records atomically, then clears in-memory state (records, byID, byPath, BM25) but keeps `fileIndex` so `IsFileIndexed()` still works. Vectors are L2-normalized at store time so cosine similarity reduces to dot product.
 - `pkg/storage/simd/` — AVX2+FMA-accelerated dot product (amd64), scalar fallback (all platforms). ~18x speedup for 768-dim vectors
 - `pkg/indexer/` — orchestrator: walk → chunk → embed → store. `Llama` manager and `MemoryFreeInterval` control periodic save+clear+restart during large indexing (every N files, saves merged gob, clears Go memory, restarts llama-server). `IndexAll()` processes files one at a time (no upfront bulk chunking) for bounded memory
 - `pkg/mcp/` — MCP server with tools: search_code, grep_code

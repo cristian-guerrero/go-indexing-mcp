@@ -235,7 +235,6 @@ func StorageDir(rootPath string) string {
 }
 
 // StoragePath returns the full path to the GOB index file for the given project root.
-// Deprecated: use StorageDir for per-file storage layout.
 func StoragePath(rootPath string) string {
 	absRoot, err := filepath.Abs(rootPath)
 	if err != nil {

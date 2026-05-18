@@ -39,6 +39,7 @@ func main() {
 	listFiles := flag.Bool("list-files", false, "List all indexed files")
 	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp (skip PATH, test GPU detection)")
 	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', or 'kilocode'")
+	rootDir := flag.String("dir", "", "Project root directory (overrides config root_path)")
 	flag.Parse()
 
 	if *downloadLlama {
@@ -81,22 +82,22 @@ func main() {
 
 	if *grepMode != "" {
 		setupConsoleLogger()
-		os.Exit(cli.RunQueryGrep(*grepMode, *limitFlag, *grepLang, *grepCaseSensitive, *grepWholeWord, *pathFilter))
+		os.Exit(cli.RunQueryGrep(*grepMode, *limitFlag, *grepLang, *grepCaseSensitive, *grepWholeWord, *pathFilter, *rootDir))
 	}
 
 	if *queryMode != "" {
 		setupConsoleLogger()
-		os.Exit(cli.RunQuery(*queryMode, "hybrid", *limitFlag, *pathFilter))
+		os.Exit(cli.RunQuery(*queryMode, "hybrid", *limitFlag, *pathFilter, *rootDir))
 	}
 
 	if *generateMode {
 		setupConsoleLogger()
-		os.Exit(cli.RunGenerate())
+		os.Exit(cli.RunGenerate(*rootDir))
 	}
 
 	if *listFiles {
 		setupConsoleLogger()
-		os.Exit(cli.RunListFiles())
+		os.Exit(cli.RunListFiles(*rootDir))
 	}
 
 	if !*mcpMode {

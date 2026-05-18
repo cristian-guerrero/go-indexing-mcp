@@ -158,7 +158,7 @@ func TestGetStats_WithData(t *testing.T) {
 	chunks := []chunker.Chunk{
 		{ID: "c1", FilePath: "/a.go", RelPath: "a.go", Language: "go", Content: "package a", FileHash: "h1"},
 	}
-	st.UpsertChunks(chunks, map[string][]float64{"c1": {1, 0, 0, 0}})
+	st.UpsertChunks(chunks, map[string][]float32{"c1": {1, 0, 0, 0}})
 
 	stats := idx.GetStats()
 	if stats.TotalChunks != 1 {

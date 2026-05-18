@@ -461,7 +461,7 @@ func hasRegexChars(s string) bool {
 // SearchHybrid combines BM25 keyword scores and vector similarity via
 // Reciprocal Rank Fusion (RRF). Both systems score all documents independently,
 // rank them, then fuse the ranks: rrf_score = 1/(k + bm25Rank) + 1/(k + vecRank).
-func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]SearchResult, error) {
+func (s *Storage) SearchHybrid(queryVec []float32, query string, limit int) ([]SearchResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -469,7 +469,7 @@ func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]S
 		limit = 25
 	}
 
-	normalize(queryVec)
+	normalize32(queryVec)
 
 	s.ensureBM25()
 	queryTerms := tokenize(query)
@@ -489,7 +489,7 @@ func (s *Storage) SearchHybrid(queryVec []float64, query string, limit int) ([]S
 		all[i] = scored{
 			idx:    i,
 			bm25:   s.bm25.score(queryTerms, i),
-			vector: dotProduct(queryVec, rec.Vector),
+			vector: float64(dotProduct32(queryVec, rec.Vector)),
 		}
 	}
 
@@ -645,45 +645,14 @@ func (s *Storage) ensureTrigrams() {
 }
 
 // searchLocked performs a pure vector similarity search (caller must hold RLock).
-// Normalizes the query vector, computes dot product against all stored vectors,
-// and returns the top-k results via the bounded min-heap.
-func (s *Storage) searchLocked(query []float64, limit int) ([]SearchResult, error) {
+// Delegates to the current VectorIndex backend (brute-force or cover tree),
+// building it lazily if needed.
+func (s *Storage) searchLocked(query []float32, limit int) ([]SearchResult, error) {
 	if limit <= 0 {
 		limit = 25
 	}
-
-	normalize(query)
-
-	type scored struct {
-		idx   int
-		score float64
+	if err := s.ensureVecIndex(); err != nil {
+		return nil, err
 	}
-
-	tk := newTopK(limit, func(a, b scored) bool {
-		return a.score < b.score
-	})
-
-	for i, rec := range s.records {
-		score := dotProduct(query, rec.Vector)
-		tk.Push(scored{i, score})
-	}
-
-	results := tk.Result()
-
-	out := make([]SearchResult, len(results))
-	for i, r := range results {
-		rec := s.records[r.idx]
-		out[i] = SearchResult{
-			ID:        rec.ID,
-			FilePath:  rec.FilePath,
-			RelPath:   rec.RelPath,
-			Language:  rec.Language,
-			StartLine: rec.StartLine,
-			EndLine:   rec.EndLine,
-			Content:   rec.Content,
-			Score:     r.score,
-		}
-	}
-
-	return out, nil
+	return s.vecIndex.Query(query, limit)
 }

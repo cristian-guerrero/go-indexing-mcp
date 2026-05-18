@@ -26,6 +26,20 @@ type ChunkRecord struct {
 	EndLine   int
 	Content   string
 	FileHash  string
+	Vector    []float32
+}
+
+// ChunkRecordLegacy is used for backward-compatible loading of gob files
+// that were serialized with []float64 vectors before the float32 migration.
+type ChunkRecordLegacy struct {
+	ID        string
+	FilePath  string
+	RelPath   string
+	Language  string
+	StartLine int
+	EndLine   int
+	Content   string
+	FileHash  string
 	Vector    []float64
 }
 
@@ -48,54 +62,62 @@ type StorageData struct {
 }
 
 // Storage manages chunk records with O(1) lookups by ID and file path,
-// branch-isolated persistence, an optional BM25 index for hybrid search,
-// a trigram index for fast grep pre-filtering, and a lightweight fileIndex
-// (path→hash) for memory-free resume support. Thread-safe via sync.RWMutex.
+// branch-isolated persistence (via filename suffix), an optional BM25 index
+// for hybrid search, and a lightweight fileIndex (path→hash) for memory-free
+// resume support. Thread-safe via sync.RWMutex.
+//
+// Disk format: a single gob file per branch:
+//
+//	~/.go-mcp/indexing/vectors/{encoded-project}/
+//	  vectors.gob                     (main branch)
+//	  vectors-{worktree}-{branch}.gob (other branches)
 type Storage struct {
-	path         string
-	basePath     string
-	trigramsPath string
-	dimensions   int
-	mu           sync.RWMutex
-	records      []ChunkRecord
-	commitSHA    string
-	byID         map[string]int
-	byPath       map[string][]int
-	dirty        bool
-	bm25         *bm25Index
-	trigrams     *trigramIndex
-	fileIndex    map[string]string // filePath → fileHash (survives SaveAndFree)
+	path       string          // current gob file path (may include branch suffix)
+	pathPrefix string          // base path without .gob, used for branch switching
+	dimensions int
+	mu         sync.RWMutex
+	records    []ChunkRecord
+	commitSHA  string
+	byID       map[string]int
+	byPath     map[string][]int
+	dirty      bool
+	bm25       *bm25Index
+	fileIndex  map[string]string // filePath → fileHash (survives SaveAndFree)
+	vecIndex   VectorIndex       // lazy-built vector index (brute-force or cover tree)
+	vecCache   *IndexCacheEntry  // concurrent build coordination
+	indexKind  IndexKind         // "auto", "bruteforce", "cover"
+	trigrams   *trigramIndex     // lazy-built trigram index for grep pre-filtering
 }
 
 // New creates or opens a Storage with the given gob file path and vector dimensions.
-func New(dbPath string, dimensions int) (*Storage, error) {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+// The directory is created if it doesn't exist.
+func New(path string, dimensions int) (*Storage, error) {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create storage dir: %w", err)
 	}
 
 	s := &Storage{
-		path:         dbPath,
-		basePath:     dbPath,
-		trigramsPath: trigramsPathFromVectorsPath(dbPath),
-		dimensions:   dimensions,
-		byID:         make(map[string]int),
-		byPath:       make(map[string][]int),
-		fileIndex:    make(map[string]string),
+		path:      path,
+		pathPrefix: strings.TrimSuffix(path, ".gob"),
+		dimensions: dimensions,
+		byID:      make(map[string]int),
+		byPath:    make(map[string][]int),
+		fileIndex: make(map[string]string),
+		vecCache:  NewIndexCacheEntry(),
 	}
 
 	if err := s.load(); err != nil {
 		return nil, fmt.Errorf("load storage: %w", err)
 	}
-	s.loadTrigrams()
 
 	s.dirty = false
 	return s, nil
 }
 
 // UpsertChunks inserts or updates chunks. Vectors are L2-normalized before storing.
-// On update (same chunk ID), the old record is replaced. Invalidates the BM25 cache
-// and updates the lightweight fileIndex for memory-free resume support.
-func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]float64) error {
+// Invalidates the BM25 cache and updates the lightweight fileIndex for resume support.
+func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]float32) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -104,7 +126,7 @@ func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]f
 		if !ok {
 			continue
 		}
-		normalize(emb)
+		normalize32(emb)
 
 		if idx, exists := s.byID[ch.ID]; exists {
 			s.records[idx] = ChunkRecord{
@@ -135,7 +157,6 @@ func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]f
 		}
 	}
 
-	// Update lightweight fileIndex for memory-free resume
 	if len(chunks) > 0 {
 		if s.fileIndex == nil {
 			s.fileIndex = make(map[string]string)
@@ -146,17 +167,16 @@ func (s *Storage) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]f
 	s.dirty = true
 	s.bm25 = nil
 	s.trigrams = nil
+	s.vecCache.Invalidate()
 	return nil
 }
 
 // DeleteChunksByPath removes all chunks belonging to a file path.
-// Rebuilds the byID/byPath indices, invalidates BM25 cache, and
-// removes the entry from the lightweight fileIndex.
+// Rebuilds the byID/byPath indices, invalidates BM25 cache, and updates fileIndex.
 func (s *Storage) DeleteChunksByPath(filePath string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Remove from fileIndex when chunks are present
 	indices, ok := s.byPath[filePath]
 	if !ok {
 		indices = s.findIndicesByPath(filePath)
@@ -181,12 +201,14 @@ func (s *Storage) DeleteChunksByPath(filePath string) error {
 	s.dirty = true
 	s.bm25 = nil
 	s.trigrams = nil
+	s.vecCache.Invalidate()
+
 	return nil
 }
 
 // Search performs a pure vector similarity search using dot product on normalized vectors.
 // Returns up to `limit` results ranked by similarity score.
-func (s *Storage) Search(query []float64, limit int) ([]SearchResult, error) {
+func (s *Storage) Search(query []float32, limit int) ([]SearchResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.searchLocked(query, limit)
@@ -221,8 +243,24 @@ func (s *Storage) ListFiles() []string {
 	return files
 }
 
+// branchSuffix builds the filename suffix for non-main git branches.
+// Returns "" for main, "-{worktree}-{branch}" for other branches.
+func branchSuffix(branch, worktree string) string {
+	var parts []string
+	if worktree != "" {
+		parts = append(parts, worktree)
+	}
+	if branch != "" && branch != "main" {
+		parts = append(parts, branch)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "-" + strings.Join(parts, "-")
+}
+
 // SwitchBranch persists the current index and loads the index for a different
-// git branch/worktree. Branch files follow the pattern:
+// git branch/worktree. Uses a branch-specific gob filename:
 // vectors.gob (main) or vectors-{worktree}-{branch}.gob (other branches).
 func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	s.mu.Lock()
@@ -234,89 +272,43 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 		}
 	}
 
-	ext := filepath.Ext(s.basePath)
-	base := s.basePath[:len(s.basePath)-len(ext)]
-
-	parts := []string{base}
-	if worktree != "" {
-		parts = append(parts, worktree)
-	}
-	if branch != "" && branch != "main" {
-		parts = append(parts, branch)
-	}
-	s.path = strings.Join(parts, "-") + ext
-	s.trigramsPath = trigramsPathFromVectorsPath(s.path)
-
-	// Clean up any leftover temp file from a crash during write
-	if _, err := os.Stat(s.path + ".tmp"); err == nil {
-		os.Remove(s.path + ".tmp")
-	}
+	suffix := branchSuffix(branch, worktree)
+	s.path = s.pathPrefix + suffix + ".gob"
 
 	s.records = nil
 	s.byID = make(map[string]int)
 	s.byPath = make(map[string][]int)
 	s.commitSHA = ""
-	s.dirty = false
+	s.bm25 = nil
 	s.trigrams = nil
+	s.fileIndex = make(map[string]string)
+	s.vecCache.Invalidate()
 
-	f, err := os.Open(s.path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	defer f.Close()
-
-	var data StorageData
-	dec := gob.NewDecoder(f)
-	if err := dec.Decode(&data); err == nil {
-		s.rebuildIndex(data.Records)
-		s.commitSHA = data.CommitSHA
-	} else {
-		f.Seek(0, 0)
-		var records []ChunkRecord
-		dec = gob.NewDecoder(f)
-		if err := dec.Decode(&records); err != nil {
-			return nil
-		}
-		s.rebuildIndex(records)
-	}
-
-	s.loadTrigrams()
-	return nil
+	return s.load()
 }
 
 // Close persists the dirty index to disk.
 func (s *Storage) Close() error {
-	if err := s.save(); err != nil {
-		return err
-	}
-	return s.saveTrigrams()
+	return s.save()
 }
 
 // Save flushes the current state to disk immediately.
-// Called periodically during indexing to preserve progress on crash.
 func (s *Storage) Save() error {
 	return s.save()
 }
 
 // IsFileIndexed checks if all chunks for a file are already in the index
 // with matching hashes. Used to skip already-indexed files on resume after crash.
-// First checks the lightweight fileIndex (survives SaveAndFree), then falls back
-// to byPath for normal (non-cleared) operation.
 func (s *Storage) IsFileIndexed(filePath, fileHash string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// Check lightweight fileIndex first — works even after SaveAndFree cleared records
 	if s.fileIndex != nil {
 		if hash, ok := s.fileIndex[filePath]; ok {
 			return hash == fileHash
 		}
 	}
 
-	// Fall back to byPath (normal operation, records are in memory)
 	indices, ok := s.byPath[filePath]
 	if !ok {
 		return false
@@ -344,20 +336,15 @@ func (s *Storage) GetCommitSHA() string {
 	return s.commitSHA
 }
 
-// load reads the gob file from disk and rebuilds in-memory indices.
-// Supports both StorageData format (with CommitSHA) and legacy []ChunkRecord format.
+// load reads the index from disk. Tries the current gob file path, then
+// falls back to legacy formats for backward compatibility.
 func (s *Storage) load() error {
-	// Clean up any leftover temp file from a crash during write
-	if _, err := os.Stat(s.path + ".tmp"); err == nil {
-		os.Remove(s.path + ".tmp")
-	}
-
 	f, err := os.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return err
+		return nil // corrupt or missing, start fresh
 	}
 	defer f.Close()
 
@@ -366,48 +353,54 @@ func (s *Storage) load() error {
 	if err := dec.Decode(&data); err == nil {
 		s.rebuildIndex(data.Records)
 		s.commitSHA = data.CommitSHA
-		s.dirty = false
-		return nil
+	} else {
+		f.Seek(0, 0)
+		var records []ChunkRecord
+		dec = gob.NewDecoder(f)
+		if err := dec.Decode(&records); err != nil {
+			f.Seek(0, 0)
+			var legacy []ChunkRecordLegacy
+			dec = gob.NewDecoder(f)
+			if err := dec.Decode(&legacy); err != nil {
+				return nil // corrupt file, start fresh
+			}
+			converted := make([]ChunkRecord, len(legacy))
+			for i, rec := range legacy {
+				vec32 := make([]float32, len(rec.Vector))
+				for j, v := range rec.Vector {
+					vec32[j] = float32(v)
+				}
+				converted[i] = ChunkRecord{
+					ID: rec.ID, FilePath: rec.FilePath, RelPath: rec.RelPath,
+					Language: rec.Language, StartLine: rec.StartLine, EndLine: rec.EndLine,
+					Content: rec.Content, FileHash: rec.FileHash, Vector: vec32,
+				}
+			}
+			s.rebuildIndex(converted)
+		} else {
+			s.rebuildIndex(records)
+		}
 	}
-
-	f.Seek(0, 0)
-	var records []ChunkRecord
-	dec = gob.NewDecoder(f)
-	if err := dec.Decode(&records); err != nil {
-		return err
-	}
-
-	s.rebuildIndex(records)
-	s.dirty = false
 	return nil
 }
 
-// save persists the index to disk (merged with existing on disk). Thread-safe.
+// save persists dirty state to disk. Thread-safe.
 func (s *Storage) save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.saveLocked(); err != nil {
-		return err
-	}
-	return s.saveTrigramsLocked()
+	return s.saveLocked()
 }
 
-// saveLocked writes all records (merged with existing on disk) atomically.
+// saveLocked writes all records to the single gob file atomically.
 // Caller must hold s.mu write lock.
 func (s *Storage) saveLocked() error {
-	if !s.dirty && len(s.records) == 0 {
+	if !s.dirty {
 		return nil
 	}
 
-	// Load existing records from disk and merge — ensures periodic/final saves
-	// don't overwrite data that was already persisted by SaveAndFree.
-	existing := s.loadRecordsFromDiskLocked()
-	merged := mergeRecordsLocked(existing, s.records)
-
-	// Commit SHA: prefer current, fall back to persisted
-	sha := s.commitSHA
-	if sha == "" {
-		_ = s.loadCommitSHALocked(&sha)
+	data := StorageData{
+		Records:   s.records,
+		CommitSHA: s.commitSHA,
 	}
 
 	tmpPath := s.path + ".tmp"
@@ -417,10 +410,7 @@ func (s *Storage) saveLocked() error {
 	}
 
 	enc := gob.NewEncoder(f)
-	if err := enc.Encode(StorageData{
-		Records:   merged,
-		CommitSHA: sha,
-	}); err != nil {
+	if err := enc.Encode(data); err != nil {
 		f.Close()
 		os.Remove(tmpPath)
 		return err
@@ -439,10 +429,9 @@ func (s *Storage) saveLocked() error {
 	return nil
 }
 
-// SaveAndFree persists all records (merged with existing on disk), then clears
-// in-memory records, byID, byPath, and BM25 to free Go memory. The lightweight
-// fileIndex is preserved so IsFileIndexed continues to work for resume support.
-// Should be called periodically during large indexing operations.
+// SaveAndFree persists all records to disk, then clears in-memory state
+// to free Go memory. The lightweight fileIndex is preserved so
+// IsFileIndexed continues to work for resume support.
 func (s *Storage) SaveAndFree() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -450,98 +439,23 @@ func (s *Storage) SaveAndFree() error {
 	if err := s.saveLocked(); err != nil {
 		return err
 	}
-	if err := s.saveTrigramsLocked(); err != nil {
-		return err
+
+	if s.fileIndex == nil || len(s.fileIndex) == 0 {
+		s.fileIndex = make(map[string]string, len(s.records))
+		for _, rec := range s.records {
+			s.fileIndex[rec.FilePath] = rec.FileHash
+		}
 	}
 
-	// Clear in-memory records (keep fileIndex for resume)
 	s.records = nil
 	s.byID = make(map[string]int)
 	s.byPath = make(map[string][]int)
 	s.bm25 = nil
 	s.trigrams = nil
+	s.vecCache.Invalidate()
 	s.dirty = false
 
 	return nil
-}
-
-// loadRecordsFromDiskLocked reads existing records from the gob file.
-// Caller must hold s.mu (write lock). Returns nil if file doesn't exist or on error.
-func (s *Storage) loadRecordsFromDiskLocked() []ChunkRecord {
-	f, err := os.Open(s.path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	var data StorageData
-	dec := gob.NewDecoder(f)
-	if err := dec.Decode(&data); err == nil {
-		return data.Records
-	}
-
-	f.Seek(0, 0)
-	var records []ChunkRecord
-	dec = gob.NewDecoder(f)
-	if err := dec.Decode(&records); err != nil {
-		return nil
-	}
-	return records
-}
-
-// loadCommitSHALocked reads the commit SHA from the gob file if not already set.
-// Caller must hold s.mu (write lock).
-func (s *Storage) loadCommitSHALocked(sha *string) error {
-	f, err := os.Open(s.path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	var data StorageData
-	dec := gob.NewDecoder(f)
-	if err := dec.Decode(&data); err != nil {
-		return err
-	}
-	*sha = data.CommitSHA
-	return nil
-}
-
-// mergeRecordsLocked merges incoming records into existing, with incoming taking
-// precedence by chunk ID. Returns a new slice without modifying inputs.
-func mergeRecordsLocked(existing, incoming []ChunkRecord) []ChunkRecord {
-	if len(existing) == 0 {
-		out := make([]ChunkRecord, len(incoming))
-		copy(out, incoming)
-		return out
-	}
-	if len(incoming) == 0 {
-		out := make([]ChunkRecord, len(existing))
-		copy(out, existing)
-		return out
-	}
-
-	// Build index of existing records by ID
-	byID := make(map[string]int, len(existing))
-	for i, rec := range existing {
-		byID[rec.ID] = i
-	}
-
-	// Start with a copy of existing
-	merged := make([]ChunkRecord, len(existing))
-	copy(merged, existing)
-
-	// Merge incoming: update existing or append new
-	for _, rec := range incoming {
-		if idx, ok := byID[rec.ID]; ok {
-			merged[idx] = rec
-		} else {
-			byID[rec.ID] = len(merged)
-			merged = append(merged, rec)
-		}
-	}
-
-	return merged
 }
 
 // rebuildIndex replaces all in-memory data structures with the given records,
@@ -552,6 +466,7 @@ func (s *Storage) rebuildIndex(records []ChunkRecord) {
 	s.byPath = make(map[string][]int)
 	s.bm25 = nil
 	s.trigrams = nil
+	s.vecCache.Invalidate()
 	s.fileIndex = make(map[string]string, len(records))
 
 	for i, rec := range records {
@@ -573,92 +488,71 @@ func (s *Storage) findIndicesByPath(filePath string) []int {
 	return indices
 }
 
-// normalize L2-normalizes a vector in place. After normalization, dot product
+// normalize32 L2-normalizes a float32 vector in place. After normalization, dot product
 // equals cosine similarity, enabling efficient SIMD-accelerated similarity search.
-func normalize(v []float64) {
+func normalize32(v []float32) {
 	var norm float64
 	for i := range v {
-		norm += v[i] * v[i]
+		norm += float64(v[i]) * float64(v[i])
 	}
 	if norm == 0 {
 		return
 	}
 	invNorm := 1.0 / math.Sqrt(norm)
 	for i := range v {
-		v[i] *= invNorm
+		v[i] = float32(float64(v[i]) * invNorm)
 	}
 }
 
-// dotProduct delegates to the SIMD-accelerated (or scalar fallback) dot product.
-func dotProduct(a, b []float64) float64 {
-	return simd.Dot(a, b)
+// dotProduct32 delegates to the SIMD-accelerated (or scalar fallback) dot product.
+func dotProduct32(a, b []float32) float32 {
+	return simd.Dot32(a, b)
 }
 
-// trigramsPathFromVectorsPath derives the trigrams gob path from the vectors gob path.
-// e.g. ".../vectors.gob" → ".../trigrams.gob"
-// e.g. ".../vectors-main-work.gob" → ".../trigrams-main-work.gob"
-func trigramsPathFromVectorsPath(vecPath string) string {
-	dir := filepath.Dir(vecPath)
-	name := filepath.Base(vecPath)
-	tName := "trigrams" + name[len("vectors"):]
-	return filepath.Join(dir, tName)
+// resolveIndexKind selects the appropriate index backend based on dataset size
+// and the configured preference (if any). Thresholds (4000 docs, 64 dims, density 16)
+// match sqlite-vec's auto-select heuristics for cover tree vs brute force.
+func (s *Storage) resolveIndexKind() IndexKind {
+	if s.indexKind != "" && s.indexKind != IndexKindAuto {
+		return s.indexKind
+	}
+	n := len(s.records)
+	if n < 4000 {
+		return IndexKindBruteForce
+	}
+	if n == 0 {
+		return IndexKindBruteForce
+	}
+	dim := len(s.records[0].Vector)
+	if dim < 64 {
+		return IndexKindBruteForce
+	}
+	density := float64(n) / float64(dim)
+	if density < 16 {
+		return IndexKindBruteForce
+	}
+	return IndexKindCover
 }
 
-// loadTrigrams reads the trigram index from disk if it exists and matches current records.
-func (s *Storage) loadTrigrams() {
-	f, err := os.Open(s.trigramsPath)
-	if err != nil {
-		return
+// ensureVecIndex builds the vector index lazily with sync.Cond coordination.
+// Concurrent calls serialize through IndexCacheEntry so only one build happens.
+func (s *Storage) ensureVecIndex() error {
+	idx, err := s.vecCache.GetOrBuild(func() (VectorIndex, error) {
+		kind := s.resolveIndexKind()
+		var idx VectorIndex
+		switch kind {
+		case IndexKindCover:
+			idx = NewCoverIndex(defaultCoverBase, CosineDistance)
+		default:
+			idx = NewBruteForceIndex()
+		}
+		if err := idx.Build(s.records); err != nil {
+			return nil, err
+		}
+		return idx, nil
+	})
+	if err == nil {
+		s.vecIndex = idx
 	}
-	defer f.Close()
-
-	var data TrigramData
-	dec := gob.NewDecoder(f)
-	if err := dec.Decode(&data); err != nil {
-		return
-	}
-
-	if data.DocCount != len(s.records) {
-		return
-	}
-
-	s.trigrams = &trigramIndex{index: data.Index}
-}
-
-// saveTrigrams is a thread-safe wrapper for persisting the trigram index.
-func (s *Storage) saveTrigrams() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.saveTrigramsLocked()
-}
-
-// saveTrigramsLocked persists the trigram index to disk atomically.
-// Caller must hold s.mu write lock.
-func (s *Storage) saveTrigramsLocked() error {
-	if s.trigrams == nil {
-		return nil
-	}
-
-	tmpPath := s.trigramsPath + ".tmp"
-	f, err := os.Create(tmpPath)
-	if err != nil {
-		return err
-	}
-
-	enc := gob.NewEncoder(f)
-	if err := enc.Encode(TrigramData{
-		Index:    s.trigrams.index,
-		DocCount: len(s.records),
-	}); err != nil {
-		f.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-
-	if err := f.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-
-	return os.Rename(tmpPath, s.trigramsPath)
+	return err
 }

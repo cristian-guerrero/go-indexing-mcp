@@ -22,7 +22,7 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// Embedder sends text chunks to the llama.cpp embedding API and returns float64 vectors.
+// Embedder sends text chunks to the llama.cpp embedding API and returns float32 vectors.
 type Embedder struct {
 	BaseURL    string
 	BatchSize  int
@@ -62,9 +62,10 @@ type embedResponse struct {
 }
 
 // EmbedChunks sends all chunks to the embedding API in batches, returning
-// a map of chunk ID → embedding vector. Truncates input longer than maxInputLength.
-func (e *Embedder) EmbedChunks(chunks []chunker.Chunk) (map[string][]float64, error) {
-	result := make(map[string][]float64, len(chunks))
+// a map of chunk ID → embedding vector (converted from float64 API response to float32).
+// Truncates input longer than maxInputLength.
+func (e *Embedder) EmbedChunks(chunks []chunker.Chunk) (map[string][]float32, error) {
+	result := make(map[string][]float32, len(chunks))
 
 	for i := 0; i < len(chunks); i += e.BatchSize {
 		end := i + e.BatchSize
@@ -84,7 +85,12 @@ func (e *Embedder) EmbedChunks(chunks []chunker.Chunk) (map[string][]float64, er
 		}
 
 		for j, ch := range batch {
-			result[ch.ID] = embeddings[j]
+			vec64 := embeddings[j]
+			vec32 := make([]float32, len(vec64))
+			for k, v := range vec64 {
+				vec32[k] = float32(v)
+			}
+			result[ch.ID] = vec32
 		}
 	}
 
@@ -146,9 +152,9 @@ func (e *Embedder) embed(texts []string) ([][]float64, error) {
 	return result, nil
 }
 
-// EmbedQuery embeds a single search query string and returns its vector.
+// EmbedQuery embeds a single search query string and returns its vector (converted to float32).
 // The vector is not normalized here — normalization happens in storage.SearchHybrid.
-func (e *Embedder) EmbedQuery(query string) ([]float64, error) {
+func (e *Embedder) EmbedQuery(query string) ([]float32, error) {
 	embeddings, err := e.embed([]string{query})
 	if err != nil {
 		return nil, err
@@ -156,5 +162,10 @@ func (e *Embedder) EmbedQuery(query string) ([]float64, error) {
 	if len(embeddings) == 0 {
 		return nil, fmt.Errorf("empty embedding response")
 	}
-	return embeddings[0], nil
+	vec64 := embeddings[0]
+	vec32 := make([]float32, len(vec64))
+	for i, v := range vec64 {
+		vec32[i] = float32(v)
+	}
+	return vec32, nil
 }

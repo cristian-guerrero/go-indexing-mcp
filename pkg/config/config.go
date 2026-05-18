@@ -223,8 +223,18 @@ func EncodeProjectPath(absPath string) string {
 	return "--" + s + "--"
 }
 
+// StorageDir returns the base directory for per-file index storage.
+// Stored under ~/.go-mcp/indexing/vectors/{encoded-project-root}/
+func StorageDir(rootPath string) string {
+	absRoot, err := filepath.Abs(rootPath)
+	if err != nil {
+		absRoot = rootPath
+	}
+	encoded := EncodeProjectPath(absRoot)
+	return filepath.Join(McpDir(), "vectors", encoded)
+}
+
 // StoragePath returns the full path to the GOB index file for the given project root.
-// Stored under ~/.go-mcp/indexing/vectors/{encoded-project-root}/vectors.gob
 func StoragePath(rootPath string) string {
 	absRoot, err := filepath.Abs(rootPath)
 	if err != nil {
@@ -232,6 +242,15 @@ func StoragePath(rootPath string) string {
 	}
 	encoded := EncodeProjectPath(absRoot)
 	return filepath.Join(McpDir(), "vectors", encoded, "vectors.gob")
+}
+
+// EncodeFilePath encodes a relative file path into a filesystem-safe filename.
+// "src/main.go" → "src-main.go.gob"
+func EncodeFilePath(relPath string) string {
+	s := strings.ReplaceAll(relPath, "\\", "-")
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, ":", "-")
+	return s + ".gob"
 }
 
 // McpBinDir returns ~/.go-mcp/indexing/bin/, where the self-copied binary lives.

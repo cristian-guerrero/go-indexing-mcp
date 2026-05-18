@@ -80,8 +80,9 @@ type Storage struct {
 	commitSHA  string
 	byID       map[string]int
 	byPath     map[string][]int
-	dirty      bool
-	bm25       *bm25Index
+	dirty          bool
+	recordsPartial bool   // true after SaveAndFree; saveLocked must merge with disk
+	bm25           *bm25Index
 	fileIndex  map[string]string // filePath → fileHash (survives SaveAndFree)
 	vecIndex   VectorIndex       // lazy-built vector index (brute-force or cover tree)
 	vecCache   *IndexCacheEntry  // concurrent build coordination
@@ -100,11 +101,12 @@ func New(path string, dimensions int) (*Storage, error) {
 	s := &Storage{
 		path:      path,
 		pathPrefix: strings.TrimSuffix(path, ".gob"),
-		dimensions: dimensions,
-		byID:      make(map[string]int),
-		byPath:    make(map[string][]int),
-		fileIndex: make(map[string]string),
-		vecCache:  NewIndexCacheEntry(),
+		dimensions:     dimensions,
+		byID:           make(map[string]int),
+		byPath:         make(map[string][]int),
+		fileIndex:      make(map[string]string),
+		vecCache:       NewIndexCacheEntry(),
+		recordsPartial: false,
 	}
 
 	if err := s.load(); err != nil {
@@ -283,6 +285,7 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	s.trigrams = nil
 	s.fileIndex = make(map[string]string)
 	s.vecCache.Invalidate()
+	s.recordsPartial = false
 
 	return s.load()
 }
@@ -381,6 +384,7 @@ func (s *Storage) load() error {
 			s.rebuildIndex(records)
 		}
 	}
+	s.recordsPartial = false // records freshly loaded from disk = complete
 	return nil
 }
 
@@ -392,15 +396,42 @@ func (s *Storage) save() error {
 }
 
 // saveLocked writes all records to the single gob file atomically.
+// When recordsPartial is true (after SaveAndFree), it reads the existing
+// gob from disk and merges with in-memory records to avoid data loss.
 // Caller must hold s.mu write lock.
 func (s *Storage) saveLocked() error {
 	if !s.dirty {
 		return nil
 	}
 
+	// Determine which records to persist
+	var recordsToWrite []ChunkRecord
+	commitSHA := s.commitSHA
+
+	if s.recordsPartial {
+		// Read existing disk records and merge with partial in-memory records
+		diskData := s.readDiskStateLocked()
+		merged := make(map[string]ChunkRecord, len(diskData.Records)+len(s.records))
+		for _, rec := range diskData.Records {
+			merged[rec.ID] = rec
+		}
+		for _, rec := range s.records {
+			merged[rec.ID] = rec
+		}
+		recordsToWrite = make([]ChunkRecord, 0, len(merged))
+		for _, rec := range merged {
+			recordsToWrite = append(recordsToWrite, rec)
+		}
+		if commitSHA == "" {
+			commitSHA = diskData.CommitSHA
+		}
+	} else {
+		recordsToWrite = s.records
+	}
+
 	data := StorageData{
-		Records:   s.records,
-		CommitSHA: s.commitSHA,
+		Records:   recordsToWrite,
+		CommitSHA: commitSHA,
 	}
 
 	tmpPath := s.path + ".tmp"
@@ -429,6 +460,24 @@ func (s *Storage) saveLocked() error {
 	return nil
 }
 
+// readDiskStateLocked reads the current gob file from disk and returns
+// the stored records and commit SHA. Returns empty data on any error.
+// Caller must hold s.mu write lock (or ensure no concurrent writes).
+func (s *Storage) readDiskStateLocked() StorageData {
+	f, err := os.Open(s.path)
+	if err != nil {
+		return StorageData{}
+	}
+	defer f.Close()
+
+	var data StorageData
+	dec := gob.NewDecoder(f)
+	if err := dec.Decode(&data); err != nil {
+		return StorageData{}
+	}
+	return data
+}
+
 // SaveAndFree persists all records to disk, then clears in-memory state
 // to free Go memory. The lightweight fileIndex is preserved so
 // IsFileIndexed continues to work for resume support.
@@ -453,6 +502,7 @@ func (s *Storage) SaveAndFree() error {
 	s.bm25 = nil
 	s.trigrams = nil
 	s.vecCache.Invalidate()
+	s.recordsPartial = true
 	s.dirty = false
 
 	return nil

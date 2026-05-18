@@ -126,6 +126,9 @@ func (idx *Indexer) IndexAll() error {
 			}
 		}
 
+		// Remove old chunks for this file (hash changed) before upserting new ones
+		idx.Storage.DeleteChunksByPath(fi.Path)
+
 		if err := idx.Storage.UpsertChunks(chunks, embeddings); err != nil {
 			return fmt.Errorf("store %s: %w", fi.RelPath, err)
 		}

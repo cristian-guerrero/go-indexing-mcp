@@ -58,9 +58,15 @@ var definitionNodeTypes = map[string]SymbolKind{
 	"function_definition":   SymbolFunction,
 	"class_definition":      SymbolClass,
 	// TypeScript/JavaScript
-	"arrow_function":        SymbolFunction,
-	"generator_function":    SymbolFunction,
-	"method_definition":     SymbolMethod,
+	"arrow_function":            SymbolFunction,
+	"generator_function":        SymbolFunction,
+	"method_definition":         SymbolMethod,
+	"lexical_declaration":       SymbolVariable, // const/let
+	"variable_declaration":      SymbolVariable, // var
+	"class_declaration":         SymbolClass,
+	"interface_declaration":     SymbolInterface,
+	"type_alias_declaration":    SymbolType,
+	"enum_declaration":          SymbolEnum,
 }
 
 // importNodeTypes identifies nodes that contain import statements.
@@ -207,6 +213,15 @@ func walkAST(node *sitter.Node, source []byte, language, filePath, relPath, file
 		}
 	}
 
+	// Handle lexical/variable declarations in TS/JS (const/let/var).
+	// These wrap variable_declarator children that hold the actual name.
+	if (ntype == "lexical_declaration" || ntype == "variable_declaration") &&
+		(language == "typescript" || language == "javascript" || language == "tsx") {
+		if vars := extractLexicalDeclarations(node, source, language, filePath, relPath, fileHash, startLine); vars != nil {
+			*symbols = append(*symbols, vars...)
+		}
+	}
+
 	// Extract imports
 	if importNodeTypes[ntype] {
 		imports := extractImports(node, source, ntype, language, filePath, relPath, fileHash, startLine)
@@ -344,6 +359,54 @@ func extractGoReceiver(node *sitter.Node, source []byte) string {
 		return child.Content(source)
 	}
 	return ""
+}
+
+// extractLexicalDeclarations extracts symbols from const/let/var declarations in
+// TypeScript/JavaScript. Walks variable_declarator children to find the declared name.
+func extractLexicalDeclarations(node *sitter.Node, source []byte, language, filePath, relPath, fileHash string, startLine int) []Symbol {
+	var symbols []Symbol
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child == nil || child.Type() != "variable_declarator" {
+			continue
+		}
+		name := extractNodeName(child, source)
+		if name == "" {
+			continue
+		}
+
+		kind := SymbolVariable
+		for j := 0; j < int(child.ChildCount()); j++ {
+			val := child.Child(j)
+			if val == nil {
+				continue
+			}
+			switch val.Type() {
+			case "arrow_function", "function":
+				kind = SymbolFunction
+			case "class":
+				kind = SymbolClass
+			}
+		}
+
+		endLine := int(child.EndPoint().Row) + 1
+		sig := extractSignatureLine(child, source)
+		exported := isExported(name, language)
+
+		id := symbolID(fileHash, relPath, startLine, name)
+		symbols = append(symbols, Symbol{
+			ID:        id,
+			Name:      name,
+			Kind:      kind,
+			FilePath:  filePath,
+			RelPath:   relPath,
+			StartLine: startLine,
+			EndLine:   endLine,
+			Signature: sig,
+			Exported:  exported,
+		})
+	}
+	return symbols
 }
 
 // extractImports extracts import symbols from import nodes.

@@ -53,7 +53,10 @@ var definitionNodeTypes = map[string]SymbolKind{
 	// Go
 	"function_declaration":  SymbolFunction,
 	"method_declaration":    SymbolMethod,
-	"type_declaration":      SymbolType, // child determines struct/interface
+	"type_declaration":      SymbolType,   // child determines struct/interface
+	"var_declaration":       SymbolVariable,
+	"const_declaration":     SymbolConstant,
+	"package_clause":        SymbolModule,
 	// Python
 	"function_definition":   SymbolFunction,
 	"class_definition":      SymbolClass,
@@ -222,6 +225,19 @@ func walkAST(node *sitter.Node, source []byte, language, filePath, relPath, file
 		}
 	}
 
+	// Handle Go var_declaration/const_declaration: wrap var_spec/const_spec children.
+	if (ntype == "var_declaration" || ntype == "const_declaration") && language == "go" {
+		specType := "var_spec"
+		kind := SymbolVariable
+		if ntype == "const_declaration" {
+			specType = "const_spec"
+			kind = SymbolConstant
+		}
+		if specs := extractGoSpecDeclarations(node, source, specType, kind, filePath, relPath, fileHash); specs != nil {
+			*symbols = append(*symbols, specs...)
+		}
+	}
+
 	// Extract imports
 	if importNodeTypes[ntype] {
 		imports := extractImports(node, source, ntype, language, filePath, relPath, fileHash, startLine)
@@ -347,6 +363,37 @@ func extractGoTypeSpec(node *sitter.Node, source []byte, filePath, relPath, file
 		}
 	}
 	return nil
+}
+
+// extractGoSpecDeclarations extracts symbols from Go var/const declarations.
+// Walks var_spec/const_spec children to find each declared name in grouped
+// declarations (e.g. `var (x = 1; y = 2)`).
+func extractGoSpecDeclarations(node *sitter.Node, source []byte, specType string, kind SymbolKind, filePath, relPath, fileHash string) []Symbol {
+	var symbols []Symbol
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child == nil || child.Type() != specType {
+			continue
+		}
+		name := extractNodeName(child, source)
+		if name == "" {
+			continue
+		}
+
+		startLine := int(child.StartPoint().Row) + 1
+		endLine := int(child.EndPoint().Row) + 1
+		sig := extractSignatureLine(child, source)
+		exported := isExported(name, "go")
+
+		id := symbolID(fileHash, relPath, startLine, name)
+		symbols = append(symbols, Symbol{
+			ID: id, Name: name, Kind: kind,
+			FilePath: filePath, RelPath: relPath,
+			StartLine: startLine, EndLine: endLine,
+			Signature: sig, Exported: exported,
+		})
+	}
+	return symbols
 }
 
 // extractGoReceiver extracts the receiver type from a Go method declaration.

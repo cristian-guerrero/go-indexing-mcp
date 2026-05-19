@@ -18,12 +18,6 @@
 - Windows: validate paths with `filepath.Abs`
 - Commits and comments in English
 
-## Files modified in single-file storage refactor
-
-- `pkg/storage/storage.go` — single `vectors.gob` (or `vectors-{branch}.gob`) per branch; `StorageData` type; `saveLocked()` atomically writes all records to one gob; minimal disk I/O for max indexing/search speed
-- `main.go` — uses `config.StoragePath()` for `storage.New()`
-- `internal/cli/handlers.go` — same
-
 ## Structure
 
 - `main.go` — flag parsing + routing to handlers
@@ -36,10 +30,10 @@
 - `pkg/chunker/` — sliding window + structural splitter. `ChunkFile` single or `ChunkFiles` batch
 - `pkg/structural/` — regex + brace/indent counting for structural block detection per language. Includes decorator/annotation backward scan. No external dependencies
 - `pkg/embedder/` — HTTP client to llama.cpp `/v1/embeddings`. Uses connection pooling (`MaxIdleConns`) and buffer pool for reduced allocations
-- `pkg/storage/` — gob persistence + normalized dot product + branch-isolated indices + BM25 inverted index (`bm25.go`) + lightweight `fileIndex` for memory-free resume. Single `vectors.gob` (or `vectors-{branch}.gob`) per branch. `SaveAndFree()` writes all records atomically, then clears in-memory state (records, byID, byPath, BM25) but keeps `fileIndex` so `IsFileIndexed()` still works. Vectors are L2-normalized at store time so cosine similarity reduces to dot product.
+- `pkg/storage/` — gob persistence + normalized dot product + branch-isolated indices + BM25 inverted index (`bm25.go`) + lightweight `fileIndex` for memory-free resume. Single `vectors.gob` (or `vectors-{branch}.gob`) per branch. `SaveAndFree()` writes all records atomically, then clears in-memory state (records, byID, byPath, BM25) but keeps `fileIndex` so `IsFileIndexed()` still works. Vectors are L2-normalized at store time so cosine similarity reduces to dot product. **Format versioning**: `StorageData.Version` detects breaking changes; `NeedsReindex()` / `ClearAll()` auto-triggers full reindex on version mismatch.
 - `pkg/storage/simd/` — AVX2+FMA-accelerated dot product (amd64), scalar fallback (all platforms). ~18x speedup for 768-dim vectors
 - `pkg/indexer/` — orchestrator: walk → chunk → embed → store. `Llama` manager and `MemoryFreeInterval` control periodic save+clear+restart during large indexing (every N files, saves merged gob, clears Go memory, restarts llama-server). `MaxMemoryMB` triggers the same process when llama-server RSS exceeds a threshold (configurable). `IndexAll()` processes files one at a time (no upfront bulk chunking) for bounded memory. Optionally extracts graph symbols per file (extractor + graph)
-- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (build tag onnx), in-memory KnowledgeGraph with indexed lookups, file-based JSON persistence (1 JSON file per source file, atomic writes via tmp+rename), branch-isolated indexes (switch via `SwitchBranch`), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_usages, find_definition, find_imports, symbol_info). No external DB dependency. `HasOldFormat()` auto-detects old BadgerDB databases and drops them on startup
+- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (build tag onnx), in-memory KnowledgeGraph with indexed lookups, file-based JSON persistence (1 JSON file per source file, atomic writes via tmp+rename), branch-isolated indexes (switch via `SwitchBranch`), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_usages, find_definition, find_imports, symbol_info). No external DB dependency. `HasOldFormat()` auto-detects old BadgerDB databases and drops them on startup. **Format versioning**: individual `version.json` per graph directory with `GraphFormatVersion`; `NeedsReindex()`/`Clear()` auto-trigger re-extraction on version mismatch
 - `pkg/mcp/` — MCP server with tools: search_code, grep_code, find_usages, find_definition, find_imports, symbol_info
 
 ## search_code behavior
@@ -47,11 +41,12 @@
 `search_code` (hybrid mode) keeps the index auto-updated:
 
 1. **On MCP startup** (git repo detected) → auto-indexes if empty or outdated
-2. Branch detected → `SwitchBranch()` if changed (branch-isolated index)
-3. Empty index → synchronous `IndexAll()` (first time)
-4. New commits since last saved SHA → synchronous `IndexChanged()`
-5. Uncommitted changes only → `IndexChanged()` in background
-6. `Search()` returns results
+2. **Format version mismatch** → clears DB and triggers `IndexAll()` (reindex on breaking changes)
+3. Branch detected → `SwitchBranch()` if changed (branch-isolated index)
+4. Empty index → synchronous `IndexAll()` (first time)
+5. New commits since last saved SHA → synchronous `IndexChanged()`
+6. Uncommitted changes only → `IndexChanged()` in background
+7. `Search()` returns results
 
 `grep_code` does NOT auto-index. If no index exists, you must run `search_code` first to build it.
 
@@ -113,6 +108,15 @@
    - Adds to PATH
    - Creates run.bat/run.sh
 4. With `--mcp` → starts `mcp.Serve(llamaManager)`
+
+## Database format versioning
+
+Both the vector index and the graph index have independent format version numbers. When a code change makes the on-disk format incompatible, increment the relevant constant:
+
+- **Vector index**: `StorageFormatVersion` in `pkg/storage/storage.go:62` — increment when changing `ChunkRecord`, `StorageData`, embedding dimensions, chunking logic that affects stored content, or any other breaking change to the vector persistence format
+- **Graph index**: `GraphFormatVersion` in `pkg/storage/storage.go:69` — increment when changing `Symbol`, `Reference`, `FileData`, Tree-sitter extraction logic, or any other breaking change to the graph persistence format
+
+Version `0` (pre-versioning legacy format) is treated as compatible and does NOT trigger reindex. Versions `> 0` that differ from the current constant trigger automatic clearing and full reindex on next startup (MCP mode) or CLI operation (`--query`, `--generate`).
 
 ## Documentation maintenance
 

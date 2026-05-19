@@ -109,6 +109,15 @@ func RunGenerate(rootDir string) int {
 		slog.Warn("branch switch failed, continuing", "error", err)
 	}
 
+	// Check for format version mismatch — clear if needed before full reindex
+	if st.NeedsReindex() {
+		slog.Warn("storage format version changed, clearing before reindex")
+		if err := st.ClearAll(); err != nil {
+			slog.Error("clear storage", "error", err)
+			return 1
+		}
+	}
+
 	idx := indexer.New(w, ch, em, st, nil, 0, 0)
 
 	// Wire knowledge graph
@@ -120,6 +129,13 @@ func RunGenerate(rootDir string) int {
 		graphQuery = gq
 		if err := gq.SwitchBranch(branch, worktree); err != nil {
 			slog.Warn("graph: branch switch failed, using default", "error", err)
+		}
+		if graphQuery.NeedsReindex() {
+			slog.Warn("graph format version changed, clearing before reindex")
+			if err := graphQuery.DB.Clear(); err != nil {
+				slog.Error("clear graph", "error", err)
+				return 1
+			}
 		}
 	}
 
@@ -349,6 +365,22 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 		}
 	}()
 
+	// Check for format version mismatch — clear and reindex if needed
+	if st.NeedsReindex() {
+		slog.Warn("storage format version changed, clearing for reindex")
+		if err := st.ClearAll(); err != nil {
+			slog.Error("clear storage", "error", err)
+			return 1
+		}
+	}
+	if gq != nil && gq.NeedsReindex() {
+		slog.Warn("graph format version changed, clearing for reindex")
+		if err := gq.DB.Clear(); err != nil {
+			slog.Error("clear graph", "error", err)
+			return 1
+		}
+	}
+
 	stats := idx.GetStats()
 	if stats.TotalChunks == 0 {
 		if needsLlama {
@@ -478,6 +510,13 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 			gq.Close()
 		}
 	}()
+
+	// Check for format version mismatch — grep mode can't reindex, so warn and exit
+	if st.NeedsReindex() {
+		fmt.Fprintln(pw, "Storage format version changed. Run --query (hybrid) search to trigger reindex.")
+		fmt.Fprintln(pw, "======================")
+		return 1
+	}
 
 	stats := idx.GetStats()
 	if stats.TotalChunks == 0 {
@@ -1010,6 +1049,11 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 	worktree := w.GetWorktreeName()
 	if err := gq.SwitchBranch(branch, worktree); err != nil {
 		slog.Warn("graph: branch switch in query", "error", err)
+	}
+
+	if gq.NeedsReindex() {
+		fmt.Fprintln(os.Stderr, "Graph format version changed. Run --generate or --query to rebuild the graph index.")
+		return 1
 	}
 
 	symCount, refCount := gq.Cache.Stats()

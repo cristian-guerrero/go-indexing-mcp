@@ -55,8 +55,21 @@ type SearchResult struct {
 	Score     float64 `json:"score"`
 }
 
+// StorageFormatVersion is the current on-disk format version for the vector index.
+// Increment when making breaking changes to StorageData, ChunkRecord, or the
+// embedding pipeline (chunking logic, vector dimensions, normalization, etc.).
+// Old-format files (Version==0) are treated as compatible and do NOT force reindex.
+const StorageFormatVersion = 1
+
+// GraphFormatVersion is the current on-disk format version for the graph index.
+// Increment when making breaking changes to Symbol, Reference, FileData, or the
+// extraction pipeline (Tree-sitter grammars, AST traversal, symbol structure).
+// Old-format directories (without version.json) are treated as compatible.
+const GraphFormatVersion = 1
+
 // StorageData is the on-disk format: records + commit SHA for git tracking.
 type StorageData struct {
+	Version   int
 	Records   []ChunkRecord
 	CommitSHA string
 }
@@ -72,22 +85,23 @@ type StorageData struct {
 //	  vectors.gob                     (main branch)
 //	  vectors-{worktree}-{branch}.gob (other branches)
 type Storage struct {
-	path       string          // current gob file path (may include branch suffix)
-	pathPrefix string          // base path without .gob, used for branch switching
-	dimensions int
-	mu         sync.RWMutex
-	records    []ChunkRecord
-	commitSHA  string
-	byID       map[string]int
-	byPath     map[string][]int
+	path           string // current gob file path (may include branch suffix)
+	pathPrefix     string // base path without .gob, used for branch switching
+	dimensions     int
+	mu             sync.RWMutex
+	records        []ChunkRecord
+	commitSHA      string
+	diskVersion    int // version read from disk (0 = pre-versioning or compatible)
+	byID           map[string]int
+	byPath         map[string][]int
 	dirty          bool
-	recordsPartial bool   // true after SaveAndFree; saveLocked must merge with disk
+	recordsPartial bool // true after SaveAndFree; saveLocked must merge with disk
 	bm25           *bm25Index
-	fileIndex  map[string]string // filePath → fileHash (survives SaveAndFree)
-	vecIndex   VectorIndex       // lazy-built vector index (brute-force or cover tree)
-	vecCache   *IndexCacheEntry  // concurrent build coordination
-	indexKind  IndexKind         // "auto", "bruteforce", "cover"
-	trigrams   *trigramIndex     // lazy-built trigram index for grep pre-filtering
+	fileIndex      map[string]string // filePath → fileHash (survives SaveAndFree)
+	vecIndex       VectorIndex       // lazy-built vector index (brute-force or cover tree)
+	vecCache       *IndexCacheEntry  // concurrent build coordination
+	indexKind      IndexKind         // "auto", "bruteforce", "cover"
+	trigrams       *trigramIndex     // lazy-built trigram index for grep pre-filtering
 }
 
 // New creates or opens a Storage with the given gob file path and vector dimensions.
@@ -99,8 +113,8 @@ func New(path string, dimensions int) (*Storage, error) {
 	}
 
 	s := &Storage{
-		path:      path,
-		pathPrefix: strings.TrimSuffix(path, ".gob"),
+		path:           path,
+		pathPrefix:     strings.TrimSuffix(path, ".gob"),
 		dimensions:     dimensions,
 		byID:           make(map[string]int),
 		byPath:         make(map[string][]int),
@@ -300,6 +314,41 @@ func (s *Storage) Save() error {
 	return s.save()
 }
 
+// NeedsReindex returns true when the on-disk format version differs from the
+// current code version, indicating that a breaking change requires a full reindex.
+// Returns false for version 0 (pre-versioning format, treated as compatible).
+func (s *Storage) NeedsReindex() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.diskVersion > 0 && s.diskVersion != StorageFormatVersion
+}
+
+// ClearAll removes all in-memory records and resets the disk state, effectively
+// clearing the entire index. Used before a full reindex triggered by version mismatch.
+func (s *Storage) ClearAll() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.records = nil
+	s.byID = make(map[string]int)
+	s.byPath = make(map[string][]int)
+	s.fileIndex = make(map[string]string)
+	s.bm25 = nil
+	s.trigrams = nil
+	s.vecCache.Invalidate()
+	s.vecIndex = nil
+	s.commitSHA = ""
+	s.diskVersion = 0
+	s.dirty = false
+	s.recordsPartial = false
+
+	// Remove the gob file from disk
+	if err := os.Remove(s.path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove storage file: %w", err)
+	}
+	return nil
+}
+
 // IsFileIndexed checks if all chunks for a file are already in the index
 // with matching hashes. Used to skip already-indexed files on resume after crash.
 func (s *Storage) IsFileIndexed(filePath, fileHash string) bool {
@@ -356,6 +405,7 @@ func (s *Storage) load() error {
 	if err := dec.Decode(&data); err == nil {
 		s.rebuildIndex(data.Records)
 		s.commitSHA = data.CommitSHA
+		s.diskVersion = data.Version
 	} else {
 		f.Seek(0, 0)
 		var records []ChunkRecord
@@ -383,6 +433,7 @@ func (s *Storage) load() error {
 		} else {
 			s.rebuildIndex(records)
 		}
+		s.diskVersion = 0 // pre-versioning format
 	}
 	s.recordsPartial = false // records freshly loaded from disk = complete
 	return nil
@@ -430,6 +481,7 @@ func (s *Storage) saveLocked() error {
 	}
 
 	data := StorageData{
+		Version:   StorageFormatVersion,
 		Records:   recordsToWrite,
 		CommitSHA: commitSHA,
 	}

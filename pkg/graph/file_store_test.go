@@ -1,9 +1,12 @@
 package graph
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
 )
 
 func TestFileStoreRoundTrip(t *testing.T) {
@@ -263,5 +266,101 @@ func TestFileStoreStats(t *testing.T) {
 	}
 	if stats != 2 {
 		t.Errorf("expected 2, got %d", stats)
+	}
+}
+
+func TestGraphVersion(t *testing.T) {
+	dir := t.TempDir()
+
+	db, err := OpenGraph(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if db.diskVersion != storage.GraphFormatVersion {
+		t.Errorf("expected diskVersion %d, got %d", storage.GraphFormatVersion, db.diskVersion)
+	}
+	if db.NeedsReindex() {
+		t.Error("fresh graph should not need reindex")
+	}
+	db.Close()
+
+	// Reopen — version should be the same
+	db2, err := OpenGraph(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Close()
+	if db2.diskVersion != storage.GraphFormatVersion {
+		t.Errorf("expected diskVersion %d, got %d", storage.GraphFormatVersion, db2.diskVersion)
+	}
+	if db2.NeedsReindex() {
+		t.Error("reopened graph with matching version should not need reindex")
+	}
+}
+
+func TestGraphVersionMismatch(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a graph with current version
+	db, err := OpenGraph(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeFile(t, db, "a.go", []Symbol{
+		{ID: "h:a.go:1:A", Name: "A", Kind: SymbolFunction, RelPath: "a.go"},
+	}, nil)
+	db.Close()
+
+	// Manually write a version.json with a future version
+	v := struct {
+		Version int `json:"version"`
+	}{Version: storage.GraphFormatVersion + 1}
+	blob, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, VersionFileName), blob, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen — should detect version mismatch
+	db2, err := OpenGraph(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db2.Close()
+
+	if !db2.NeedsReindex() {
+		t.Error("expected NeedsReindex for version mismatch")
+	}
+
+	// Clear should reset version and reindex state
+	if err := db2.Clear(); err != nil {
+		t.Fatal(err)
+	}
+	if db2.NeedsReindex() {
+		t.Error("after Clear, NeedsReindex should be false")
+	}
+	if db2.diskVersion != storage.GraphFormatVersion {
+		t.Errorf("after Clear, expected diskVersion %d, got %d", storage.GraphFormatVersion, db2.diskVersion)
+	}
+}
+
+func TestGraphVersionMissing(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create directory without version.json (simulate pre-versioning graph)
+	db, err := OpenGraph(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Without a version file, diskVersion should be set to storage.GraphFormatVersion
+	if db.diskVersion != storage.GraphFormatVersion {
+		t.Errorf("expected diskVersion %d for missing version file, got %d", storage.GraphFormatVersion, db.diskVersion)
+	}
+	if db.NeedsReindex() {
+		t.Error("graph without version file should not need reindex")
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
 )
 
 // FileData holds all symbols and references for a single source file.
@@ -15,6 +17,9 @@ type FileData struct {
 	Symbols []Symbol    `json:"symbols"`
 	Refs    []Reference `json:"refs"`
 }
+
+// VersionFileName is the name of the file storing the graph format version.
+const VersionFileName = "version.json"
 
 // GraphDB persists symbol graph data as individual JSON files,
 // one per indexed source file, under a directory. Each file is stored at:
@@ -25,17 +30,69 @@ type FileData struct {
 // a complete file. No exclusive locks are held, allowing safe concurrent
 // access from MCP server (writer) and CLI tools (readers).
 type GraphDB struct {
-	dir string
+	dir          string
+	diskVersion  int // version read from disk (0 = pre-versioning)
 }
 
 // OpenGraph creates or opens a file-based graph store at the given directory.
-// The directory is created if it doesn't exist.
+// The directory is created if it doesn't exist. Checks and records the on-disk
+// format version for detecting breaking changes that require reindex.
 func OpenGraph(dir string) (*GraphDB, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("create graph dir: %w", err)
 	}
-	slog.Info("graph db opened", "dir", dir)
-	return &GraphDB{dir: dir}, nil
+
+	db := &GraphDB{dir: dir}
+	if err := db.readVersionLocked(); err != nil {
+		slog.Info("graph: no version file found, writing current version", "dir", dir)
+		db.diskVersion = storage.GraphFormatVersion
+		if err := db.writeVersionLocked(); err != nil {
+			slog.Warn("graph: write version file", "error", err)
+		}
+	}
+	slog.Info("graph db opened", "dir", dir, "disk_version", db.diskVersion)
+	return db, nil
+}
+
+// versionPath returns the path to the version file.
+func (g *GraphDB) versionPath() string {
+	return filepath.Join(g.dir, VersionFileName)
+}
+
+// readVersionLocked reads the format version from version.json.
+// Returns error if the file doesn't exist or is unreadable (diskVersion stays 0).
+func (g *GraphDB) readVersionLocked() error {
+	raw, err := os.ReadFile(g.versionPath())
+	if err != nil {
+		return err
+	}
+	var v struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return err
+	}
+	g.diskVersion = v.Version
+	return nil
+}
+
+// writeVersionLocked writes the current storage.GraphFormatVersion to version.json.
+func (g *GraphDB) writeVersionLocked() error {
+	v := struct {
+		Version int `json:"version"`
+	}{Version: storage.GraphFormatVersion}
+	blob, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(g.versionPath(), blob, 0644)
+}
+
+// NeedsReindex returns true when the on-disk graph format version differs from
+// the current code version, indicating that a breaking change requires clearing
+// and re-extracting all graph data. Returns false for version 0 (pre-versioning).
+func (g *GraphDB) NeedsReindex() bool {
+	return g.diskVersion > 0 && g.diskVersion != storage.GraphFormatVersion
 }
 
 // Close is a no-op for the file-based store. No DB connection to close.
@@ -78,7 +135,7 @@ func (g *GraphDB) StoreFile(relPath string, symbols []Symbol, refs []Reference) 
 }
 
 // LoadAll reads all stored files into the given KnowledgeGraph.
-// Called on startup to rebuild in-memory indexes.
+// Called on startup to rebuild in-memory indexes. Skips version.json.
 func (g *GraphDB) LoadAll(knowledge *KnowledgeGraph) error {
 	return filepath.WalkDir(g.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -88,6 +145,9 @@ func (g *GraphDB) LoadAll(knowledge *KnowledgeGraph) error {
 			return nil
 		}
 		if !strings.HasSuffix(path, ".json") {
+			return nil
+		}
+		if filepath.Base(path) == VersionFileName {
 			return nil
 		}
 
@@ -136,22 +196,30 @@ func (g *GraphDB) RemoveFile(relPath string) error {
 	return nil
 }
 
-// Stats returns the number of files stored.
+// Stats returns the number of indexed source files (excluding version.json).
 func (g *GraphDB) Stats() (files int, err error) {
 	err = filepath.WalkDir(g.dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() && strings.HasSuffix(path, ".json") {
-			files++
+		if d.IsDir() {
+			return nil
 		}
+		if !strings.HasSuffix(path, ".json") {
+			return nil
+		}
+		if filepath.Base(path) == VersionFileName {
+			return nil
+		}
+		files++
 		return nil
 	})
 	return files, err
 }
 
 // Clear removes all data from the graph database while keeping the directory
-// itself intact for subsequent writes. Effectively deletes all JSON files.
+// itself intact for subsequent writes. Effectively deletes all JSON files
+// and resets the disk version. Rewrites version.json with the current version.
 func (g *GraphDB) Clear() error {
 	entries, err := os.ReadDir(g.dir)
 	if err != nil {
@@ -166,6 +234,11 @@ func (g *GraphDB) Clear() error {
 			return err
 		}
 	}
+	g.diskVersion = 0
+	if err := g.writeVersionLocked(); err != nil {
+		return err
+	}
+	g.diskVersion = storage.GraphFormatVersion
 	return nil
 }
 

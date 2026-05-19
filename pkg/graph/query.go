@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
 )
 
 // GraphQuery provides a unified query interface over the knowledge graph,
@@ -55,6 +57,11 @@ func NewGraphQuery(graphDir string) (*GraphQuery, error) {
 		return nil, err
 	}
 
+	if db.NeedsReindex() {
+		slog.Warn("graph: database has old format version, will re-extract on next index",
+			"disk_version", db.diskVersion, "current_version", storage.GraphFormatVersion)
+	}
+
 	cache := NewGraph()
 	if err := db.LoadAll(cache); err != nil {
 		slog.Warn("graph: failed to load existing data, starting fresh", "error", err)
@@ -71,6 +78,15 @@ func NewGraphQuery(graphDir string) (*GraphQuery, error) {
 		DBPath:     graphDir,
 		storageDir: graphDir,
 	}, nil
+}
+
+// NeedsReindex returns true when the on-disk graph format version differs from
+// the current code version. Triggers a full re-extraction of graph data.
+func (g *GraphQuery) NeedsReindex() bool {
+	if g.DB == nil {
+		return false
+	}
+	return g.DB.NeedsReindex()
 }
 
 // SwitchBranch persists the current graph and switches to a branch-specific index.
@@ -98,6 +114,11 @@ func (g *GraphQuery) SwitchBranch(branch, worktree string) error {
 	}
 	g.DB = db
 	g.DBPath = newDir
+
+	if db.NeedsReindex() {
+		slog.Warn("graph: branch has old format version, clearing and re-extracting on next index",
+			"branch", branch, "disk_version", db.diskVersion, "current_version", storage.GraphFormatVersion)
+	}
 
 	if err := db.LoadAll(g.Cache); err != nil {
 		slog.Warn("graph: load branch", "branch", branch, "error", err)

@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"encoding/gob"
 	"math"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -825,6 +827,152 @@ func TestCacheNoDeadlock(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestStorageVersion tests format version saving and loading.
+func TestStorageVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vectors.gob")
+
+	// Create fresh storage, version should be saved as StorageFormatVersion
+	st, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if st.NeedsReindex() {
+		t.Error("fresh storage should not need reindex")
+	}
+
+	// Save a record so the gob is written
+	err = st.UpsertChunks([]chunker.Chunk{
+		{ID: "c1", FilePath: "test.go", RelPath: "test.go", Language: "go", Content: "package test", StartLine: 1, EndLine: 1, FileHash: "hash1"},
+	}, map[string][]float32{"c1": {1, 0, 0, 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	// Reload — version should match
+	st2, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+
+	if st2.NeedsReindex() {
+		t.Error("reloaded storage with matching version should not need reindex")
+	}
+}
+
+// TestStorageVersionMismatch tests that a version mismatch triggers NeedsReindex.
+func TestStorageVersionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vectors.gob")
+
+	// Create and save with current version
+	st, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = st.UpsertChunks([]chunker.Chunk{
+		{ID: "c1", FilePath: "test.go", RelPath: "test.go", Language: "go", Content: "package test", StartLine: 1, EndLine: 1, FileHash: "hash1"},
+	}, map[string][]float32{"c1": {1, 0, 0, 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(); err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+
+	// Manually corrupt the version to simulate a future format change
+	data := StorageData{
+		Version:   StorageFormatVersion + 1,
+		Records:   []ChunkRecord{{ID: "c1", FilePath: "test.go", RelPath: "test.go", Language: "go", Content: "package test", StartLine: 1, EndLine: 1, FileHash: "hash1", Vector: []float32{1, 0, 0, 0}}},
+		CommitSHA: "",
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := gob.NewEncoder(f)
+	if err := enc.Encode(data); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// Reload — version mismatch should trigger NeedsReindex
+	st2, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+
+	if !st2.NeedsReindex() {
+		t.Error("expected NeedsReindex for version mismatch")
+	}
+
+	// ClearAll should resolve the mismatch
+	if err := st2.ClearAll(); err != nil {
+		t.Fatal(err)
+	}
+	if st2.NeedsReindex() {
+		t.Error("after ClearAll, NeedsReindex should be false")
+	}
+}
+
+// TestStorageVersionLegacy tests that old format (version 0) does not trigger reindex.
+func TestStorageVersionLegacy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vectors.gob")
+
+	// Write a gob without the Version field (pre-versioning format)
+	legacyData := struct {
+		Records   []ChunkRecord
+		CommitSHA string
+	}{
+		Records: []ChunkRecord{
+			{ID: "c1", FilePath: "test.go", RelPath: "test.go", Language: "go", Content: "package test", StartLine: 1, EndLine: 1, FileHash: "hash1", Vector: []float32{1, 0, 0, 0}},
+		},
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc := gob.NewEncoder(f)
+	if err := enc.Encode(legacyData); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	// Load legacy format — should not need reindex
+	st, err := New(path, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if st.NeedsReindex() {
+		t.Error("legacy format (version 0) should not need reindex")
+	}
+
+	// Records should be loaded
+	chunks, files, err := st.Stats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chunks != 1 {
+		t.Errorf("expected 1 chunk from legacy format, got %d", chunks)
+	}
+	if files != 1 {
+		t.Errorf("expected 1 file from legacy format, got %d", files)
+	}
 }
 
 // newRand is a seeded random source for deterministic tests.

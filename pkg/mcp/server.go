@@ -91,6 +91,24 @@ func (m *MCPServer) indexOnStartup() {
 	m.currentBranch = branch
 	m.currentWorktree = worktree
 
+	// Check for on-disk format version mismatch (breaking changes)
+	storageNeedsReindex := m.indexer.Storage.NeedsReindex()
+	var graphNeedsReindex bool
+	if m.indexer.Graph != nil {
+		graphNeedsReindex = m.indexer.Graph.NeedsReindex()
+	}
+	if storageNeedsReindex || graphNeedsReindex {
+		slog.Warn("on-disk format version mismatch detected, triggering full reindex",
+			"storage_needs_reindex", storageNeedsReindex,
+			"graph_needs_reindex", graphNeedsReindex)
+		if err := m.ensureLlama(); err != nil {
+			slog.Error("llama not available for reindex on version mismatch", "error", err)
+			return
+		}
+		m.runReindexAll()
+		return
+	}
+
 	stats := m.indexer.GetStats()
 	if stats.TotalChunks == 0 {
 		slog.Info("index is empty, indexing on startup")
@@ -144,6 +162,22 @@ func (m *MCPServer) runIndexAll() {
 		slog.Info("full index complete")
 		return
 	}
+}
+
+// runReindexAll clears both vector and graph databases, then runs a full index.
+// Used when a format version mismatch is detected.
+func (m *MCPServer) runReindexAll() {
+	if err := m.indexer.Storage.ClearAll(); err != nil {
+		slog.Error("clear storage for reindex", "error", err)
+	}
+	if m.indexer.Graph != nil {
+		if err := m.indexer.Graph.DB.Clear(); err != nil {
+			slog.Error("clear graph for reindex", "error", err)
+		}
+	}
+	// Re-read stats after clearing (GetStats refreshes from storage)
+	m.indexer.GetStats()
+	m.runIndexAll()
 }
 
 // runIndexChanged calls IndexChanged with up to 3 retries on failure.
@@ -294,6 +328,26 @@ func (m *MCPServer) watchChecker() {
 			}
 			m.currentBranch = branch
 			m.currentWorktree = worktree
+		}
+
+		// Check for on-disk format version mismatch
+		if m.indexer.Storage.NeedsReindex() {
+			slog.Warn("watch: storage format version changed, triggering full reindex")
+			if err := m.ensureLlama(); err != nil {
+				slog.Warn("watch: llama not available for reindex", "error", err)
+				continue
+			}
+			m.runReindexAll()
+			continue
+		}
+		if m.indexer.Graph != nil && m.indexer.Graph.NeedsReindex() {
+			slog.Warn("watch: graph format version changed, triggering full reindex")
+			if err := m.ensureLlama(); err != nil {
+				slog.Warn("watch: llama not available for reindex", "error", err)
+				continue
+			}
+			m.runReindexAll()
+			continue
 		}
 
 		if stats.TotalChunks == 0 {

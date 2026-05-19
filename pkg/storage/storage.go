@@ -72,6 +72,7 @@ type StorageData struct {
 	Version   int
 	Records   []ChunkRecord
 	CommitSHA string
+	Trigrams  *TrigramData // persisted trigram index; nil on legacy files
 }
 
 // Storage manages chunk records with O(1) lookups by ID and file path,
@@ -406,35 +407,42 @@ func (s *Storage) load() error {
 		s.rebuildIndex(data.Records)
 		s.commitSHA = data.CommitSHA
 		s.diskVersion = data.Version
-	} else {
-		f.Seek(0, 0)
-		var records []ChunkRecord
-		dec = gob.NewDecoder(f)
-		if err := dec.Decode(&records); err != nil {
-			f.Seek(0, 0)
-			var legacy []ChunkRecordLegacy
-			dec = gob.NewDecoder(f)
-			if err := dec.Decode(&legacy); err != nil {
-				return nil // corrupt file, start fresh
-			}
-			converted := make([]ChunkRecord, len(legacy))
-			for i, rec := range legacy {
-				vec32 := make([]float32, len(rec.Vector))
-				for j, v := range rec.Vector {
-					vec32[j] = float32(v)
-				}
-				converted[i] = ChunkRecord{
-					ID: rec.ID, FilePath: rec.FilePath, RelPath: rec.RelPath,
-					Language: rec.Language, StartLine: rec.StartLine, EndLine: rec.EndLine,
-					Content: rec.Content, FileHash: rec.FileHash, Vector: vec32,
-				}
-			}
-			s.rebuildIndex(converted)
-		} else {
-			s.rebuildIndex(records)
+		s.recordsPartial = false
+
+		// Restore persisted trigram index if available and still valid
+		if data.Trigrams != nil && data.Trigrams.DocCount == len(data.Records) {
+			s.trigrams = &trigramIndex{index: data.Trigrams.Index}
 		}
-		s.diskVersion = 0 // pre-versioning format
+		return nil
 	}
+
+	f.Seek(0, 0)
+	var records []ChunkRecord
+	dec = gob.NewDecoder(f)
+	if err := dec.Decode(&records); err != nil {
+		f.Seek(0, 0)
+		var legacy []ChunkRecordLegacy
+		dec = gob.NewDecoder(f)
+		if err := dec.Decode(&legacy); err != nil {
+			return nil // corrupt file, start fresh
+		}
+		converted := make([]ChunkRecord, len(legacy))
+		for i, rec := range legacy {
+			vec32 := make([]float32, len(rec.Vector))
+			for j, v := range rec.Vector {
+				vec32[j] = float32(v)
+			}
+			converted[i] = ChunkRecord{
+				ID: rec.ID, FilePath: rec.FilePath, RelPath: rec.RelPath,
+				Language: rec.Language, StartLine: rec.StartLine, EndLine: rec.EndLine,
+				Content: rec.Content, FileHash: rec.FileHash, Vector: vec32,
+			}
+		}
+		s.rebuildIndex(converted)
+	} else {
+		s.rebuildIndex(records)
+	}
+	s.diskVersion = 0 // pre-versioning format
 	s.recordsPartial = false // records freshly loaded from disk = complete
 	return nil
 }
@@ -480,10 +488,20 @@ func (s *Storage) saveLocked() error {
 		recordsToWrite = s.records
 	}
 
+	// Build and persist trigrams if not already built
+	if s.trigrams == nil {
+		s.trigrams = buildTrigramIndex(recordsToWrite)
+	}
+	tgData := TrigramData{
+		Index:    s.trigrams.index,
+		DocCount: len(recordsToWrite),
+	}
+
 	data := StorageData{
 		Version:   StorageFormatVersion,
 		Records:   recordsToWrite,
 		CommitSHA: commitSHA,
+		Trigrams:  &tgData,
 	}
 
 	tmpPath := s.path + ".tmp"

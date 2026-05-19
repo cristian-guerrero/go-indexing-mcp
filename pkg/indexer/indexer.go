@@ -29,6 +29,7 @@ type Indexer struct {
 	Storage            *storage.Storage
 	Llama              *llama.Manager
 	MemoryFreeInterval int // 0 = disabled; save+clear+restart every N files
+	MaxMemoryMB        int // 0 = disabled; llama-server memory threshold in MB
 	mu                 sync.Mutex
 	Running            bool
 	Stats              IndexStats
@@ -46,7 +47,8 @@ type IndexStats struct {
 // Embedder may be nil (for grep-only mode without llama.cpp).
 // Llama may be nil (when no llama-server management is needed).
 // memoryFreeInterval: 0 disables periodic memory freeing.
-func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *storage.Storage, lm *llama.Manager, memoryFreeInterval int) *Indexer {
+// maxMemoryMB: 0 disables llama-server memory threshold restart.
+func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *storage.Storage, lm *llama.Manager, memoryFreeInterval int, maxMemoryMB int) *Indexer {
 	return &Indexer{
 		Walker:             w,
 		Chunker:            ch,
@@ -54,6 +56,7 @@ func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *stora
 		Storage:            st,
 		Llama:              lm,
 		MemoryFreeInterval: memoryFreeInterval,
+		MaxMemoryMB:        maxMemoryMB,
 		Stats: IndexStats{
 			LastIndexed: "never",
 		},
@@ -164,6 +167,23 @@ func (idx *Indexer) IndexAll() error {
 
 			indexedSinceFree = 0
 			slog.Info("memory freed, continuing indexing", "files_indexed_so_far", indexedFiles)
+		}
+
+		// Memory threshold: restart llama-server if its RSS exceeds MaxMemoryMB
+		if idx.MaxMemoryMB > 0 && idx.Llama != nil {
+			usage, err := idx.Llama.MemoryUsageMB()
+			if err != nil {
+				slog.Debug("check memory threshold", "error", err)
+			} else if usage >= uint64(idx.MaxMemoryMB) {
+				slog.Warn("llama-server memory threshold exceeded, saving and restarting",
+					"usage_mb", usage, "threshold_mb", idx.MaxMemoryMB)
+				if err := idx.Storage.SaveAndFree(); err != nil {
+					slog.Warn("save and free before memory restart", "error", err)
+				}
+				if err := idx.restartLlama(); err != nil {
+					slog.Warn("restart after memory threshold", "error", err)
+				}
+			}
 		}
 	}
 

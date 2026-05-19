@@ -22,7 +22,7 @@ func TestNew(t *testing.T) {
 	em := embedder.New("http://localhost:56000", 768, 8)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
 
-	idx := New(w, ch, em, st, nil, 0)
+	idx := New(w, ch, em, st, nil, 0, 0)
 	if idx == nil {
 		t.Fatal("expected non-nil indexer")
 	}
@@ -49,7 +49,7 @@ func TestNew_NilEmbedder(t *testing.T) {
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
 
-	idx := New(w, ch, nil, st, nil, 0)
+	idx := New(w, ch, nil, st, nil, 0, 0)
 	if idx.Embedder != nil {
 		t.Error("expected nil embedder")
 	}
@@ -137,7 +137,7 @@ func TestGetStats_EmptyStorage(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
-	idx := New(w, ch, nil, st, nil, 0)
+	idx := New(w, ch, nil, st, nil, 0, 0)
 
 	stats := idx.GetStats()
 	if stats.TotalChunks != 0 {
@@ -153,7 +153,7 @@ func TestGetStats_WithData(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
-	idx := New(w, ch, nil, st, nil, 0)
+	idx := New(w, ch, nil, st, nil, 0, 0)
 
 	chunks := []chunker.Chunk{
 		{ID: "c1", FilePath: "/a.go", RelPath: "a.go", Language: "go", Content: "package a", FileHash: "h1"},
@@ -171,7 +171,7 @@ func TestListFiles_Empty(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
-	idx := New(w, ch, nil, st, nil, 0)
+	idx := New(w, ch, nil, st, nil, 0, 0)
 
 	files := idx.ListFiles()
 	if len(files) != 0 {
@@ -183,7 +183,7 @@ func TestListFiles_NilStorage(t *testing.T) {
 	dir := t.TempDir()
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
-	idx := New(w, ch, nil, nil, nil, 0)
+	idx := New(w, ch, nil, nil, nil, 0, 0)
 
 	files := idx.ListFiles()
 	if files != nil {
@@ -225,7 +225,7 @@ func TestPruneStaleEntries(t *testing.T) {
 	defer srv.Close()
 
 	em := embedder.New(srv.URL, 4, 10)
-	idx := New(w, ch, em, st, nil, 0)
+	idx := New(w, ch, em, st, nil, 0, 0)
 
 	if err := idx.IndexAll(); err != nil {
 		t.Fatal(err)
@@ -253,7 +253,7 @@ func TestIndexPath_FileNotFound(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
-	idx := New(w, ch, nil, st, nil, 0)
+	idx := New(w, ch, nil, st, nil, 0, 0)
 
 	err := idx.IndexPath("nonexistent.go")
 	if err == nil {
@@ -289,7 +289,7 @@ func TestIndexPath_Success(t *testing.T) {
 	defer srv.Close()
 
 	em := embedder.New(srv.URL, 4, 10)
-	idx := New(w, ch, em, st, nil, 0)
+	idx := New(w, ch, em, st, nil, 0, 0)
 
 	if err := idx.IndexPath("main.go"); err != nil {
 		t.Fatal(err)
@@ -330,7 +330,7 @@ func TestIndexAll(t *testing.T) {
 	defer srv.Close()
 
 	em := embedder.New(srv.URL, 4, 10)
-	idx := New(w, ch, em, st, nil, 0)
+	idx := New(w, ch, em, st, nil, 0, 0)
 
 	if err := idx.IndexAll(); err != nil {
 		t.Fatal(err)
@@ -349,7 +349,7 @@ func TestIndexAll_AlreadyRunning(t *testing.T) {
 	dir := t.TempDir()
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
-	idx := New(w, ch, nil, nil, nil, 0)
+	idx := New(w, ch, nil, nil, nil, 0, 0)
 
 	idx.Running = true
 	err := idx.IndexAll()
@@ -391,7 +391,7 @@ func TestSearch_HybridMode(t *testing.T) {
 	defer srv.Close()
 
 	em := embedder.New(srv.URL, 4, 10)
-	idx := New(w, ch, em, st, nil, 0)
+	idx := New(w, ch, em, st, nil, 0, 0)
 	idx.IndexAll()
 
 	results, err := idx.Search("main", "", 10, "hybrid")
@@ -422,7 +422,7 @@ func TestSearch_GrepMode(t *testing.T) {
 	defer srv.Close()
 
 	em := embedder.New(srv.URL, 4, 10)
-	idx := New(w, ch, em, st, nil, 0)
+	idx := New(w, ch, em, st, nil, 0, 0)
 	idx.IndexAll()
 
 	results, err := idx.Search("main", "", 10, "grep")
@@ -455,7 +455,7 @@ func TestSearchGrep(t *testing.T) {
 	defer srv.Close()
 
 	em := embedder.New(srv.URL, 4, 10)
-	idx := New(w, ch, em, st, nil, 0)
+	idx := New(w, ch, em, st, nil, 0, 0)
 	idx.IndexAll()
 
 	results, err := idx.SearchGrep(storage.GrepOptions{Query: "package", Limit: 10}, "")
@@ -488,7 +488,7 @@ func TestSearchGrep_PathFilter(t *testing.T) {
 	defer srv.Close()
 
 	em := embedder.New(srv.URL, 4, 10)
-	idx := New(w, ch, em, st, nil, 0)
+	idx := New(w, ch, em, st, nil, 0, 0)
 	idx.IndexAll()
 
 	results, err := idx.SearchGrep(storage.GrepOptions{Query: "package", Limit: 10}, "nonexistent")
@@ -505,7 +505,7 @@ func TestFilterByPath(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
-	idx := New(w, ch, nil, st, nil, 0)
+	idx := New(w, ch, nil, st, nil, 0, 0)
 
 	results := []storage.SearchResult{
 		{RelPath: "main.go"},

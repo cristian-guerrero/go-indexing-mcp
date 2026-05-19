@@ -151,7 +151,7 @@ func main() {
 	}
 	defer st.Close()
 
-	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval)
+	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB)
 
 	srv := mcp.New(idx, mgr, cfg.Indexing.IdleTimeoutSecs, cfg.Indexing.WatchEnabled, cfg.Indexing.WatchIntervalSecs)
 	slog.Info("starting MCP server")

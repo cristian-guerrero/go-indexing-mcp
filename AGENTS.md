@@ -30,7 +30,7 @@
 - `internal/cli/handlers.go` — `RunGenerate()`, `RunQuery()`, `RunConfigure()` + `configurePi()`, `configureOpenCode()`, `configureKiloCode()`
 - `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`. `McpDir()`, `ModelsDir()`, `LlamaCppDir()`, `McpBinDir()`, `EncodeProjectPath()`, `StorageDir()`, `StoragePath()` (deprecated), `EncodeFilePath()`
 - `pkg/selfsetup/` — auto-setup on first run
-- `pkg/llama/` — manager: download (auto-detects GPU → CUDA/Vulkan/CPU), llama-server subprocess, health check, `IsRunning()`, `StartedProcess()`
+- `pkg/llama/` — manager: download (auto-detects GPU → CUDA/Vulkan/CPU), llama-server subprocess, health check, `IsRunning()`, `StartedProcess()`. Memory monitoring: `MemoryUsageMB()` with `meminfo_windows.go` (psapi.dll + `golang.org/x/sys/windows`) and `meminfo_unix.go` (`/proc/<pid>/status` + `ps` fallback)
 - `pkg/ignore/` — .gitignore filter + default patterns (nested levels)
 - `pkg/walker/` — file walker with git diff, hash, branch and language detection
 - `pkg/chunker/` — sliding window + structural splitter. `ChunkFile` single or `ChunkFiles` batch
@@ -38,7 +38,7 @@
 - `pkg/embedder/` — HTTP client to llama.cpp `/v1/embeddings`. Uses connection pooling (`MaxIdleConns`) and buffer pool for reduced allocations
 - `pkg/storage/` — gob persistence + normalized dot product + branch-isolated indices + BM25 inverted index (`bm25.go`) + lightweight `fileIndex` for memory-free resume. Single `vectors.gob` (or `vectors-{branch}.gob`) per branch. `SaveAndFree()` writes all records atomically, then clears in-memory state (records, byID, byPath, BM25) but keeps `fileIndex` so `IsFileIndexed()` still works. Vectors are L2-normalized at store time so cosine similarity reduces to dot product.
 - `pkg/storage/simd/` — AVX2+FMA-accelerated dot product (amd64), scalar fallback (all platforms). ~18x speedup for 768-dim vectors
-- `pkg/indexer/` — orchestrator: walk → chunk → embed → store. `Llama` manager and `MemoryFreeInterval` control periodic save+clear+restart during large indexing (every N files, saves merged gob, clears Go memory, restarts llama-server). `IndexAll()` processes files one at a time (no upfront bulk chunking) for bounded memory
+- `pkg/indexer/` — orchestrator: walk → chunk → embed → store. `Llama` manager and `MemoryFreeInterval` control periodic save+clear+restart during large indexing (every N files, saves merged gob, clears Go memory, restarts llama-server). `MaxMemoryMB` triggers the same process when llama-server RSS exceeds a threshold (configurable). `IndexAll()` processes files one at a time (no upfront bulk chunking) for bounded memory
 - `pkg/mcp/` — MCP server with tools: search_code, grep_code
 
 ## search_code behavior

@@ -49,6 +49,7 @@ type IndexingConfig struct {
 	WatchEnabled        bool     `json:"watch_enabled"`
 	WatchIntervalSecs   int      `json:"watch_interval_secs"`
 	MemoryFreeInterval  int      `json:"memory_free_interval"`
+	MaxMemoryMB         int      `json:"max_memory_mb"`         // 0 = disabled; llama-server memory threshold in MB
 }
 
 // StorageConfig is reserved for future storage settings.
@@ -176,6 +177,7 @@ func DefaultConfigForVariant(variant string) *Config {
 			WatchEnabled:        true,
 			WatchIntervalSecs:   60,
 			MemoryFreeInterval:  100,
+			MaxMemoryMB:         0,
 		},
 		Embedding: EmbeddingConfig{
 			Model:      "jina-embeddings-v2-base-code-Q5_K_M",

@@ -93,7 +93,7 @@ func RunGenerate(rootDir string) int {
 		}
 	}
 
-	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
+	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize, cfg.Embedding.QueryPrefix)
 	dbDir := config.StoragePath(rootPath)
 
 	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
@@ -319,7 +319,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 
 	var em *embedder.Embedder
 	if needsLlama {
-		em = embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
+		em = embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize, cfg.Embedding.QueryPrefix)
 	}
 
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)

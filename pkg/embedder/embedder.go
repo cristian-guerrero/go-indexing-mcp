@@ -24,19 +24,22 @@ var bufferPool = sync.Pool{
 
 // Embedder sends text chunks to the llama.cpp embedding API and returns float32 vectors.
 type Embedder struct {
-	BaseURL    string
-	BatchSize  int
-	Dimensions int
-	client     *http.Client
+	BaseURL     string
+	BatchSize   int
+	Dimensions  int
+	QueryPrefix string
+	client      *http.Client
 }
 
 // New creates an Embedder pointing at the given llama.cpp base URL,
-// with the specified vector dimensions and batch size for concurrent embedding.
-func New(baseURL string, dimensions, batchSize int) *Embedder {
+// with the specified vector dimensions, batch size, and optional query prefix
+// for models that distinguish query vs document inputs via a text prefix.
+func New(baseURL string, dimensions, batchSize int, queryPrefix string) *Embedder {
 	return &Embedder{
-		BaseURL:    baseURL,
-		BatchSize:  batchSize,
-		Dimensions: dimensions,
+		BaseURL:     baseURL,
+		BatchSize:   batchSize,
+		Dimensions:  dimensions,
+		QueryPrefix: queryPrefix,
 		client: &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
@@ -153,9 +156,15 @@ func (e *Embedder) embed(texts []string) ([][]float64, error) {
 }
 
 // EmbedQuery embeds a single search query string and returns its vector (converted to float32).
+// If QueryPrefix is non-empty it is prepended to the query text (e.g. "search_query: " or
+// "Represent this query for searching relevant code: ").
 // The vector is not normalized here — normalization happens in storage.SearchHybrid.
 func (e *Embedder) EmbedQuery(query string) ([]float32, error) {
-	embeddings, err := e.embed([]string{query})
+	input := query
+	if e.QueryPrefix != "" {
+		input = e.QueryPrefix + query
+	}
+	embeddings, err := e.embed([]string{input})
 	if err != nil {
 		return nil, err
 	}

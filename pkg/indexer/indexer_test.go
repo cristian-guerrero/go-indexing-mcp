@@ -19,7 +19,7 @@ func TestNew(t *testing.T) {
 	dir := t.TempDir()
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
-	em := embedder.New("http://localhost:56000", 768, 8)
+	em := embedder.New("http://localhost:56000", 768, 8, "")
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
 
 	idx := New(w, ch, em, st, nil, 0, 0)
@@ -224,7 +224,7 @@ func TestPruneStaleEntries(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	em := embedder.New(srv.URL, 4, 10)
+	em := embedder.New(srv.URL, 4, 10, "")
 	idx := New(w, ch, em, st, nil, 0, 0)
 
 	if err := idx.IndexAll(); err != nil {
@@ -288,7 +288,7 @@ func TestIndexPath_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	em := embedder.New(srv.URL, 4, 10)
+	em := embedder.New(srv.URL, 4, 10, "")
 	idx := New(w, ch, em, st, nil, 0, 0)
 
 	if err := idx.IndexPath("main.go"); err != nil {
@@ -329,7 +329,7 @@ func TestIndexAll(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	em := embedder.New(srv.URL, 4, 10)
+	em := embedder.New(srv.URL, 4, 10, "")
 	idx := New(w, ch, em, st, nil, 0, 0)
 
 	if err := idx.IndexAll(); err != nil {
@@ -390,7 +390,7 @@ func TestSearch_HybridMode(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	em := embedder.New(srv.URL, 4, 10)
+	em := embedder.New(srv.URL, 4, 10, "")
 	idx := New(w, ch, em, st, nil, 0, 0)
 	idx.IndexAll()
 
@@ -421,7 +421,7 @@ func TestSearch_GrepMode(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	em := embedder.New(srv.URL, 4, 10)
+	em := embedder.New(srv.URL, 4, 10, "")
 	idx := New(w, ch, em, st, nil, 0, 0)
 	idx.IndexAll()
 
@@ -454,7 +454,7 @@ func TestSearchGrep(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	em := embedder.New(srv.URL, 4, 10)
+	em := embedder.New(srv.URL, 4, 10, "")
 	idx := New(w, ch, em, st, nil, 0, 0)
 	idx.IndexAll()
 
@@ -487,7 +487,7 @@ func TestSearchGrep_PathFilter(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	em := embedder.New(srv.URL, 4, 10)
+	em := embedder.New(srv.URL, 4, 10, "")
 	idx := New(w, ch, em, st, nil, 0, 0)
 	idx.IndexAll()
 

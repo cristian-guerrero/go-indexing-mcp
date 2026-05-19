@@ -55,11 +55,13 @@ type IndexingConfig struct {
 // StorageConfig is reserved for future storage settings.
 type StorageConfig struct{}
 
-// EmbeddingConfig controls the embedding model name, vector dimensions, and batch size.
+// EmbeddingConfig controls the embedding model name, vector dimensions, batch size,
+// and optional prefix prepended to query text for models that use task-specific prompts.
 type EmbeddingConfig struct {
-	Model      string `json:"model"`
-	Dimensions int    `json:"dimensions"`
-	BatchSize  int    `json:"batch_size"`
+	Model       string `json:"model"`
+	Dimensions  int    `json:"dimensions"`
+	BatchSize   int    `json:"batch_size"`
+	QueryPrefix string `json:"query_prefix"`
 }
 
 // LlamaProfile holds the optimal llama-server parameters for a given hardware variant.
@@ -190,9 +192,10 @@ func DefaultConfigForVariant(variant string) *Config {
 			MaxMemoryMB:        0,
 		},
 		Embedding: EmbeddingConfig{
-			Model:      "jina-embeddings-v2-base-code-Q5_K_M",
-			Dimensions: 768,
-			BatchSize:  profile.EmbedBatchSize,
+			Model:       "jina-embeddings-v2-base-code-Q5_K_M",
+			Dimensions:  768,
+			BatchSize:   profile.EmbedBatchSize,
+			QueryPrefix: "",
 		},
 	}
 }

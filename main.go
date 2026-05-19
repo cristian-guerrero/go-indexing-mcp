@@ -177,7 +177,7 @@ func main() {
 		}
 	}
 
-	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
+	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize, cfg.Embedding.QueryPrefix)
 	dbDir := config.StorageDir(cfg.Indexing.RootPath)
 
 	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)

@@ -11,7 +11,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	e := New("http://localhost:56000", 768, 8)
+	e := New("http://localhost:56000", 768, 8, "")
 	if e == nil {
 		t.Fatal("expected non-nil embedder")
 	}
@@ -54,7 +54,7 @@ func TestEmbed_Texts(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := New(srv.URL, 3, 2)
+	e := New(srv.URL, 3, 2, "")
 	embeddings, err := e.embed([]string{"hello", "world"})
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +84,7 @@ func TestEmbed_TruncatesLongInput(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := New(srv.URL, 3, 2)
+	e := New(srv.URL, 3, 2, "")
 	_, err := e.embed([]string{strings.Repeat("a", maxInputLength+100)})
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestEmbed_HTTPError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := New(srv.URL, 3, 2)
+	e := New(srv.URL, 3, 2, "")
 	_, err := e.embed([]string{"test"})
 	if err == nil {
 		t.Fatal("expected error for HTTP 500")
@@ -114,7 +114,7 @@ func TestEmbed_InvalidJSONResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := New(srv.URL, 3, 2)
+	e := New(srv.URL, 3, 2, "")
 	_, err := e.embed([]string{"test"})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")
@@ -122,7 +122,7 @@ func TestEmbed_InvalidJSONResponse(t *testing.T) {
 }
 
 func TestEmbed_ServerUnreachable(t *testing.T) {
-	e := New("http://127.0.0.1:1", 3, 2)
+	e := New("http://127.0.0.1:1", 3, 2, "")
 	_, err := e.embed([]string{"test"})
 	if err == nil {
 		t.Fatal("expected error for unreachable server")
@@ -146,7 +146,7 @@ func TestEmbedChunks_Batching(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := New(srv.URL, 3, 2)
+	e := New(srv.URL, 3, 2, "")
 	chunks := []chunker.Chunk{
 		{ID: "c1", Content: "a"},
 		{ID: "c2", Content: "b"},
@@ -168,7 +168,7 @@ func TestEmbedChunks_Batching(t *testing.T) {
 }
 
 func TestEmbedChunks_EmptyInput(t *testing.T) {
-	e := New("http://localhost:56000", 3, 2)
+	e := New("http://localhost:56000", 3, 2, "")
 	embeddings, err := e.EmbedChunks(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -192,7 +192,7 @@ func TestEmbedChunks_BatchError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := New(srv.URL, 3, 2)
+	e := New(srv.URL, 3, 2, "")
 	chunks := []chunker.Chunk{
 		{ID: "c1", Content: "a"},
 		{ID: "c2", Content: "b"},
@@ -212,7 +212,7 @@ func TestEmbedQuery(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := New(srv.URL, 3, 2)
+	e := New(srv.URL, 3, 2, "")
 	vec, err := e.EmbedQuery("test query")
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestEmbedQuery_EmptyResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := New(srv.URL, 3, 2)
+	e := New(srv.URL, 3, 2, "")
 	_, err := e.EmbedQuery("test")
 	if err == nil {
 		t.Fatal("expected error for empty response")

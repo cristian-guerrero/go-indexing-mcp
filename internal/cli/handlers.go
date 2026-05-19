@@ -15,8 +15,10 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/embedder"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/graph"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/indexer"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/llama"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/parser"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
@@ -83,6 +85,14 @@ func RunGenerate(rootDir string) int {
 	tWalkDone := time.Now()
 
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
+
+	parserCfg := parser.ParserConfig{Enabled: "treesitter"}
+	if p := parser.NewParser(parserCfg); p != nil {
+		if _, ok := p.(*parser.StructuralParser); !ok {
+			ch.Parser = p
+		}
+	}
+
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
 	dbDir := config.StoragePath(rootPath)
 
@@ -101,6 +111,24 @@ func RunGenerate(rootDir string) int {
 
 	idx := indexer.New(w, ch, em, st, nil, 0, 0)
 
+	// Wire knowledge graph
+	var graphQuery *graph.GraphQuery
+	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
+	if gq, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
+		ext := graph.NewExtractor()
+		idx.WithGraph(gq, ext)
+		graphQuery = gq
+		if err := gq.SwitchBranch(branch, worktree); err != nil {
+			slog.Warn("graph: branch switch failed, using default", "error", err)
+		}
+	}
+
+	defer func() {
+		if graphQuery != nil {
+			graphQuery.Close()
+		}
+	}()
+
 	tChunk := time.Now()
 	chunksMap, err := idx.Chunker.ChunkFiles(files)
 	if err != nil {
@@ -113,6 +141,27 @@ func RunGenerate(rootDir string) int {
 	var totalChunks int
 	tEmbed := time.Now()
 	for _, fi := range files {
+		// Extract symbols for the knowledge graph (file-by-file, before chunking)
+		if idx.Extractor != nil && idx.Graph != nil {
+			content, rErr := os.ReadFile(fi.Path)
+			if rErr != nil {
+				slog.Warn("graph: read file", "file", fi.RelPath, "error", rErr)
+			} else {
+				symbols, refs, xErr := idx.Extractor.Extract(
+					string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
+				)
+				if xErr != nil {
+					slog.Warn("graph: extract", "file", fi.RelPath, "lang", fi.Language, "error", xErr)
+				} else if len(symbols) == 0 {
+					slog.Info("graph: no symbols", "file", fi.RelPath, "lang", fi.Language)
+				} else {
+					if err := idx.Graph.StoreFile(fi.RelPath, symbols, refs); err != nil {
+						slog.Warn("graph: store", "file", fi.RelPath, "error", err)
+					}
+				}
+			}
+		}
+
 		chunks, ok := chunksMap[fi.Path]
 		if !ok || len(chunks) == 0 {
 			continue
@@ -274,7 +323,31 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 	}
 
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
+
+	parserCfg := parser.ParserConfig{Enabled: "treesitter"}
+	if p := parser.NewParser(parserCfg); p != nil {
+		if _, ok := p.(*parser.StructuralParser); !ok {
+			ch.Parser = p
+		}
+	}
+
 	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB)
+
+	var gq *graph.GraphQuery
+	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
+	if gq2, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
+		ext := graph.NewExtractor()
+		idx.WithGraph(gq2, ext)
+		gq = gq2
+		if err := gq2.SwitchBranch(branch, worktree); err != nil {
+			slog.Warn("graph: branch switch", "error", err)
+		}
+	}
+	defer func() {
+		if gq != nil {
+			gq.Close()
+		}
+	}()
 
 	stats := idx.GetStats()
 	if stats.TotalChunks == 0 {
@@ -380,7 +453,31 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	}
 
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
+
+	parserCfg := parser.ParserConfig{Enabled: "treesitter"}
+	if p := parser.NewParser(parserCfg); p != nil {
+		if _, ok := p.(*parser.StructuralParser); !ok {
+			ch.Parser = p
+		}
+	}
+
 	idx := indexer.New(w, ch, nil, st, nil, 0, 0)
+
+	var gq *graph.GraphQuery
+	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
+	if gq2, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
+		ext := graph.NewExtractor()
+		idx.WithGraph(gq2, ext)
+		gq = gq2
+		if err := gq2.SwitchBranch(branch, worktree); err != nil {
+			slog.Warn("graph: branch switch", "error", err)
+		}
+	}
+	defer func() {
+		if gq != nil {
+			gq.Close()
+		}
+	}()
 
 	stats := idx.GetStats()
 	if stats.TotalChunks == 0 {
@@ -808,6 +905,123 @@ func mergeAgentsSection(agentsPath string, section string) (changed bool, err er
 	}
 	newContent += sectionStart + "\n" + section + "\n" + sectionEnd + "\n"
 	return true, os.WriteFile(agentsPath, []byte(newContent), 0644)
+}
+
+// RunFindDefinition finds definitions of a symbol using the knowledge graph.
+func RunFindDefinition(name, pathFilter, rootDir string) int {
+	return runGraphQuery("find-definition", func(g *graph.GraphQuery) {
+		defs := g.FindDefinition(name, pathFilter)
+		if len(defs) == 0 {
+			fmt.Printf("No definition found for '%s'.\n", name)
+			return
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		for _, d := range defs {
+			_ = enc.Encode(struct {
+				Name      string `json:"name"`
+				Kind      string `json:"kind"`
+				FilePath  string `json:"file_path"`
+				StartLine int    `json:"start_line"`
+				EndLine   int    `json:"end_line"`
+				Signature string `json:"signature,omitempty"`
+				Exported  bool   `json:"exported"`
+			}{d.Name, d.Kind.String(), d.FilePath, d.StartLine, d.EndLine, d.Signature, d.Exported})
+		}
+	}, rootDir)
+}
+
+// RunFindUsages finds usages of a symbol using the knowledge graph.
+func RunFindUsages(name, pathFilter, rootDir string) int {
+	return runGraphQuery("find-usages", func(g *graph.GraphQuery) {
+		refs := g.FindUsages(name, pathFilter)
+		if len(refs) == 0 {
+			fmt.Printf("No usages found for '%s'.\n", name)
+			return
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		for _, r := range refs {
+			_ = enc.Encode(struct {
+				TargetName string  `json:"target_name"`
+				Kind       string  `json:"kind"`
+				FilePath   string  `json:"file_path"`
+				Line       int     `json:"line"`
+				Confidence float64 `json:"confidence"`
+			}{r.TargetName, r.Kind.String(), r.FilePath, r.Line, r.Confidence})
+		}
+	}, rootDir)
+}
+
+// RunFindImports finds imports matching a module pattern using the knowledge graph.
+func RunFindImports(pattern, rootDir string) int {
+	return runGraphQuery("find-imports", func(g *graph.GraphQuery) {
+		imports := g.FindImports(pattern)
+		if len(imports) == 0 {
+			fmt.Printf("No imports matching '%s' found.\n", pattern)
+			return
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		for _, imp := range imports {
+			_ = enc.Encode(struct {
+				ModulePath string `json:"module_path"`
+				FilePath   string `json:"file_path"`
+				Line       int    `json:"line"`
+				Signature  string `json:"signature,omitempty"`
+			}{imp.Name, imp.FilePath, imp.StartLine, imp.Signature})
+		}
+	}, rootDir)
+}
+
+// RunSymbolInfo returns full symbol info (definitions, usages, callers, callees).
+func RunSymbolInfo(name, pathFilter, rootDir string) int {
+	return runGraphQuery("symbol-info", func(g *graph.GraphQuery) {
+		info := g.GetSymbolInfo(name, pathFilter)
+		data, _ := json.MarshalIndent(info, "", "  ")
+		fmt.Println(string(data))
+	}, rootDir)
+}
+
+// runGraphQuery opens the graph, runs fn, and returns an exit code.
+func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int {
+	cfg, err := config.Load()
+	if err != nil {
+		slog.Error("load config", "error", err)
+		return 1
+	}
+
+	rootPath := resolveRootDir(rootDir, cfg.Indexing.RootPath)
+	if rootPath == "" {
+		rootPath = "."
+	}
+
+	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
+
+	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
+	gq, err := graph.NewGraphQuery(graphDir)
+	if err != nil {
+		slog.Error("open graph", "error", err)
+		return 1
+	}
+	defer gq.Close()
+
+	branch := w.GetBranch()
+	worktree := w.GetWorktreeName()
+	if err := gq.SwitchBranch(branch, worktree); err != nil {
+		slog.Warn("graph: branch switch in query", "error", err)
+	}
+
+	symCount, refCount := gq.Cache.Stats()
+	if symCount == 0 {
+		fmt.Fprintln(os.Stderr, "Knowledge graph is empty. Run --generate or use --mcp to index files with graph extraction (requires build with -tags onnx).")
+		return 1
+	}
+
+	slog.Debug("graph loaded", "symbols", symCount, "refs", refCount, "branch", branch)
+
+	fn(gq)
+	return 0
 }
 
 // resolveRootDir returns the CLI-provided root directory if set, otherwise the config value.

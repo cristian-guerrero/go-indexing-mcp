@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/parser"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/structural"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
@@ -38,7 +39,9 @@ type Stats struct {
 type Chunker struct {
 	ChunkSize      int
 	ChunkOverlap   int
+	MinASTLines    int             // files below this skip AST (0 = always use AST)
 	structSplitter *structural.Splitter
+	Parser         parser.Parser   // optional AST parser (tree-sitter); nil = regex only
 	stats          Stats
 }
 
@@ -72,7 +75,8 @@ func (c *Chunker) HasStructuralSplit() bool {
 }
 
 // ChunkFile splits a single file into chunks. Small files (<= ChunkSize lines) use
-// sliding window; larger files attempt structural splitting first, falling back to sliding window.
+// sliding window; larger files attempt AST parsing first (tree-sitter), then regex
+// structural, falling back to sliding window.
 func (c *Chunker) ChunkFile(fi walker.FileInfo) ([]Chunk, error) {
 	lines, err := readFileLines(fi.Path)
 	if err != nil {
@@ -84,16 +88,60 @@ func (c *Chunker) ChunkFile(fi walker.FileInfo) ([]Chunk, error) {
 
 	totalLines := len(lines)
 
-	blocks, err := c.structSplitter.ParseBlocks(fi.Path, fi.Language)
-	if err != nil || len(blocks) == 0 {
-		return c.slidingWindow(lines, 0, totalLines, fi), nil
-	}
-
 	if totalLines <= c.ChunkSize {
 		return c.slidingWindow(lines, 0, totalLines, fi), nil
 	}
 
+	// Skip AST for small files where regex structural is fast enough
+	if c.Parser != nil && c.MinASTLines > 0 && totalLines < c.MinASTLines {
+		return c.doStructuralSplit(lines, fi)
+	}
+
+	// Strategy 1: AST parser (tree-sitter)
+	var blocks []structural.Block
+	if c.Parser != nil {
+		content := strings.Join(lines, "\n")
+		parserBlocks, pErr := c.Parser.Parse(content, fi.Language)
+		if pErr == nil && len(parserBlocks) > 0 {
+			blocks = make([]structural.Block, len(parserBlocks))
+			for i, b := range parserBlocks {
+				blocks[i] = structural.Block{
+					StartLine: b.StartLine,
+					EndLine:   b.EndLine,
+				}
+			}
+		}
+	}
+
+	// Strategy 2: Regex structural (fallback)
+	if len(blocks) == 0 {
+		var sErr error
+		blocks, sErr = c.structSplitter.ParseBlocks(fi.Path, fi.Language)
+		if sErr != nil {
+			blocks = nil
+		}
+	}
+
+	if len(blocks) == 0 {
+		return c.slidingWindow(lines, 0, totalLines, fi), nil
+	}
+
 	return c.structuralSplit(lines, blocks, fi), nil
+}
+
+// doStructuralSplit is a shortcut for structural-only splitting (no AST).
+func (c *Chunker) doStructuralSplit(lines []string, fi walker.FileInfo) ([]Chunk, error) {
+	blocks, err := c.structSplitter.ParseBlocks(fi.Path, fi.Language)
+	if err != nil || len(blocks) == 0 {
+		chunks := c.slidingWindow(lines, 0, len(lines), fi)
+		c.stats.SlidingWinFiles++
+		c.stats.SlidingWinChunks += len(chunks)
+		return chunks, nil
+	}
+	chunks := c.structuralSplit(lines, blocks, fi)
+	c.stats.TreeSitterFiles++
+	c.stats.TreeSitterChunks += len(chunks)
+	return chunks, nil
 }
 
 // ChunkFiles processes a batch of files, splitting each into chunks.
@@ -119,8 +167,39 @@ func (c *Chunker) ChunkFiles(files []walker.FileInfo) (map[string][]Chunk, error
 			continue
 		}
 
-		blocks, err := c.structSplitter.ParseBlocks(fi.Path, fi.Language)
-		if err != nil || len(blocks) == 0 {
+		// Skip AST for small files where regex structural is fast enough
+		if c.Parser != nil && c.MinASTLines > 0 && len(lines) < c.MinASTLines {
+			chunks, _ := c.doStructuralSplit(lines, fi)
+			results[fi.Path] = chunks
+			continue
+		}
+
+		// Strategy 1: AST parser (tree-sitter)
+		var blocks []structural.Block
+		if c.Parser != nil {
+			content := strings.Join(lines, "\n")
+			parserBlocks, pErr := c.Parser.Parse(content, fi.Language)
+			if pErr == nil && len(parserBlocks) > 0 {
+				blocks = make([]structural.Block, len(parserBlocks))
+				for i, b := range parserBlocks {
+					blocks[i] = structural.Block{
+						StartLine: b.StartLine,
+						EndLine:   b.EndLine,
+					}
+				}
+			}
+		}
+
+		// Strategy 2: Regex structural (fallback)
+		if len(blocks) == 0 {
+			var sErr error
+			blocks, sErr = c.structSplitter.ParseBlocks(fi.Path, fi.Language)
+			if sErr != nil {
+				blocks = nil
+			}
+		}
+
+		if len(blocks) == 0 {
 			chunks := c.slidingWindow(lines, 0, len(lines), fi)
 			results[fi.Path] = chunks
 			c.stats.SlidingWinFiles++

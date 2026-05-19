@@ -202,6 +202,8 @@ func (m *MCPServer) registerTools() {
 
 	m.server.AddTool(searchTool, m.handleSearch)
 	m.server.AddTool(grepTool, m.handleGrepSearch)
+
+	m.registerGraphTools()
 }
 
 // touchActivity updates the last-activity timestamp to prevent idle timeout.

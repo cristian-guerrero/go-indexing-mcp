@@ -14,6 +14,7 @@ import (
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/embedder"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/graph"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/llama"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
@@ -30,6 +31,8 @@ type Indexer struct {
 	Llama              *llama.Manager
 	MemoryFreeInterval int // 0 = disabled; save+clear+restart every N files
 	MaxMemoryMB        int // 0 = disabled; llama-server memory threshold in MB
+	Graph              *graph.GraphQuery // knowledge graph (nil if not available)
+	Extractor          *graph.Extractor  // AST extractor (nil without onnx tag)
 	mu                 sync.Mutex
 	Running            bool
 	Stats              IndexStats
@@ -61,6 +64,13 @@ func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *stora
 			LastIndexed: "never",
 		},
 	}
+}
+
+// WithGraph sets the knowledge graph components on the indexer.
+func (idx *Indexer) WithGraph(g *graph.GraphQuery, ext *graph.Extractor) *Indexer {
+	idx.Graph = g
+	idx.Extractor = ext
+	return idx
 }
 
 // IndexAll performs a full index: walks all files, then chunks, embeds, and stores
@@ -103,6 +113,27 @@ func (idx *Indexer) IndexAll() error {
 		if idx.Storage.IsFileIndexed(fi.Path, fi.Hash) {
 			slog.Debug("skipping already indexed file", "file", fi.RelPath)
 			continue
+		}
+
+		// Extract symbols and references for the knowledge graph
+		if idx.Extractor != nil && idx.Graph != nil {
+			content, rErr := os.ReadFile(fi.Path)
+			if rErr != nil {
+				slog.Warn("graph: read file", "file", fi.RelPath, "error", rErr)
+			} else {
+				symbols, refs, xErr := idx.Extractor.Extract(
+					string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
+				)
+				if xErr != nil {
+					slog.Warn("graph: extract", "file", fi.RelPath, "lang", fi.Language, "error", xErr)
+				} else if len(symbols) == 0 {
+					slog.Debug("graph: no symbols", "file", fi.RelPath, "lang", fi.Language)
+				} else {
+					if err := idx.Graph.StoreFile(fi.RelPath, symbols, refs); err != nil {
+						slog.Warn("graph: store", "file", fi.RelPath, "error", err)
+					}
+				}
+			}
 		}
 
 		chunks, err := idx.Chunker.ChunkFile(fi)
@@ -262,8 +293,32 @@ func (idx *Indexer) IndexChanged() error {
 	for _, fi := range files {
 		if fi.Deleted {
 			idx.Storage.DeleteChunksByPath(fi.Path)
+			if idx.Graph != nil {
+				idx.Graph.RemoveFile(fi.RelPath)
+			}
 			slog.Info("removed deleted file from index", "file", fi.RelPath)
 			continue
+		}
+
+		// Extract symbols and references for the knowledge graph
+		if idx.Extractor != nil && idx.Graph != nil {
+			content, rErr := os.ReadFile(fi.Path)
+			if rErr != nil {
+				slog.Warn("graph: read file", "file", fi.RelPath, "error", rErr)
+			} else {
+				symbols, refs, xErr := idx.Extractor.Extract(
+					string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
+				)
+				if xErr != nil {
+					slog.Warn("graph: extract", "file", fi.RelPath, "lang", fi.Language, "error", xErr)
+				} else if len(symbols) == 0 {
+					slog.Debug("graph: no symbols", "file", fi.RelPath, "lang", fi.Language)
+				} else {
+					if err := idx.Graph.StoreFile(fi.RelPath, symbols, refs); err != nil {
+						slog.Warn("graph: store", "file", fi.RelPath, "error", err)
+					}
+				}
+			}
 		}
 
 		chunks, ok := chunksMap[fi.Path]

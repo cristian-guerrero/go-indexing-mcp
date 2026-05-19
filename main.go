@@ -14,12 +14,14 @@ import (
 	"time"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/internal/cli"
-	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/embedder"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/graph"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/indexer"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/llama"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/mcp"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/parser"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/selfsetup"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
@@ -37,6 +39,10 @@ func main() {
 	grepCaseSensitive := flag.Bool("case-sensitive", false, "Case-sensitive matching (used with --grep)")
 	grepWholeWord := flag.Bool("word", false, "Match whole words only (used with --grep)")
 	listFiles := flag.Bool("list-files", false, "List all indexed files")
+	findDef := flag.String("find-definition", "", "Find definition of a symbol (requires graph, build with -tags onnx)")
+	findUsages := flag.String("find-usages", "", "Find usages of a symbol (requires graph, build with -tags onnx)")
+	findImports := flag.String("find-imports", "", "Find imports matching a module pattern (requires graph, build with -tags onnx)")
+	symbolInfo := flag.String("symbol-info", "", "Get detailed info about a symbol (requires graph, build with -tags onnx)")
 	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp (skip PATH, test GPU detection)")
 	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', or 'kilocode'")
 	rootDir := flag.String("dir", "", "Project root directory (overrides config root_path)")
@@ -90,6 +96,26 @@ func main() {
 		os.Exit(cli.RunQuery(*queryMode, "hybrid", *limitFlag, *pathFilter, *rootDir))
 	}
 
+	if *findDef != "" {
+		setupConsoleLogger()
+		os.Exit(cli.RunFindDefinition(*findDef, *pathFilter, *rootDir))
+	}
+
+	if *findUsages != "" {
+		setupConsoleLogger()
+		os.Exit(cli.RunFindUsages(*findUsages, *pathFilter, *rootDir))
+	}
+
+	if *findImports != "" {
+		setupConsoleLogger()
+		os.Exit(cli.RunFindImports(*findImports, *rootDir))
+	}
+
+	if *symbolInfo != "" {
+		setupConsoleLogger()
+		os.Exit(cli.RunSymbolInfo(*symbolInfo, *pathFilter, *rootDir))
+	}
+
 	if *generateMode {
 		setupConsoleLogger()
 		os.Exit(cli.RunGenerate(*rootDir))
@@ -141,6 +167,16 @@ func main() {
 
 	w := walker.New(cfg.Indexing.RootPath, cfg.Indexing.IgnorePatterns)
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
+
+	// Wire tree-sitter parser if available (requires build tag onnx)
+	parserCfg := parser.ParserConfig{Enabled: "treesitter"}
+	if p := parser.NewParser(parserCfg); p != nil {
+		if _, ok := p.(*parser.StructuralParser); !ok {
+			ch.Parser = p
+			slog.Info("tree-sitter parser enabled for chunking")
+		}
+	}
+
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize)
 	dbDir := config.StorageDir(cfg.Indexing.RootPath)
 
@@ -152,6 +188,16 @@ func main() {
 	defer st.Close()
 
 	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB)
+
+	// Initialize knowledge graph
+	graphDir := filepath.Join(config.StorageDir(cfg.Indexing.RootPath), "graph")
+	if gq, err := graph.NewGraphQuery(graphDir); err == nil {
+		ext := graph.NewExtractor()
+		idx.WithGraph(gq, ext)
+		slog.Info("knowledge graph enabled", "dir", graphDir)
+	} else {
+		slog.Warn("knowledge graph not available", "error", err)
+	}
 
 	srv := mcp.New(idx, mgr, cfg.Indexing.IdleTimeoutSecs, cfg.Indexing.WatchEnabled, cfg.Indexing.WatchIntervalSecs)
 	slog.Info("starting MCP server")

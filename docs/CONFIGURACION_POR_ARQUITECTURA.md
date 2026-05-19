@@ -107,7 +107,6 @@ go-indexing-mcp auto-detecta la variante de hardware en `config.go:114` y aplica
     "ctx_size": 2048,
     "ngl_layers": 0,
     "pooling": "mean",
-    "extra_args": ["--no-webui", "--mlock"]
   },
   "embedding": {
     "batch_size": 16,
@@ -141,7 +140,6 @@ go-indexing-mcp auto-detecta la variante de hardware en `config.go:114` y aplica
     "ctx_size": 4096,
     "ngl_layers": 99,
     "pooling": "mean",
-    "extra_args": ["--no-webui", "--no-mmap"]
   },
   "embedding": {
     "batch_size": 48,
@@ -150,7 +148,7 @@ go-indexing-mcp auto-detecta la variante de hardware en `config.go:114` y aplica
   "indexing": {
     "chunk_size": 50,
     "chunk_overlap": 5,
-    "memory_free_interval": 500
+    "memory_free_interval": 10000
   }
 }
 ```

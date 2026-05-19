@@ -540,16 +540,23 @@ func (m *Manager) Stop() {
 }
 
 // stopProcess kills the managed llama-server subprocess and cleans up the log file.
-// Does NOT call Process.Wait() — on Windows this can hang if the process was already terminated.
+// Calls Wait() in background to release the process handle on Windows so the
+// binary file is not locked after shutdown.
 func (m *Manager) stopProcess() {
 	if m.cmd != nil && m.cmd.Process != nil {
 		slog.Info("stopping llama-server", "pid", m.cmd.Process.Pid)
-		m.cmd.Process.Kill()
+		if err := m.cmd.Process.Kill(); err != nil {
+			slog.Warn("kill llama-server", "error", err)
+		}
+		// Wait() releases the process handle so the binary can be deleted on
+		// Windows. Call in background to avoid blocking (process is already dead).
+		go m.cmd.Process.Wait()
 	}
 	if m.logFile != nil {
 		m.logFile.Close()
 		m.logFile = nil
 	}
+	m.cmd = nil
 	m.Ready = false
 }
 

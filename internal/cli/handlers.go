@@ -413,6 +413,18 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 		}
 	}
 
+	// Check if graph is empty but index has data — populate it on upgrade from non-onnx build
+	if idx.Extractor != nil && idx.Graph != nil && stats.TotalChunks > 0 {
+		symCount, _ := idx.Graph.Cache.Stats()
+		if symCount == 0 {
+			fmt.Fprintln(pw, "Knowledge graph is empty, indexing to populate graph...")
+			if err := idx.IndexAll(); err != nil {
+				slog.Error("full index for graph population", "error", err)
+				return 1
+			}
+		}
+	}
+
 	if limit <= 0 || limit > 50 {
 		limit = 25
 	}

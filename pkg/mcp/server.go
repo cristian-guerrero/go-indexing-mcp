@@ -110,6 +110,23 @@ func (m *MCPServer) indexOnStartup() {
 	}
 
 	stats := m.indexer.GetStats()
+	// If the knowledge graph is empty but the vector index has data and an
+	// extractor is available (build with -tags onnx), force a full reindex to
+	// populate the graph. This handles the case where the binary was upgraded
+	// from a non-onnx build that indexed files without graph extraction.
+	if stats.TotalChunks > 0 && m.indexer.Graph != nil && m.indexer.Extractor != nil {
+		symCount, _ := m.indexer.Graph.Cache.Stats()
+		if symCount == 0 {
+			slog.Info("knowledge graph is empty but index has data, triggering full reindex to populate graph")
+			if err := m.ensureLlama(); err != nil {
+				slog.Error("llama not available for graph population", "error", err)
+				return
+			}
+			m.runIndexAll()
+			return
+		}
+	}
+
 	if stats.TotalChunks == 0 {
 		slog.Info("index is empty, indexing on startup")
 		if err := m.ensureLlama(); err != nil {
@@ -348,6 +365,21 @@ func (m *MCPServer) watchChecker() {
 			}
 			m.runReindexAll()
 			continue
+		}
+
+		// If the graph is empty but index has data and extractor is available,
+		// do a full reindex to populate the graph (upgrade from non-onnx build).
+		if stats.TotalChunks > 0 && m.indexer.Graph != nil && m.indexer.Extractor != nil {
+			symCount, _ := m.indexer.Graph.Cache.Stats()
+			if symCount == 0 {
+				slog.Info("watch: knowledge graph is empty, triggering full reindex to populate graph")
+				if err := m.ensureLlama(); err != nil {
+					slog.Warn("watch: llama not available for graph population", "error", err)
+					continue
+				}
+				m.runIndexAll()
+				continue
+			}
 		}
 
 		if stats.TotalChunks == 0 {

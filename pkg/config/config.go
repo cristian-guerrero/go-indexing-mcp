@@ -40,16 +40,16 @@ type LlamaConfig struct {
 // IndexingConfig controls file walking, chunking, git integration, idle timeout,
 // watch intervals, and periodic memory freeing during indexing.
 type IndexingConfig struct {
-	RootPath            string   `json:"root_path"`
-	IgnorePatterns      []string `json:"ignore_patterns"`
-	ChunkSize           int      `json:"chunk_size"`
-	ChunkOverlap        int      `json:"chunk_overlap"`
-	GitEnabled          bool     `json:"git_enabled"`
-	IdleTimeoutSecs     int      `json:"idle_timeout_secs"`
-	WatchEnabled        bool     `json:"watch_enabled"`
-	WatchIntervalSecs   int      `json:"watch_interval_secs"`
-	MemoryFreeInterval  int      `json:"memory_free_interval"`
-	MaxMemoryMB         int      `json:"max_memory_mb"`         // 0 = disabled; llama-server memory threshold in MB
+	RootPath           string   `json:"root_path"`
+	IgnorePatterns     []string `json:"ignore_patterns"`
+	ChunkSize          int      `json:"chunk_size"`
+	ChunkOverlap       int      `json:"chunk_overlap"`
+	GitEnabled         bool     `json:"git_enabled"`
+	IdleTimeoutSecs    int      `json:"idle_timeout_secs"`
+	WatchEnabled       bool     `json:"watch_enabled"`
+	WatchIntervalSecs  int      `json:"watch_interval_secs"`
+	MemoryFreeInterval int      `json:"memory_free_interval"`
+	MaxMemoryMB        int      `json:"max_memory_mb"` // 0 = disabled; llama-server memory threshold in MB
 }
 
 // StorageConfig is reserved for future storage settings.
@@ -75,6 +75,11 @@ type LlamaProfile struct {
 
 // VariantProfiles maps hardware variant names to optimal llama-server parameters.
 // Key: "cuda", "vulkan", "avx2", "metal".
+//
+// --cram 0 disables llama.cpp's 8GB host-memory KV cache (PR #16391).
+// For embedding models each request is independent, so the cache wastes RAM
+// with no benefit. Without this flag, llama-server leaks ~3GB+ during indexing.
+// See https://github.com/ggml-org/llama.cpp/discussions/18488
 var VariantProfiles = map[string]LlamaProfile{
 	"cuda": {
 		NGLLayers:  99,
@@ -82,7 +87,7 @@ var VariantProfiles = map[string]LlamaProfile{
 		BatchSize:  2048,
 		UBatchSize: 2048,
 		Pooling:    "mean",
-		ExtraArgs:  []string{"--no-webui", "-fa", "on"},
+		ExtraArgs:  []string{"--no-webui", "-fa", "on", "--cram", "0"},
 	},
 	"vulkan": {
 		NGLLayers:  99,
@@ -90,7 +95,7 @@ var VariantProfiles = map[string]LlamaProfile{
 		BatchSize:  512,
 		UBatchSize: 512,
 		Pooling:    "mean",
-		ExtraArgs:  []string{"--no-webui", "-fa", "on"},
+		ExtraArgs:  []string{"--no-webui", "-fa", "on", "--cram", "0"},
 	},
 	"avx2": {
 		NGLLayers:  0,
@@ -98,7 +103,7 @@ var VariantProfiles = map[string]LlamaProfile{
 		BatchSize:  256,
 		UBatchSize: 256,
 		Pooling:    "mean",
-		ExtraArgs:  []string{"--no-webui", "--mlock"},
+		ExtraArgs:  []string{"--no-webui", "--mlock", "--cram", "0"},
 	},
 	"metal": {
 		NGLLayers:  99,
@@ -106,7 +111,7 @@ var VariantProfiles = map[string]LlamaProfile{
 		BatchSize:  1024,
 		UBatchSize: 1024,
 		Pooling:    "mean",
-		ExtraArgs:  []string{"--no-webui", "--no-mmap"},
+		ExtraArgs:  []string{"--no-webui", "--no-mmap", "--cram", "0"},
 	},
 }
 
@@ -168,16 +173,16 @@ func DefaultConfigForVariant(variant string) *Config {
 			ExtraArgs:  profile.ExtraArgs,
 		},
 		Indexing: IndexingConfig{
-			RootPath:            ".",
-			IgnorePatterns:      nil,
-			ChunkSize:           50,
-			ChunkOverlap:        10,
-			GitEnabled:          true,
-			IdleTimeoutSecs:     300,
-			WatchEnabled:        true,
-			WatchIntervalSecs:   60,
-			MemoryFreeInterval:  100,
-			MaxMemoryMB:         0,
+			RootPath:           ".",
+			IgnorePatterns:     nil,
+			ChunkSize:          50,
+			ChunkOverlap:       10,
+			GitEnabled:         true,
+			IdleTimeoutSecs:    300,
+			WatchEnabled:       true,
+			WatchIntervalSecs:  60,
+			MemoryFreeInterval: 10000, // effectively disabled; --cram 0 handles memory
+			MaxMemoryMB:        0,
 		},
 		Embedding: EmbeddingConfig{
 			Model:      "jina-embeddings-v2-base-code-Q5_K_M",

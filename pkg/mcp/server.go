@@ -83,6 +83,11 @@ func (m *MCPServer) indexOnStartup() {
 	if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
 		slog.Warn("branch switch failed on startup", "error", err)
 	}
+	if m.indexer.Graph != nil {
+		if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
+			slog.Warn("graph: branch switch on startup", "error", err)
+		}
+	}
 	m.currentBranch = branch
 	m.currentWorktree = worktree
 
@@ -282,6 +287,11 @@ func (m *MCPServer) watchChecker() {
 			if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
 				slog.Warn("watch: branch switch failed", "error", err)
 			}
+			if m.indexer.Graph != nil {
+				if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
+					slog.Warn("watch: graph branch switch failed", "error", err)
+				}
+			}
 			m.currentBranch = branch
 			m.currentWorktree = worktree
 		}
@@ -360,6 +370,11 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
 			slog.Warn("branch switch failed, continuing", "error", err)
 		}
+		if m.indexer.Graph != nil {
+			if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
+				slog.Warn("search: graph branch switch failed", "error", err)
+			}
+		}
 		m.currentBranch = branch
 		m.currentWorktree = worktree
 	}
@@ -436,6 +451,11 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 		slog.Info("branch/worktree changed", "from", m.currentBranch+"/"+m.currentWorktree, "to", branch+"/"+worktree)
 		if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
 			slog.Warn("branch switch failed, continuing", "error", err)
+		}
+		if m.indexer.Graph != nil {
+			if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
+				slog.Warn("grep: graph branch switch failed", "error", err)
+			}
 		}
 		m.currentBranch = branch
 		m.currentWorktree = worktree

@@ -178,7 +178,7 @@ func main() {
 	}
 
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize, cfg.Embedding.QueryPrefix)
-	dbDir := config.StorageDir(cfg.Indexing.RootPath)
+	dbDir := config.StoragePath(cfg.Indexing.RootPath)
 
 	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
@@ -189,12 +189,23 @@ func main() {
 
 	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB)
 
+	branch := w.GetBranch()
+	worktree := w.GetWorktreeName()
+
 	// Initialize knowledge graph
 	graphDir := filepath.Join(config.StorageDir(cfg.Indexing.RootPath), "graph")
-	if gq, err := graph.NewGraphQuery(graphDir); err == nil {
+	if gq, err := graph.NewGraphQuery(graphDir, false); err == nil {
 		ext := graph.NewExtractor()
 		idx.WithGraph(gq, ext)
+		if err := gq.SwitchBranch(branch, worktree); err != nil {
+			slog.Warn("graph: branch switch on startup", "error", err)
+		}
 		slog.Info("knowledge graph enabled", "dir", graphDir)
+		defer func() {
+			if err := gq.Close(); err != nil {
+				slog.Warn("graph: close error", "error", err)
+			}
+		}()
 	} else {
 		slog.Warn("knowledge graph not available", "error", err)
 	}

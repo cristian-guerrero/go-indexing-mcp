@@ -27,15 +27,18 @@ type GraphDB struct {
 }
 
 // OpenGraph opens or creates a Pebble-backed graph at the given directory.
-func OpenGraph(dir string) (*GraphDB, error) {
+// When readOnly is true, the DB is opened without exclusive locking so CLI
+// queries can coexist with a running MCP server.
+func OpenGraph(dir string, readOnly bool) (*GraphDB, error) {
 	db, err := pebble.Open(dir, &pebble.Options{
-		Logger: nil,
+		Logger:   nil,
+		ReadOnly: readOnly,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open graph db: %w", err)
 	}
 
-	slog.Info("graph db opened", "dir", dir)
+	slog.Info("graph db opened", "dir", dir, "readOnly", readOnly)
 
 	return &GraphDB{db: db}, nil
 }

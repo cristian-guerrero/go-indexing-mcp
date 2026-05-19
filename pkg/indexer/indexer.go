@@ -110,12 +110,8 @@ func (idx *Indexer) IndexAll() error {
 	var indexedSinceFree int
 
 	for _, fi := range files {
-		if idx.Storage.IsFileIndexed(fi.Path, fi.Hash) {
-			slog.Debug("skipping already indexed file", "file", fi.RelPath)
-			continue
-		}
-
-		// Extract symbols and references for the knowledge graph
+		// Extract symbols and references for the knowledge graph (always, even if
+		// the file is already in the vector index — the graph is independent storage).
 		if idx.Extractor != nil && idx.Graph != nil {
 			content, rErr := os.ReadFile(fi.Path)
 			if rErr != nil {
@@ -134,6 +130,11 @@ func (idx *Indexer) IndexAll() error {
 					}
 				}
 			}
+		}
+
+		if idx.Storage.IsFileIndexed(fi.Path, fi.Hash) {
+			slog.Debug("skipping already indexed file", "file", fi.RelPath)
+			continue
 		}
 
 		chunks, err := idx.Chunker.ChunkFile(fi)
@@ -224,6 +225,13 @@ func (idx *Indexer) IndexAll() error {
 	idx.Stats.TotalFiles = len(files)
 	idx.Stats.LastIndexed = "just now"
 	idx.mu.Unlock()
+
+	// Save graph snapshot for read-only CLI queries
+	if idx.Graph != nil {
+		if err := idx.Graph.SaveSnapshot(); err != nil {
+			slog.Warn("graph: save snapshot", "error", err)
+		}
+	}
 
 	// Final save with commit SHA
 	if indexedFiles > 0 {
@@ -321,6 +329,12 @@ func (idx *Indexer) IndexChanged() error {
 			}
 		}
 
+		// Skip expensive embedding if the file hash hasn't changed
+		if idx.Storage.IsFileIndexed(fi.Path, fi.Hash) {
+			slog.Debug("file already up to date, skipping", "file", fi.RelPath)
+			continue
+		}
+
 		chunks, ok := chunksMap[fi.Path]
 		if !ok || len(chunks) == 0 {
 			continue
@@ -348,6 +362,13 @@ func (idx *Indexer) IndexChanged() error {
 		slog.Warn("index changed save", "error", err)
 	} else {
 		slog.Info("incremental index complete", "files", len(files), "sha", headSHA)
+	}
+
+	// Save graph snapshot for read-only CLI queries
+	if idx.Graph != nil {
+		if err := idx.Graph.SaveSnapshot(); err != nil {
+			slog.Warn("graph: save snapshot", "error", err)
+		}
 	}
 
 	return nil

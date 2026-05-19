@@ -65,12 +65,13 @@ type EmbeddingConfig struct {
 // LlamaProfile holds the optimal llama-server parameters for a given hardware variant.
 // Used by VariantProfiles to select defaults when the variant is detected.
 type LlamaProfile struct {
-	NGLLayers  int
-	CtxSize    int
-	BatchSize  int
-	UBatchSize int
-	Pooling    string
-	ExtraArgs  []string
+	NGLLayers      int
+	CtxSize        int
+	BatchSize      int
+	UBatchSize     int
+	Pooling        string
+	ExtraArgs      []string
+	EmbedBatchSize int
 }
 
 // VariantProfiles maps hardware variant names to optimal llama-server parameters.
@@ -82,36 +83,40 @@ type LlamaProfile struct {
 // See https://github.com/ggml-org/llama.cpp/discussions/18488
 var VariantProfiles = map[string]LlamaProfile{
 	"cuda": {
-		NGLLayers:  99,
-		CtxSize:    4096,
-		BatchSize:  2048,
-		UBatchSize: 2048,
-		Pooling:    "mean",
-		ExtraArgs:  []string{"--no-webui", "-fa", "on", "--cram", "0"},
+		NGLLayers:      99,
+		CtxSize:        4096,
+		BatchSize:      2048,
+		UBatchSize:     2048,
+		Pooling:        "mean",
+		ExtraArgs:      []string{"--no-webui", "-fa", "on", "--cram", "0"},
+		EmbedBatchSize: 64,
 	},
 	"vulkan": {
-		NGLLayers:  99,
-		CtxSize:    4096,
-		BatchSize:  512,
-		UBatchSize: 512,
-		Pooling:    "mean",
-		ExtraArgs:  []string{"--no-webui", "-fa", "on", "--cram", "0"},
+		NGLLayers:      99,
+		CtxSize:        4096,
+		BatchSize:      512,
+		UBatchSize:     512,
+		Pooling:        "mean",
+		ExtraArgs:      []string{"--no-webui", "-fa", "on", "--cram", "0"},
+		EmbedBatchSize: 48,
 	},
 	"avx2": {
-		NGLLayers:  0,
-		CtxSize:    2048,
-		BatchSize:  256,
-		UBatchSize: 256,
-		Pooling:    "mean",
-		ExtraArgs:  []string{"--no-webui", "--mlock", "--cram", "0"},
+		NGLLayers:      0,
+		CtxSize:        2048,
+		BatchSize:      256,
+		UBatchSize:     256,
+		Pooling:        "mean",
+		ExtraArgs:      []string{"--no-webui", "--mlock", "--cram", "0"},
+		EmbedBatchSize: 16,
 	},
 	"metal": {
-		NGLLayers:  99,
-		CtxSize:    4096,
-		BatchSize:  1024,
-		UBatchSize: 1024,
-		Pooling:    "mean",
-		ExtraArgs:  []string{"--no-webui", "--no-mmap", "--cram", "0"},
+		NGLLayers:      99,
+		CtxSize:        4096,
+		BatchSize:      1024,
+		UBatchSize:     1024,
+		Pooling:        "mean",
+		ExtraArgs:      []string{"--no-webui", "--no-mmap", "--cram", "0"},
+		EmbedBatchSize: 48,
 	},
 }
 
@@ -187,7 +192,7 @@ func DefaultConfigForVariant(variant string) *Config {
 		Embedding: EmbeddingConfig{
 			Model:      "jina-embeddings-v2-base-code-Q5_K_M",
 			Dimensions: 768,
-			BatchSize:  8,
+			BatchSize:  profile.EmbedBatchSize,
 		},
 	}
 }
@@ -206,6 +211,7 @@ func (c *Config) ApplyProfile(variant string) {
 	c.Llama.UBatchSize = profile.UBatchSize
 	c.Llama.Pooling = profile.Pooling
 	c.Llama.ExtraArgs = profile.ExtraArgs
+	c.Embedding.BatchSize = profile.EmbedBatchSize
 }
 
 // McpDir returns ~/.go-mcp/indexing/, the root directory for all MCP data.

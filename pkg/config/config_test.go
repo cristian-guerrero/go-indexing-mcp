@@ -189,8 +189,12 @@ func TestDefaultConfig(t *testing.T) {
 		if cfg.Embedding.Dimensions != 768 {
 			t.Errorf("Embedding.Dimensions = %d, want 768", cfg.Embedding.Dimensions)
 		}
-		if cfg.Embedding.BatchSize != 8 {
-			t.Errorf("Embedding.BatchSize = %d, want 8", cfg.Embedding.BatchSize)
+		profile, ok := VariantProfiles[cfg.Llama.Variant]
+		if !ok {
+			t.Fatalf("unknown variant %q", cfg.Llama.Variant)
+		}
+		if cfg.Embedding.BatchSize != profile.EmbedBatchSize {
+			t.Errorf("Embedding.BatchSize = %d, want %d for variant %q", cfg.Embedding.BatchSize, profile.EmbedBatchSize, cfg.Llama.Variant)
 		}
 	})
 }
@@ -212,6 +216,9 @@ func TestDefaultConfigForVariant_Cuda(t *testing.T) {
 	if cfg.Llama.Variant != "cuda" {
 		t.Errorf("cuda variant = %q, want \"cuda\"", cfg.Llama.Variant)
 	}
+	if cfg.Embedding.BatchSize != 64 {
+		t.Errorf("cuda Embedding.BatchSize = %d, want 64", cfg.Embedding.BatchSize)
+	}
 }
 
 func TestDefaultConfigForVariant_Vulkan(t *testing.T) {
@@ -227,6 +234,9 @@ func TestDefaultConfigForVariant_Vulkan(t *testing.T) {
 	}
 	if cfg.Llama.CtxSize != 4096 {
 		t.Errorf("vulkan CtxSize = %d, want 4096", cfg.Llama.CtxSize)
+	}
+	if cfg.Embedding.BatchSize != 48 {
+		t.Errorf("vulkan Embedding.BatchSize = %d, want 48", cfg.Embedding.BatchSize)
 	}
 }
 
@@ -244,6 +254,9 @@ func TestDefaultConfigForVariant_Avx2(t *testing.T) {
 	if cfg.Llama.CtxSize != 2048 {
 		t.Errorf("avx2 CtxSize = %d, want 2048", cfg.Llama.CtxSize)
 	}
+	if cfg.Embedding.BatchSize != 16 {
+		t.Errorf("avx2 Embedding.BatchSize = %d, want 16", cfg.Embedding.BatchSize)
+	}
 }
 
 func TestDefaultConfigForVariant_Metal(t *testing.T) {
@@ -259,6 +272,9 @@ func TestDefaultConfigForVariant_Metal(t *testing.T) {
 	}
 	if cfg.Llama.CtxSize != 4096 {
 		t.Errorf("metal CtxSize = %d, want 4096", cfg.Llama.CtxSize)
+	}
+	if cfg.Embedding.BatchSize != 48 {
+		t.Errorf("metal Embedding.BatchSize = %d, want 48", cfg.Embedding.BatchSize)
 	}
 }
 
@@ -283,6 +299,9 @@ func TestApplyProfile(t *testing.T) {
 	}
 	if cfg.Llama.CtxSize != 2048 {
 		t.Errorf("ApplyProfile CtxSize = %d, want 2048", cfg.Llama.CtxSize)
+	}
+	if cfg.Embedding.BatchSize != 16 {
+		t.Errorf("ApplyProfile Embedding.BatchSize = %d, want 16", cfg.Embedding.BatchSize)
 	}
 }
 
@@ -411,7 +430,7 @@ func TestFillMissing_AllEmpty(t *testing.T) {
 		t.Error("ExtraArgs should not be nil after fillMissing")
 	}
 	// NGLLayers is intentionally NOT filled by fillMissing (users configure via config.json).
-	// CtxSize, BatchSize, UBatchSize are filled from the variant-specific default profile.
+	// CtxSize, BatchSize, UBatchSize, Embedding.BatchSize are filled from the variant-specific default profile.
 	profile, ok := VariantProfiles[cfg.Llama.Variant]
 	if !ok {
 		t.Fatalf("unknown variant %q after fillMissing", cfg.Llama.Variant)
@@ -424,6 +443,9 @@ func TestFillMissing_AllEmpty(t *testing.T) {
 	}
 	if cfg.Llama.UBatchSize != profile.UBatchSize {
 		t.Errorf("Llama.UBatchSize = %d, want %d for variant %q", cfg.Llama.UBatchSize, profile.UBatchSize, cfg.Llama.Variant)
+	}
+	if cfg.Embedding.BatchSize != profile.EmbedBatchSize {
+		t.Errorf("Embedding.BatchSize = %d, want %d for variant %q", cfg.Embedding.BatchSize, profile.EmbedBatchSize, cfg.Llama.Variant)
 	}
 }
 

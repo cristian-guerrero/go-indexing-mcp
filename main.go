@@ -194,7 +194,7 @@ func main() {
 
 	// Initialize knowledge graph
 	graphDir := filepath.Join(config.StorageDir(cfg.Indexing.RootPath), "graph")
-	if gq, err := graph.NewGraphQuery(graphDir, false); err == nil {
+	if gq, err := graph.NewGraphQuery(graphDir); err == nil {
 		ext := graph.NewExtractor()
 		idx.WithGraph(gq, ext)
 		if err := gq.SwitchBranch(branch, worktree); err != nil {

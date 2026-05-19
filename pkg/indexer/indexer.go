@@ -226,13 +226,6 @@ func (idx *Indexer) IndexAll() error {
 	idx.Stats.LastIndexed = "just now"
 	idx.mu.Unlock()
 
-	// Save graph snapshot for read-only CLI queries
-	if idx.Graph != nil {
-		if err := idx.Graph.SaveSnapshot(); err != nil {
-			slog.Warn("graph: save snapshot", "error", err)
-		}
-	}
-
 	// Final save with commit SHA
 	if indexedFiles > 0 {
 		headSHA := idx.Walker.GetHeadSHA()
@@ -362,13 +355,6 @@ func (idx *Indexer) IndexChanged() error {
 		slog.Warn("index changed save", "error", err)
 	} else {
 		slog.Info("incremental index complete", "files", len(files), "sha", headSHA)
-	}
-
-	// Save graph snapshot for read-only CLI queries
-	if idx.Graph != nil {
-		if err := idx.Graph.SaveSnapshot(); err != nil {
-			slog.Warn("graph: save snapshot", "error", err)
-		}
 	}
 
 	return nil

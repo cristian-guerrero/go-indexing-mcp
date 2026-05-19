@@ -219,6 +219,31 @@ func walkAST(node *sitter.Node, source []byte, language, filePath, relPath, file
 		*refs = append(*refs, calls...)
 	}
 
+	// Extract type references: any type_identifier that is not the name in a type_spec
+	// (i.e., not a type definition) is a usage of that type.
+	if ntype == "type_identifier" {
+		parent := node.Parent()
+		if parent != nil && parent.Type() == "type_spec" && node == parent.ChildByFieldName("name") {
+			// This is the name in a type definition (e.g. "type Indexer struct"),
+			// skip it — the definition symbol is already created above.
+		} else {
+			typeName := node.Content(source)
+			if typeName != "" && len(typeName) < 200 {
+				col := int(node.StartPoint().Column)
+				id := symbolID(fileHash, relPath, startLine, fmt.Sprintf("type:%s:c%d", typeName, col))
+				*refs = append(*refs, Reference{
+					ID:         refID(id, typeName, RefAccessed, startLine),
+					SourceID:   id,
+					TargetName: typeName,
+					Kind:       RefAccessed,
+					FilePath:   filePath,
+					Line:       startLine,
+					Confidence: 1.0,
+				})
+			}
+		}
+	}
+
 	// Recurse into children
 	for i := 0; i < int(node.ChildCount()); i++ {
 		walkAST(node.Child(i), source, language, filePath, relPath, fileHash, symbols, refs, lang)

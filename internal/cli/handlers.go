@@ -114,7 +114,7 @@ func RunGenerate(rootDir string) int {
 	// Wire knowledge graph
 	var graphQuery *graph.GraphQuery
 	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
-	if gq, gErr := graph.NewGraphQuery(graphDir, false); gErr == nil {
+	if gq, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
 		ext := graph.NewExtractor()
 		idx.WithGraph(gq, ext)
 		graphQuery = gq
@@ -335,7 +335,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 
 	var gq *graph.GraphQuery
 	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
-	if gq2, gErr := graph.NewGraphQuery(graphDir, false); gErr == nil {
+	if gq2, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
 		ext := graph.NewExtractor()
 		idx.WithGraph(gq2, ext)
 		gq = gq2
@@ -465,7 +465,7 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 
 	var gq *graph.GraphQuery
 	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
-	if gq2, gErr := graph.NewGraphQuery(graphDir, true); gErr == nil {
+	if gq2, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
 		ext := graph.NewExtractor()
 		idx.WithGraph(gq2, ext)
 		gq = gq2
@@ -999,7 +999,7 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
 
 	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
-	gq, err := graph.NewGraphQuery(graphDir, true)
+	gq, err := graph.NewGraphQuery(graphDir)
 	if err != nil {
 		slog.Error("open graph", "error", err)
 		return 1

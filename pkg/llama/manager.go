@@ -346,6 +346,7 @@ func (m *Manager) Start() error {
 	}
 
 	if findProcessByPort(port) > 0 {
+		m.Port = port
 		slog.Info("waiting for existing llama-server on port", "port", port)
 		if err := m.waitReady(10 * time.Second); err != nil {
 			slog.Warn("existing llama-server unresponsive, killing and starting fresh", "port", port, "error", err)

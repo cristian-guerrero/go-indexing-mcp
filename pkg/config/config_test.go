@@ -183,11 +183,17 @@ func TestDefaultConfig(t *testing.T) {
 		}
 	})
 	t.Run("Embedding defaults", func(t *testing.T) {
-		if cfg.Embedding.Model != "jina-embeddings-v2-base-code-Q5_K_M" {
-			t.Errorf("Embedding.Model = %q, want jina-embeddings-v2-base-code-Q5_K_M", cfg.Embedding.Model)
+		expectedModel := "jina-embeddings-v2-base-code-Q5_K_M"
+		expectedDims := 768
+		if cfg.Llama.Variant == "avx2" {
+			expectedModel = "bge-small-en-v1.5-q4_k_m"
+			expectedDims = 384
 		}
-		if cfg.Embedding.Dimensions != 768 {
-			t.Errorf("Embedding.Dimensions = %d, want 768", cfg.Embedding.Dimensions)
+		if cfg.Embedding.Model != expectedModel {
+			t.Errorf("Embedding.Model = %q, want %q for variant %q", cfg.Embedding.Model, expectedModel, cfg.Llama.Variant)
+		}
+		if cfg.Embedding.Dimensions != expectedDims {
+			t.Errorf("Embedding.Dimensions = %d, want %d for variant %q", cfg.Embedding.Dimensions, expectedDims, cfg.Llama.Variant)
 		}
 		profile, ok := VariantProfiles[cfg.Llama.Variant]
 		if !ok {
@@ -423,8 +429,15 @@ func TestFillMissing_AllEmpty(t *testing.T) {
 	if cfg.Indexing.ChunkOverlap != 10 {
 		t.Errorf("Indexing.ChunkOverlap = %d, want 10", cfg.Indexing.ChunkOverlap)
 	}
-	if cfg.Embedding.Dimensions != 768 {
-		t.Errorf("Embedding.Dimensions = %d, want 768", cfg.Embedding.Dimensions)
+	expectedDims := 768
+	if cfg.Llama.Variant == "avx2" {
+		expectedDims = 384
+	}
+	if cfg.Embedding.Dimensions != expectedDims {
+		t.Errorf("Embedding.Dimensions = %d, want %d for variant %q", cfg.Embedding.Dimensions, expectedDims, cfg.Llama.Variant)
+	}
+	if cfg.Embedding.Model == "" {
+		t.Error("Embedding.Model should not be empty after fillMissing")
 	}
 	if cfg.Llama.ExtraArgs == nil {
 		t.Error("ExtraArgs should not be nil after fillMissing")

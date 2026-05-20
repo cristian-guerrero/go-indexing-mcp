@@ -154,7 +154,8 @@ func downloadAndExtractZip(url, extractDir string) error {
 }
 
 // llamaVariant returns the platform-specific release variant string for llama.cpp.
-// On Windows, probes for nvidia-smi (CUDA) or vulkaninfo (Vulkan), falling back to AVX2.
+// On Windows, probes for nvidia-smi (CUDA); non-CUDA systems get the Vulkan build
+// (llama.cpp falls back to CPU if Vulkan init fails). Linux only has CPU builds.
 func llamaVariant() string {
 	osName := runtime.GOOS
 	arch := runtime.GOARCH
@@ -167,21 +168,18 @@ func llamaVariant() string {
 		case "cuda":
 			slog.Info("nvidia GPU detected, selecting CUDA variant")
 			return "win-cuda-cu12.4-x64"
-		case "vulkan":
-			slog.Info("Vulkan detected, selecting Vulkan variant")
-			return "win-vulkan-x64"
 		default:
-			slog.Info("no GPU detected, selecting CPU AVX2 variant")
-			return "win-avx2-x64"
+			slog.Info("no CUDA detected, selecting Vulkan variant (falls back to CPU if unavailable)")
+			return "win-vulkan-x64"
 		}
 	case osName == "linux" && arch == "amd64":
-		return "ubuntu-x64.zip"
+		return "ubuntu-x64"
 	case osName == "linux" && arch == "arm64":
-		return "ubuntu-arm64.zip"
+		return "ubuntu-arm64"
 	case osName == "darwin" && arch == "arm64":
-		return "macos-arm64.zip"
+		return "macos-arm64"
 	case osName == "darwin" && arch == "amd64":
-		return "macos-x64.zip"
+		return "macos-x64"
 	default:
 		return "win-avx2-x64"
 	}
@@ -202,8 +200,8 @@ var modelFallbacks = []struct {
 		URL:  "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf",
 	},
 	{
-		Name: "bge-small-en-v1.5.Q4_K_M.gguf",
-		URL:  "https://huggingface.co/ChristianAzinn/bge-small-en-v1.5-Q4_K_M-GGUF/resolve/main/bge-small-en-v1.5-q4_k_m.gguf",
+		Name: "bge-small-en-v1.5-q4_k_m.gguf",
+		URL:  "https://huggingface.co/CompendiumLabs/bge-small-en-v1.5-gguf/resolve/main/bge-small-en-v1.5-q4_k_m.gguf",
 	},
 }
 

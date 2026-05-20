@@ -124,6 +124,12 @@ var VariantProfiles = map[string]LlamaProfile{
 
 // DetectVariant probes the system and returns the hardware variant name:
 // "cuda", "vulkan", "avx2", "metal", or "cpu".
+// GPU detection uses nvidia-smi (CUDA) and platform-specific methods:
+//   - Windows: WMI Win32_VideoController
+//   - Linux: /sys/class/drm
+// Falls back to "avx2" (CPU) when no GPU is found.
+// Note: llama.cpp Vulkan builds fall back to CPU at runtime, so the download
+// variant selection (llamaVariant) always prefers the Vulkan build over AVX2.
 func DetectVariant() string {
 	switch runtime.GOOS {
 	case "darwin":
@@ -132,7 +138,7 @@ func DetectVariant() string {
 		if nvidiaSMIExists() {
 			return "cuda"
 		}
-		if vulkanInfoExists() {
+		if hasGPU() {
 			return "vulkan"
 		}
 		return "avx2"
@@ -146,30 +152,38 @@ func nvidiaSMIExists() bool {
 	return err == nil
 }
 
-func vulkanInfoExists() bool {
-	_, err := exec.LookPath("vulkaninfo")
-	return err == nil
-}
-
 // DefaultConfig returns a Config with sensible default values detected from the system.
 // The llama-server parameters are selected based on the detected hardware variant.
-// ChunkSize: 50 lines, Overlap: 10, Port: 56000, Dimensions: 768 (jina-embeddings-v2-base-code).
+// ChunkSize: 50 lines, Overlap: 10, Port: 56000.
+// Model: jina-embeddings-v2-base-code (768d) for GPU, bge-small-en-v1.5 (384d) for CPU.
 func DefaultConfig() *Config {
 	return DefaultConfigForVariant(DetectVariant())
 }
 
 // DefaultConfigForVariant returns a Config with defaults optimized for the given variant.
 // Supported variants: "cuda", "vulkan", "avx2", "metal". Falls back to "cuda" for unknown variants.
+// For CPU-only ("avx2") uses the smaller bge-small-en-v1.5 (384d) model.
+// For GPU variants uses jina-embeddings-v2-base-code (768d).
 func DefaultConfigForVariant(variant string) *Config {
 	profile, ok := VariantProfiles[variant]
 	if !ok {
 		variant = "cuda"
 		profile = VariantProfiles["cuda"]
 	}
+
+	modelName := "jina-embeddings-v2-base-code-Q5_K_M"
+	modelFile := modelName + ".gguf"
+	dimensions := 768
+	if variant == "avx2" {
+		modelName = "bge-small-en-v1.5-q4_k_m"
+		modelFile = modelName + ".gguf"
+		dimensions = 384
+	}
+
 	return &Config{
 		Llama: LlamaConfig{
 			BinPath:    "",
-			ModelPath:  filepath.Join(ModelsDir(), "jina-embeddings-v2-base-code-Q5_K_M.gguf"),
+			ModelPath:  filepath.Join(ModelsDir(), modelFile),
 			Port:       56000,
 			Variant:    variant,
 			NGLLayers:  profile.NGLLayers,
@@ -192,8 +206,8 @@ func DefaultConfigForVariant(variant string) *Config {
 			MaxMemoryMB:        0,
 		},
 		Embedding: EmbeddingConfig{
-			Model:       "jina-embeddings-v2-base-code-Q5_K_M",
-			Dimensions:  768,
+			Model:       modelName,
+			Dimensions:  dimensions,
 			BatchSize:   profile.EmbedBatchSize,
 			QueryPrefix: "",
 		},

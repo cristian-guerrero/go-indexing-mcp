@@ -39,12 +39,10 @@ func main() {
 	grepCaseSensitive := flag.Bool("case-sensitive", false, "Case-sensitive matching (used with --grep)")
 	grepWholeWord := flag.Bool("word", false, "Match whole words only (used with --grep)")
 	listFiles := flag.Bool("list-files", false, "List all indexed files")
-	findDef := flag.String("find-definition", "", "Find definition of a symbol (requires graph, build with -tags onnx)")
-	findUsages := flag.String("find-usages", "", "Find usages of a symbol (requires graph, build with -tags onnx)")
-	findImports := flag.String("find-imports", "", "Find imports matching a module pattern (requires graph, build with -tags onnx)")
-	symbolInfo := flag.String("symbol-info", "", "Get detailed info about a symbol (requires graph, build with -tags onnx)")
+	findImports := flag.String("find-imports", "", "Find imports matching a module pattern (knowledge graph)")
+	symbolInfo := flag.String("symbol-info", "", "Get detailed info about a symbol: definition, usages, callers, callees (knowledge graph)")
 	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp (skip PATH, test GPU detection)")
-	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', or 'kilocode'")
+	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', 'kilocode', or 'claude'")
 	rootDir := flag.String("dir", "", "Project root directory (overrides config root_path)")
 	flag.Parse()
 
@@ -94,16 +92,6 @@ func main() {
 	if *queryMode != "" {
 		setupConsoleLogger()
 		os.Exit(cli.RunQuery(*queryMode, "hybrid", *limitFlag, *pathFilter, *rootDir))
-	}
-
-	if *findDef != "" {
-		setupConsoleLogger()
-		os.Exit(cli.RunFindDefinition(*findDef, *pathFilter, *rootDir))
-	}
-
-	if *findUsages != "" {
-		setupConsoleLogger()
-		os.Exit(cli.RunFindUsages(*findUsages, *pathFilter, *rootDir))
 	}
 
 	if *findImports != "" {

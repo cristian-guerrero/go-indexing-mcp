@@ -6,76 +6,125 @@
 
 <div align="center">
 
+[What is it?](#what-is-it) •
 [Quickstart](#quickstart) •
-[MCP Server](#mcp-server) •
-[Forcing Agents](#forcing-agents) •
 [Configure](#configure) •
 [CLI](#cli) •
+[MCP Server](#mcp-server) •
 [Architecture](#architecture)
 
 </div>
 
-An MCP server that indexes your codebase locally with embeddings and forces any AI coding agent (Claude Code, OpenCode, KiloCode, Cursor, Codex, Pi) to use semantic search instead of grep+read. It injects itself via `AGENTS.md` with mandatory instructions — the agent has no choice.
+## What is it?
 
-- **Forces the habit**: the AGENTS.md tells the agent it **MUST** use the search tool first
+AI coding agents default to grep+read: search with a keyword, open every matching file, consume thousands of tokens reading irrelevant code, forget context, repeat. go-indexing-mcp fixes this by injecting semantic search **directly into the agent's instructions** — the agent **must** use `search_code` (BM25 + vector similarity) before falling back to grep.
+
+- **Forces the habit**: writes a global `AGENTS.md` or `CLAUDE.md` with mandatory instructions — the agent reads them every session and cannot ignore them
 - **Zero API keys**: everything runs locally on CPU or GPU with llama.cpp
-- **Branch-aware**: each git branch keeps its own isolated index
+- **Branch-aware**: each git branch keeps its own isolated index — switching branches is instant
 - **Auto-indexes**: empty index → full index. New commits → incremental. Just works.
+- **No lock-in**: works with Claude Code, OpenCode, KiloCode, Pi, and any MCP-compatible agent
 
 ## Quickstart
 
+Download the latest binary from [releases](https://github.com/cristian-guerrero/go-indexing-mcp/releases), or build from source (see [Building from source](#building-from-source)). Then run:
+
 ```bash
-go build -o bin/go-indexing-mcp.exe .
-./bin/go-indexing-mcp.exe
+./go-indexing-mcp.exe
 ```
 
 The first run auto-downloads llama.cpp and the embedding model, copies the binary to PATH, and creates run scripts. Then configure your agent:
 
 ```bash
-# Force OpenCode to use it
-./bin/go-indexing-mcp.exe --configure opencode
-
-# Force KiloCode to use it
-./bin/go-indexing-mcp.exe --configure kilocode
-
-# Force Pi agent to use it
-./bin/go-indexing-mcp.exe --configure pi
+go-indexing-mcp --configure claude
+go-indexing-mcp --configure opencode
+go-indexing-mcp --configure kilocode
+go-indexing-mcp --configure pi
 ```
 
-Each `--configure` target does two things:
-1. **Adds the MCP server** to the agent's config (`opencode.json`, `kilo.json`, etc.)
-2. **Writes a global AGENTS.md** with mandatory instructions — the agent reads it on every session and cannot ignore it
+## Configure
 
-No more grep+read. The agent **must** call `go-indexing-mcp_search_code` first.
+The `--configure` flag generates everything needed for a specific agent in one command:
 
-## Forcing Agents
+```bash
+go-indexing-mcp --configure claude
+```
 
-The problem with AI coding agents is they default to grep+read: search with a keyword, open every matching file, consume thousands of tokens reading irrelevant code. Then they forget context and have to do it again.
+Each command:
+1. Detects the binary path automatically
+2. Adds `go-indexing-mcp` to the agent's MCP config (merges with existing servers)
+3. Writes search instructions to the agent's global configuration (`AGENTS.md` or `CLAUDE.md`)
+4. Is idempotent — running it again says "already up to date"
 
-go-indexing-mcp solves this by **making semantic search the path of least resistance**. Every `--configure` target writes an `AGENTS.md` that states:
+### What each agent receives
+
+| Agent | Config file | Instructions file |
+|---|---|---|
+| **Claude Code** | `~/.config/claude/mcp.json` | `~/.claude/CLAUDE.md` |
+| **OpenCode** | `~/.config/opencode/opencode.json` | `~/.config/opencode/AGENTS.md` |
+| **KiloCode** | `~/.config/kilo/kilo.json` | `~/.config/kilo/AGENTS.md` |
+| **Pi** | — | `~/.pi/agent/AGENTS.md` |
+
+### Forcing Agents
+
+The problem with AI coding agents is they default to grep+read. go-indexing-mcp solves this by **making semantic search the path of least resistance**. Every `--configure` target writes instructions that state:
 
 > You **MUST** use `go-indexing-mcp_search_code` for ALL code searches.
 > Always try it FIRST, before falling back to built-in grep/glob tools.
 
 The agent reads this at session start as a system-level directive. It can still grep — but only after confirming with you that the search tool returned nothing useful.
 
-### What agents receive
+## CLI
 
-| Agent | Config file | AGENTS.md location |
+Full CLI for scripting and one-off operations:
+
+```bash
+# One-shot index with detailed report
+go-indexing-mcp --generate
+
+# Search from the terminal (default mode: hybrid)
+go-indexing-mcp --query "authentication flow"
+go-indexing-mcp --grep "func validate"
+go-indexing-mcp --query "db pool config" --limit 10
+
+# Graph queries (no llama needed)
+go-indexing-mcp --symbol-info "Config"
+go-indexing-mcp --find-imports "github.com/user/project"
+
+# Free llama-server memory
+go-indexing-mcp --free
+```
+
+### Flags
+
+| Flag | Description |
 |---|---|---|
-| **OpenCode** | `~/.config/opencode/opencode.json` | `~/.config/opencode/AGENTS.md` |
-| **KiloCode** | `~/.config/kilo/kilo.json` | `~/.config/kilo/AGENTS.md` |
-| **Pi** | — | `~/.pi/agent/AGENTS.md` |
+| `--mcp` | Start MCP server (stdio) |
+| `--generate` | One-shot index with report |
+| `--query <text>` | Search the index (BM25 + vector similarity via RRF) |
+| `--grep <text>` | Search using grep mode (literal/regex on chunks) |
+| `--limit <n>` | Max results (1-50, default 25) |
+| `--path-filter <glob>` | Path filter: prefix, exact file, or glob (e.g. `*.go`, `pkg/**`) |
+| `--lang <lang>` | Filter by language (used with --grep) |
+| `--case-sensitive` | Case-sensitive matching (used with --grep) |
+| `--word` | Match whole words only (used with --grep) |
+| `--list-files` | List all indexed files |
+| `--symbol-info <name>` | Get detailed info about a symbol: definition, usages, callers, callees |
+| `--find-imports <pattern>` | Find imports matching a module pattern |
+| `--configure <target>` | Auto-setup for pi, opencode, kilocode, or claude |
+| `--dir <path>` | Override project root directory |
+| `--free` | Stop llama-server, free RAM |
+| `--download-llama` | Force download llama.cpp (auto-detects GPU variant) |
 
 ## MCP Server
 
 Run the server and any MCP-compatible agent connects instantly:
 
 ```bash
-./bin/go-indexing-mcp.exe --mcp
+go-indexing-mcp --mcp
 ```
 
-Or via a run script (created during auto-setup):
+Or via the run script (created during auto-setup):
 
 ```bash
 ~/.go-mcp/indexing/run.bat
@@ -84,9 +133,11 @@ Or via a run script (created during auto-setup):
 ### Tools
 
 | Tool | Description | Parameters |
-|---|---|---|---|
+|---|---|---|
 | `search_code` | BM25 + vector similarity via RRF. Best for intent-based queries ("authentication flow"). Auto-indexes if needed | `query` (req), `path_filter`, `limit` |
 | `grep_code` | Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) are boosted 2x. Supports glob path filters. Auto-indexes if empty | `query` (req), `path_filter`, `lang`, `case_sensitive`, `word_boundary`, `limit` |
+| `symbol_info` | Complete view of a symbol: definition, usages, callers, and callees | `name` (req), `path_filter` |
+| `find_imports` | Find all files importing a module/package. Supports partial matching | `pattern` (req) |
 
 ### Search modes
 
@@ -94,6 +145,7 @@ Or via a run script (created during auto-setup):
 |---|---|---|
 | `hybrid` (default) | BM25 + vector similarity fused with RRF (k=60). Best for intent and keywords | Yes |
 | `grep` | Case-insensitive substring on cached chunks | No |
+| `graph` | Knowledge graph queries (find_definition, find_usages, find_imports, symbol_info) | No |
 
 ### Intelligent indexing
 
@@ -127,57 +179,6 @@ The configuration file at `~/.go-mcp/indexing/config.json` supports these option
 
 After the configured `idle_timeout_secs` of inactivity (default: 5 min), the server stops llama.cpp to free VRAM. The next search restarts it automatically. The periodic watcher keeps the server active and prevents idle timeout.
 
-## Configure
-
-The `--configure` flag generates everything needed for a specific agent:
-
-```bash
-go-indexing-mcp --configure opencode
-go-indexing-mcp --configure kilocode
-go-indexing-mcp --configure pi
-```
-
-Each command:
-1. Detects the binary path automatically
-2. Adds `go-indexing-mcp` to the agent's MCP config (merges with existing servers)
-3. Writes a global `AGENTS.md` with the mandatory search instructions
-4. Is idempotent — running it again says "already up to date"
-
-## CLI
-
-Full CLI for scripting and one-off operations:
-
-```bash
-# One-shot index with detailed report
-go-indexing-mcp --generate
-
-# Search from the terminal (default mode: hybrid)
-go-indexing-mcp --query "authentication flow"
-go-indexing-mcp --grep "func validate"
-go-indexing-mcp --query "db pool config" --limit 10
-
-# Free llama-server memory
-go-indexing-mcp --free
-```
-
-### Flags
-
-| Flag | Description |
-|---|---|---|
-| `--mcp` | Start MCP server (stdio) |
-| `--generate` | One-shot index with report |
-| `--query <text>` | Search the index (BM25 + vector similarity via RRF) |
-| `--grep <text>` | Search using grep mode (literal/regex on chunks) |
-| `--limit <n>` | Max results (1-50, default 25) |
-| `--path-filter <glob>` | Path filter: prefix, exact file, or glob (e.g. `*.go`, `pkg/**`) |
-| `--lang <lang>` | Filter by language (used with --grep) |
-| `--case-sensitive` | Case-sensitive matching (used with --grep) |
-| `--word` | Match whole words only (used with --grep) |
-| `--list-files` | List all indexed files |
-| `--configure <target>` | Auto-setup for pi, opencode, or kilocode |
-| `--free` | Stop llama-server, free RAM |
-| `--download-llama` | Force download llama.cpp (auto-detects GPU variant) |
-
 ## Architecture
 
 ```
@@ -190,6 +191,14 @@ go-indexing-mcp --free
 - **Small files**: sliding window chunking
 - **Large files**: structural splitter detects functions/classes/sections via regex + brace/indent counting per language
 - **Storage**: gob-serialized vectors with BM25 inverted index, isolated per git branch. Stored under `~/.go-mcp/indexing/` with Pi-format encoded project paths.
+
+### Building from source
+
+```bash
+go build -o bin/go-indexing-mcp.exe .
+```
+
+Requires Go 1.21+. CI builds multi-platform binaries on every tag and main branch push (see `.github/workflows/ci.yml`).
 
 ### Languages
 

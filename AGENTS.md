@@ -21,7 +21,7 @@
 ## Structure
 
 - `main.go` — flag parsing + routing to handlers
-- `internal/cli/handlers.go` — `RunGenerate()`, `RunQuery()`, `RunConfigure()` + `configurePi()`, `configureOpenCode()`, `configureKiloCode()`
+- `internal/cli/handlers.go` — `RunGenerate()`, `RunQuery()`, `RunConfigure()` + `configurePi()`, `configureOpenCode()`, `configureKiloCode()`, `configureClaude()`
 - `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`. `McpDir()`, `ModelsDir()`, `LlamaCppDir()`, `McpBinDir()`, `EncodeProjectPath()`, `StorageDir()`, `StoragePath()` (deprecated), `EncodeFilePath()`
 - `pkg/selfsetup/` — auto-setup on first run
 - `pkg/llama/` — manager: download (auto-detects GPU → CUDA/Vulkan/CPU), llama-server subprocess, health check, `IsRunning()`, `StartedProcess()`. Memory monitoring: `MemoryUsageMB()` with `meminfo_windows.go` (psapi.dll + `golang.org/x/sys/windows`) and `meminfo_unix.go` (`/proc/<pid>/status` + `ps` fallback)
@@ -33,8 +33,8 @@
 - `pkg/storage/` — gob persistence + normalized dot product + branch-isolated indices + BM25 inverted index (`bm25.go`) + lightweight `fileIndex` for memory-free resume. Single `vectors.gob` (or `vectors-{branch}.gob`) per branch. `SaveAndFree()` writes all records atomically, then clears in-memory state (records, byID, byPath, BM25) but keeps `fileIndex` so `IsFileIndexed()` still works. Vectors are L2-normalized at store time so cosine similarity reduces to dot product. **Format versioning**: `StorageData.Version` detects breaking changes; `NeedsReindex()` / `ClearAll()` auto-triggers full reindex on version mismatch.
 - `pkg/storage/simd/` — AVX2+FMA-accelerated dot product (amd64), scalar fallback (all platforms). ~18x speedup for 768-dim vectors
 - `pkg/indexer/` — orchestrator: walk → chunk → embed → store. `Llama` manager and `MemoryFreeInterval` control periodic save+clear+restart during large indexing (every N files, saves merged gob, clears Go memory, restarts llama-server). `MaxMemoryMB` triggers the same process when llama-server RSS exceeds a threshold (configurable). `IndexAll()` processes files one at a time (no upfront bulk chunking) for bounded memory. Optionally extracts graph symbols per file (extractor + graph)
-- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (build tag onnx), in-memory KnowledgeGraph with indexed lookups, file-based JSON persistence (1 JSON file per source file, atomic writes via tmp+rename), branch-isolated indexes (switch via `SwitchBranch`), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_usages, find_definition, find_imports, symbol_info). No external DB dependency. `HasOldFormat()` auto-detects old BadgerDB databases and drops them on startup. **Format versioning**: individual `version.json` per graph directory with `GraphFormatVersion`; `NeedsReindex()`/`Clear()` auto-trigger re-extraction on version mismatch
-- `pkg/mcp/` — MCP server with tools: search_code, grep_code, find_usages, find_definition, find_imports, symbol_info
+- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (build tag onnx), in-memory KnowledgeGraph with indexed lookups, file-based JSON persistence (1 JSON file per source file, atomic writes via tmp+rename), branch-isolated indexes (switch via `SwitchBranch`), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_imports, symbol_info). No external DB dependency. `HasOldFormat()` auto-detects old BadgerDB databases and drops them on startup. **Format versioning**: individual `version.json` per graph directory with `GraphFormatVersion`; `NeedsReindex()`/`Clear()` auto-trigger re-extraction on version mismatch
+- `pkg/mcp/` — MCP server with tools: search_code, grep_code, find_imports, symbol_info
 
 ## search_code behavior
 
@@ -56,10 +56,8 @@
 |---|---|---|
 | `search_code(query, path_filter?, limit?)` | BM25 + vector similarity via RRF. Best for intent-based queries | Yes |
 | `grep_code(query, path_filter?, lang?, case_sensitive?, word_boundary?, limit?)` | Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) are boosted 2x. Supports glob path filters | No |
-| `find_usages(name, path_filter?)` | Find all usages of a symbol by name | No (graph only) |
-| `find_definition(name, path_filter?)` | Find definition of a symbol | No (graph only) |
+| `symbol_info(name, path_filter?)` | Get detailed info about a symbol (definition + usages + callers + callees) | No (graph only) |
 | `find_imports(pattern)` | Find all imports matching a package pattern | No (graph only) |
-| `symbol_info(name, path_filter?)` | Get detailed info about a symbol (definition + usages) | No (graph only) |
 
 ### Implementation
 
@@ -148,8 +146,6 @@ Do not modify README.md unless the public interface changes (flags, tools, confi
 - `--case-sensitive` — case-sensitive matching (used with --grep)
 - `--word` — match whole words only (used with --grep)
 - `--list-files` — list all indexed files
-- `--find-definition <name>` — find definition of a symbol (graph, no llama needed)
-- `--find-usages <name>` — find usages of a symbol (graph, no llama needed)
+- `--symbol-info <name>` — get detailed info about a symbol: definition, usages, callers, callees (graph, no llama needed)
 - `--find-imports <pattern>` — find imports matching module pattern (graph, no llama needed)
-- `--symbol-info <name>` — get detailed info about a symbol (graph, no llama needed)
-- `--configure <pi|opencode|kilocode>` — configure integration with Pi, OpenCode, or KiloCode (writes MCP config + global AGENTS.md)
+- `--configure <pi|opencode|kilocode|claude>` — configure integration with Pi, OpenCode, KiloCode, or Claude Code (writes MCP config + global AGENTS.md)

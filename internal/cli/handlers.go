@@ -1,5 +1,5 @@
 // Package cli implements CLI-mode handlers for --generate, --query, --grep,
-// --list-files, and --configure flags. Each function returns an OS exit code.
+// --list-files, --find-imports, --symbol-info, and --configure flags. Each function returns an OS exit code.
 package cli
 
 import (
@@ -608,8 +608,10 @@ func RunConfigure(target string) int {
 		return configureOpenCode(exe)
 	case "kilocode":
 		return configureKiloCode(exe)
+	case "claude":
+		return configureClaude(exe)
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown target: %s. Use 'pi', 'opencode', or 'kilocode'.\n", target)
+		fmt.Fprintf(os.Stderr, "Unknown target: %s. Use 'pi', 'opencode', 'kilocode', or 'claude'.\n", target)
 		return 1
 	}
 }
@@ -645,7 +647,7 @@ func configurePi(exe string) int {
 		"{CMD}", exePath,
 		"{BACKTICK}", "```",
 		"{BT}", "`",
-	).Replace("# Mandatory Directives\n\n## Code Search Tool (REQUIRED - DO NOT IGNORE)\n\nThe index is always up-to-date and searches are instant. You MUST use {CMD} for ALL code searches.\nYou MUST NOT use grep, find, rg, ag, glob, or any other literal-search tool for finding code.\nYou MUST NOT use ls or read to explore directories looking for files by content.\n\n### Search modes\n\n`--query` (BM25 + vector similarity via RRF). `--grep` does case-insensitive substring matching on cached chunks for exact symbols (\"func validate\") or regex patterns (\"type.*Downloader\"). Results include exact line numbers and definition lines (func, type, class) are boosted 2x.\n\n### How to use the search tool\n\n{BACKTICK}\n{CMD} --query \"authentication flow\"\n{CMD} --query \"database connection pool\"\n{CMD} --grep \"func validate\"\n{CMD} --grep \"type.*Downloader\" --lang go\n{CMD} --grep \"get\" --word\n{CMD} --grep \"Error\" --case-sensitive\n{CMD} --query \"module\" --limit 50\n{BACKTICK}\n\n`--limit` controls max results (default: 25, max: 50).\n`--lang` filters by language (go, python, typescript, etc.).\n`--word` matches whole words only (e.g. `get` won't match `getter`).\n`--case-sensitive` enables case-sensitive matching.\n`--path-filter` supports glob patterns: `*.go`, `**/*_test.go`, `pkg/*.go`.\n\n### When to use each mode\n\n- **query**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep**: you know the EXACT name of a function, variable, or string. Fastest option.\n\n### Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {CMD} --query \"<description>\" - describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use `--grep` instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tool returns nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}{CMD} --query \"search description\"{BT}\n> {BT}{CMD} --grep \"exact symbol\"{BT}\n> {BT}{CMD} --grep \"exact symbol\" --lang go --word{BT}\n")
+	).Replace("# Mandatory Directives\n\n## Code Search Tool (REQUIRED - DO NOT IGNORE)\n\nThe index is always up-to-date and searches are instant. You MUST use {CMD} for ALL code searches.\nYou MUST NOT use grep, find, rg, ag, glob, or any other literal-search tool for finding code.\nYou MUST NOT use ls or read to explore directories looking for files by content.\n\n### Search modes\n\n`--query` (BM25 + vector similarity via RRF). `--grep` does case-insensitive substring matching on cached chunks for exact symbols (\"func validate\") or regex patterns (\"type.*Downloader\"). Results include exact line numbers and definition lines (func, type, class) are boosted 2x.\n`--symbol-info` gets a complete view of a symbol (definition + usages + callers + callees). `--find-imports` finds files importing a module.\n\n### How to use the search tool\n\n{BACKTICK}\n{CMD} --query \"authentication flow\"\n{CMD} --query \"database connection pool\"\n{CMD} --grep \"func validate\"\n{CMD} --grep \"type.*Downloader\" --lang go\n{CMD} --grep \"get\" --word\n{CMD} --grep \"Error\" --case-sensitive\n{CMD} --query \"module\" --limit 50\n{CMD} --symbol-info \"Config\"\n{CMD} --find-imports \"fmt\"\n{BACKTICK}\n\n`--limit` controls max results (default: 25, max: 50).\n`--lang` filters by language (go, python, typescript, etc.).\n`--word` matches whole words only (e.g. `get` won't match `getter`).\n`--case-sensitive` enables case-sensitive matching.\n`--path-filter` supports glob patterns: `*.go`, `**/*_test.go`, `pkg/*.go`.\n\n### When to use each mode\n\n- **query**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep**: you know the EXACT name of a function, variable, or string. Fastest option.\n- **symbol-info**: you need to understand a specific symbol — where it's defined, what calls it, what it calls.\n- **find-imports**: you need to find which files depend on a specific package.\n\n### Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {CMD} --query \"<description>\" - describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use `--grep` instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tool returns nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}{CMD} --query \"search description\"{BT}\n> {BT}{CMD} --grep \"exact symbol\"{BT}\n> {BT}{CMD} --grep \"exact symbol\" --lang go --word{BT}\n> {BT}{CMD} --symbol-info \"Config\"{BT}\n> {BT}{CMD} --find-imports \"fmt\"{BT}\n")
 
 	merged, err := mergeAgentsSection(agentsPath, agentsContent)
 	if err != nil {
@@ -689,7 +691,7 @@ func configureOpenCode(exe string) int {
 	agentsPath := filepath.Join(configDir, "AGENTS.md")
 	agentsContent := strings.NewReplacer(
 		"{BT}", "`",
-	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT} or {BT}go-indexing-mcp_grep_code{BT} MCP tools for ALL code searches.\nAlways try them FIRST, before falling back to built-in grep/glob tools.\n\n## Available tools\n\n- {BT}go-indexing-mcp_search_code(query, path_filter?, limit?){BT} — BM25 + vector similarity via RRF. Best for intent-based queries (\"authentication flow\", \"database connection pool\"). Auto-indexes if needed. Requires llama.cpp.\n- {BT}go-indexing-mcp_grep_code(query, path_filter?, lang?, case_sensitive?, word_boundary?, limit?){BT} — Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) boosted 2x. Supports glob path filters ({BT}*.go{BT}, {BT}**/*_test.go{BT}). Auto-indexes if empty.\n\n## How to use the tools\n\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database connection pool\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func validate\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"type.*Downloader\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func\", lang=\"go\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"get\", word_boundary=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"Error\", case_sensitive=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"DB\", path_filter=\"*.go\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"module\", limit=50){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50). Use {BT}path_filter{BT} to narrow by prefix, exact file, or glob ({BT}*.go{BT}, {BT}**/*_test.go{BT}).\n\n## When to use each tool\n\n- **search_code**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep_code**: you know the EXACT name of a function, variable, or string. Fastest option.\n\n## Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {BT}go-indexing-mcp_search_code(query=\"<description>\"){BT} — describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use {BT}go-indexing-mcp_grep_code{BT} instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tools return nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}go-indexing-mcp_search_code(query=\"search description\"){BT}\n> {BT}go-indexing-mcp_grep_code(query=\"exact symbol\"){BT}\n")
+	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT}, {BT}go-indexing-mcp_grep_code{BT}, {BT}go-indexing-mcp_symbol_info{BT}, or {BT}go-indexing-mcp_find_imports{BT} MCP tools for ALL code searches.\nAlways try them FIRST, before falling back to built-in grep/glob tools.\n\n## Available tools\n\n- {BT}go-indexing-mcp_search_code(query, path_filter?, limit?){BT} — BM25 + vector similarity via RRF. Best for intent-based queries (\"authentication flow\", \"database connection pool\"). Auto-indexes if needed. Requires llama.cpp.\n- {BT}go-indexing-mcp_grep_code(query, path_filter?, lang?, case_sensitive?, word_boundary?, limit?){BT} — Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) boosted 2x. Supports glob path filters ({BT}*.go{BT}, {BT}**/*_test.go{BT}). Auto-indexes if empty.\n- {BT}go-indexing-mcp_symbol_info(name, path_filter?){BT} — Get a complete 360-degree view of a symbol: definition, usages, callers, and callees. No llama needed.\n- {BT}go-indexing-mcp_find_imports(pattern){BT} — Find all files that import a given module or package. Supports partial matching. No llama needed.\n\n## How to use the tools\n\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database connection pool\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func validate\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"type.*Downloader\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func\", lang=\"go\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"get\", word_boundary=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"Error\", case_sensitive=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"DB\", path_filter=\"*.go\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"module\", limit=50){BT}\n- {BT}go-indexing-mcp_symbol_info(name=\"ValidateUser\"){BT}\n- {BT}go-indexing-mcp_find_imports(pattern=\"fmt\"){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50). Use {BT}path_filter{BT} to narrow by prefix, exact file, or glob ({BT}*.go{BT}, {BT}**/*_test.go{BT}).\n\n## When to use each tool\n\n- **search_code**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep_code**: you know the EXACT name of a function, variable, or string. Fastest option.\n- **symbol_info**: you need to understand a specific symbol — where it's defined, what calls it, what it calls.\n- **find_imports**: you need to find which files depend on a specific package.\n\n## Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {BT}go-indexing-mcp_search_code(query=\"<description>\"){BT} — describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use {BT}go-indexing-mcp_grep_code{BT} instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tools return nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}go-indexing-mcp_search_code(query=\"search description\"){BT}\n> {BT}go-indexing-mcp_grep_code(query=\"exact symbol\"){BT}\n> {BT}go-indexing-mcp_symbol_info(name=\"Config\"){BT}\n> {BT}go-indexing-mcp_find_imports(pattern=\"os\"){BT}\n")
 
 	merged, err := mergeAgentsSection(agentsPath, agentsContent)
 	if err != nil {
@@ -804,7 +806,7 @@ func configureKiloCode(exe string) int {
 	agentsPath := filepath.Join(configDir, "AGENTS.md")
 	agentsContent := strings.NewReplacer(
 		"{BT}", "`",
-	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT} or {BT}go-indexing-mcp_grep_code{BT} MCP tools for ALL code searches.\nAlways try them FIRST, before falling back to built-in grep/glob tools.\n\n## Available tools\n\n- {BT}go-indexing-mcp_search_code(query, path_filter?, limit?){BT} — BM25 + vector similarity via RRF. Best for intent-based queries (\"authentication flow\", \"database connection pool\"). Auto-indexes if needed. Requires llama.cpp.\n- {BT}go-indexing-mcp_grep_code(query, path_filter?, lang?, case_sensitive?, word_boundary?, limit?){BT} — Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) boosted 2x. Supports glob path filters ({BT}*.go{BT}, {BT}**/*_test.go{BT}). Auto-indexes if empty.\n\n## How to use the tools\n\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database connection pool\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func validate\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"type.*Downloader\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func\", lang=\"go\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"get\", word_boundary=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"Error\", case_sensitive=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"DB\", path_filter=\"*.go\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"module\", limit=50){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50). Use {BT}path_filter{BT} to narrow by prefix, exact file, or glob ({BT}*.go{BT}, {BT}**/*_test.go{BT}).\n\n## When to use each tool\n\n- **search_code**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep_code**: you know the EXACT name of a function, variable, or string. Fastest option.\n\n## Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {BT}go-indexing-mcp_search_code(query=\"<description>\"){BT} — describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use {BT}go-indexing-mcp_grep_code{BT} instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tools return nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}go-indexing-mcp_search_code(query=\"search description\"){BT}\n> {BT}go-indexing-mcp_grep_code(query=\"exact symbol\"){BT}\n")
+	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT}, {BT}go-indexing-mcp_grep_code{BT}, {BT}go-indexing-mcp_symbol_info{BT}, or {BT}go-indexing-mcp_find_imports{BT} MCP tools for ALL code searches.\nAlways try them FIRST, before falling back to built-in grep/glob tools.\n\n## Available tools\n\n- {BT}go-indexing-mcp_search_code(query, path_filter?, limit?){BT} — BM25 + vector similarity via RRF. Best for intent-based queries (\"authentication flow\", \"database connection pool\"). Auto-indexes if needed. Requires llama.cpp.\n- {BT}go-indexing-mcp_grep_code(query, path_filter?, lang?, case_sensitive?, word_boundary?, limit?){BT} — Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) boosted 2x. Supports glob path filters ({BT}*.go{BT}, {BT}**/*_test.go{BT}). Auto-indexes if empty.\n- {BT}go-indexing-mcp_symbol_info(name, path_filter?){BT} — Get a complete 360-degree view of a symbol: definition, usages, callers, and callees. No llama needed.\n- {BT}go-indexing-mcp_find_imports(pattern){BT} — Find all files that import a given module or package. Supports partial matching. No llama needed.\n\n## How to use the tools\n\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database connection pool\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func validate\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"type.*Downloader\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func\", lang=\"go\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"get\", word_boundary=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"Error\", case_sensitive=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"DB\", path_filter=\"*.go\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"module\", limit=50){BT}\n- {BT}go-indexing-mcp_symbol_info(name=\"ValidateUser\"){BT}\n- {BT}go-indexing-mcp_find_imports(pattern=\"fmt\"){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50). Use {BT}path_filter{BT} to narrow by prefix, exact file, or glob ({BT}*.go{BT}, {BT}**/*_test.go{BT}).\n\n## When to use each tool\n\n- **search_code**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep_code**: you know the EXACT name of a function, variable, or string. Fastest option.\n- **symbol_info**: you need to understand a specific symbol — where it's defined, what calls it, what it calls.\n- **find_imports**: you need to find which files depend on a specific package.\n\n## Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {BT}go-indexing-mcp_search_code(query=\"<description>\"){BT} — describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use {BT}go-indexing-mcp_grep_code{BT} instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tools return nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}go-indexing-mcp_search_code(query=\"search description\"){BT}\n> {BT}go-indexing-mcp_grep_code(query=\"exact symbol\"){BT}\n> {BT}go-indexing-mcp_symbol_info(name=\"Config\"){BT}\n> {BT}go-indexing-mcp_find_imports(pattern=\"os\"){BT}\n")
 
 	merged, err := mergeAgentsSection(agentsPath, agentsContent)
 	if err != nil {
@@ -817,6 +819,85 @@ func configureKiloCode(exe string) int {
 		fmt.Fprintln(pw, "✓ AGENTS.md already up to date")
 	}
 	fmt.Fprintln(pw, "Done. Restart KiloCode for changes to take effect.")
+	return 0
+}
+
+// configureClaude adds the MCP server to ~\.config\claude\mcp.json
+// and writes CLAUDE.md with search instructions at ~\.claude\CLAUDE.md
+// (user-level global instructions for Claude Code).
+func configureClaude(exe string) int {
+	pw := progressWriter{}
+
+	// MCP config: ~\.config\claude\mcp.json
+	configDir := filepath.Join(os.Getenv("USERPROFILE"), ".config", "claude")
+	configPath := filepath.Join(configDir, "mcp.json")
+
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		slog.Error("create claude config dir", "error", err)
+		return 1
+	}
+
+	var cfg map[string]any
+	if data, err := os.ReadFile(configPath); err == nil {
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			cleaned := trailingCommaRe.ReplaceAllString(stripJSONComments(string(data)), "$1")
+			if err := json.Unmarshal([]byte(cleaned), &cfg); err != nil {
+				slog.Error("parse claude mcp.json", "error", err)
+				return 1
+			}
+		}
+	}
+	if cfg == nil {
+		cfg = make(map[string]any)
+	}
+
+	mcpServers, _ := cfg["mcpServers"].(map[string]any)
+	if mcpServers == nil {
+		mcpServers = make(map[string]any)
+	}
+	mcpServers["go-indexing-mcp"] = map[string]any{
+		"command": exe,
+		"args":    []string{"--mcp"},
+		"type":    "local",
+		"timeout": 60000,
+	}
+	cfg["mcpServers"] = mcpServers
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		slog.Error("marshal claude mcp.json", "error", err)
+		return 1
+	}
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		slog.Error("write claude mcp.json", "error", err)
+		return 1
+	}
+	fmt.Fprintln(pw, "✓ Claude Code MCP server configured")
+
+	// Global instructions: ~\.claude\CLAUDE.md
+	claudeDir := filepath.Join(os.Getenv("USERPROFILE"), ".claude")
+	claudePath := filepath.Join(claudeDir, "CLAUDE.md")
+
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		slog.Error("create .claude dir", "error", err)
+		return 1
+	}
+
+	claudeContent := strings.NewReplacer(
+		"{BT}", "`",
+	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT}, {BT}go-indexing-mcp_grep_code{BT}, {BT}go-indexing-mcp_symbol_info{BT}, or {BT}go-indexing-mcp_find_imports{BT} MCP tools for ALL code searches.\nAlways try them FIRST, before falling back to built-in grep/glob tools.\n\n## Available tools\n\n- {BT}go-indexing-mcp_search_code(query, path_filter?, limit?){BT} — BM25 + vector similarity via RRF. Best for intent-based queries (\"authentication flow\", \"database connection pool\"). Auto-indexes if needed. Requires llama.cpp.\n- {BT}go-indexing-mcp_grep_code(query, path_filter?, lang?, case_sensitive?, word_boundary?, limit?){BT} — Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) boosted 2x. Supports glob path filters ({BT}*.go{BT}, {BT}**/*_test.go{BT}). Auto-indexes if empty.\n- {BT}go-indexing-mcp_symbol_info(name, path_filter?){BT} — Get a complete 360-degree view of a symbol: definition, usages, callers, and callees. No llama needed.\n- {BT}go-indexing-mcp_find_imports(pattern){BT} — Find all files that import a given module or package. Supports partial matching. No llama needed.\n\n## How to use the tools\n\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database connection pool\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func validate\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"type.*Downloader\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func\", lang=\"go\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"get\", word_boundary=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"Error\", case_sensitive=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"DB\", path_filter=\"*.go\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"module\", limit=50){BT}\n- {BT}go-indexing-mcp_symbol_info(name=\"ValidateUser\"){BT}\n- {BT}go-indexing-mcp_find_imports(pattern=\"fmt\"){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50). Use {BT}path_filter{BT} to narrow by prefix, exact file, or glob ({BT}*.go{BT}, {BT}**/*_test.go{BT}).\n\n## When to use each tool\n\n- **search_code**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep_code**: you know the EXACT name of a function, variable, or string. Fastest option.\n- **symbol_info**: you need to understand a specific symbol — where it's defined, what calls it, what it calls.\n- **find_imports**: you need to find which files depend on a specific package.\n\n## Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {BT}go-indexing-mcp_search_code(query=\"<description>\"){BT} — describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use {BT}go-indexing-mcp_grep_code{BT} instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Only fall back to grep/find/ls/read when the search tools return nothing useful AND you have confirmed with the user.\n\n### Summary for the lazy agent\n\n> {BT}grep \"foo\"{BT} {BT}find . -name \"*.ts\"{BT} {BT}ls src/{BT} {BT}rg \"bar\"{BT}\n> {BT}go-indexing-mcp_search_code(query=\"search description\"){BT}\n> {BT}go-indexing-mcp_grep_code(query=\"exact symbol\"){BT}\n> {BT}go-indexing-mcp_symbol_info(name=\"Config\"){BT}\n> {BT}go-indexing-mcp_find_imports(pattern=\"os\"){BT}\n")
+
+	merged, err := mergeAgentsSection(claudePath, claudeContent)
+	if err != nil {
+		slog.Error("write .claude/CLAUDE.md", "error", err)
+		return 1
+	}
+	if merged {
+		fmt.Fprintln(pw, "✓ ~/.claude/CLAUDE.md updated with search instructions")
+	} else {
+		fmt.Fprintln(pw, "✓ ~/.claude/CLAUDE.md already up to date")
+	}
+	fmt.Fprintln(pw, "Done. Restart Claude Code for changes to take effect.")
 	return 0
 }
 
@@ -956,52 +1037,6 @@ func mergeAgentsSection(agentsPath string, section string) (changed bool, err er
 	}
 	newContent += sectionStart + "\n" + section + "\n" + sectionEnd + "\n"
 	return true, os.WriteFile(agentsPath, []byte(newContent), 0644)
-}
-
-// RunFindDefinition finds definitions of a symbol using the knowledge graph.
-func RunFindDefinition(name, pathFilter, rootDir string) int {
-	return runGraphQuery("find-definition", func(g *graph.GraphQuery) {
-		defs := g.FindDefinition(name, pathFilter)
-		if len(defs) == 0 {
-			fmt.Printf("No definition found for '%s'.\n", name)
-			return
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		for _, d := range defs {
-			_ = enc.Encode(struct {
-				Name      string `json:"name"`
-				Kind      string `json:"kind"`
-				FilePath  string `json:"file_path"`
-				StartLine int    `json:"start_line"`
-				EndLine   int    `json:"end_line"`
-				Signature string `json:"signature,omitempty"`
-				Exported  bool   `json:"exported"`
-			}{d.Name, d.Kind.String(), d.FilePath, d.StartLine, d.EndLine, d.Signature, d.Exported})
-		}
-	}, rootDir)
-}
-
-// RunFindUsages finds usages of a symbol using the knowledge graph.
-func RunFindUsages(name, pathFilter, rootDir string) int {
-	return runGraphQuery("find-usages", func(g *graph.GraphQuery) {
-		refs := g.FindUsages(name, pathFilter)
-		if len(refs) == 0 {
-			fmt.Printf("No usages found for '%s'.\n", name)
-			return
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		for _, r := range refs {
-			_ = enc.Encode(struct {
-				TargetName string  `json:"target_name"`
-				Kind       string  `json:"kind"`
-				FilePath   string  `json:"file_path"`
-				Line       int     `json:"line"`
-				Confidence float64 `json:"confidence"`
-			}{r.TargetName, r.Kind.String(), r.FilePath, r.Line, r.Confidence})
-		}
-	}, rootDir)
 }
 
 // RunFindImports finds imports matching a module pattern using the knowledge graph.

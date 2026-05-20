@@ -15,31 +15,6 @@ func (m *MCPServer) registerGraphTools() {
 		return
 	}
 
-	findUsagesTool := mcp.NewTool("find_usages",
-		mcp.WithDescription("Find all usages of a code symbol (function, class, variable) by name. Returns each usage with file, line, and reference type (calls, imports, extends, etc.)."),
-		mcp.WithString("name",
-			mcp.Required(),
-			mcp.Description("Symbol name to search for, e.g. 'validate', 'main', 'Config'"),
-		),
-		mcp.WithString("path_filter",
-			mcp.Description("Optional path prefix filter to narrow results, e.g. 'pkg/', 'internal/'"),
-		),
-		mcp.WithNumber("limit",
-			mcp.Description("Maximum number of results (default: 25, max: 50)"),
-		),
-	)
-
-	findDefTool := mcp.NewTool("find_definition",
-		mcp.WithDescription("Find where a code symbol is defined. Returns the definition location (file, line range), kind (function, class, struct, etc.), and signature."),
-		mcp.WithString("name",
-			mcp.Required(),
-			mcp.Description("Symbol name to find, e.g. 'validate', 'Config', 'main'"),
-		),
-		mcp.WithString("path_filter",
-			mcp.Description("Optional path prefix filter, e.g. 'pkg/', 'internal/'"),
-		),
-	)
-
 	findImportsTool := mcp.NewTool("find_imports",
 		mcp.WithDescription("Find all files that import a given module or package. Supports partial matching."),
 		mcp.WithString("pattern",
@@ -59,107 +34,8 @@ func (m *MCPServer) registerGraphTools() {
 		),
 	)
 
-	m.server.AddTool(findUsagesTool, m.handleFindUsages)
-	m.server.AddTool(findDefTool, m.handleFindDefinition)
 	m.server.AddTool(findImportsTool, m.handleFindImports)
 	m.server.AddTool(symbolInfoTool, m.handleSymbolInfo)
-}
-
-func (m *MCPServer) handleFindUsages(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args := req.GetArguments()
-	name, _ := args["name"].(string)
-	pathFilter, _ := args["path_filter"].(string)
-
-	limit := 25
-	if l, ok := args["limit"].(float64); ok {
-		limit = int(l)
-	}
-
-	if name == "" {
-		return mcp.NewToolResultError("name is required"), nil
-	}
-
-	m.touchActivity()
-
-	g := m.indexer.Graph
-	if g == nil {
-		return mcp.NewToolResultText("Knowledge graph is not available. Build with -tags onnx to enable."), nil
-	}
-
-	refs := g.FindUsages(name, pathFilter)
-	if limit > 0 && len(refs) > limit {
-		refs = refs[:limit]
-	}
-
-	if len(refs) == 0 {
-		return mcp.NewToolResultText(fmt.Sprintf("No usages found for '%s'.", name)), nil
-	}
-
-	type usageResult struct {
-		TargetName string  `json:"target_name"`
-		Kind       string  `json:"kind"`
-		FilePath   string  `json:"file_path"`
-		Line       int     `json:"line"`
-		Confidence float64 `json:"confidence"`
-	}
-
-	results := make([]usageResult, len(refs))
-	for i, r := range refs {
-		results[i] = usageResult{
-			TargetName: r.TargetName,
-			Kind:       r.Kind.String(),
-			FilePath:   r.FilePath,
-			Line:       r.Line,
-			Confidence: r.Confidence,
-		}
-	}
-
-	data, _ := json.MarshalIndent(results, "", "  ")
-	return mcp.NewToolResultText(string(data)), nil
-}
-
-func (m *MCPServer) handleFindDefinition(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	args := req.GetArguments()
-	name, _ := args["name"].(string)
-	pathFilter, _ := args["path_filter"].(string)
-
-	if name == "" {
-		return mcp.NewToolResultError("name is required"), nil
-	}
-
-	m.touchActivity()
-
-	g := m.indexer.Graph
-	if g == nil {
-		return mcp.NewToolResultText("Knowledge graph is not available. Build with -tags onnx to enable."), nil
-	}
-
-	defs := g.FindDefinition(name, pathFilter)
-	if len(defs) == 0 {
-		return mcp.NewToolResultText(fmt.Sprintf("No definition found for '%s'.", name)), nil
-	}
-
-	type defResult struct {
-		Name      string `json:"name"`
-		Kind      string `json:"kind"`
-		FilePath  string `json:"file_path"`
-		StartLine int    `json:"start_line"`
-		EndLine   int    `json:"end_line"`
-		Signature string `json:"signature,omitempty"`
-		Exported  bool   `json:"exported"`
-	}
-
-	results := make([]defResult, len(defs))
-	for i, d := range defs {
-		results[i] = defResult{
-			Name: d.Name, Kind: d.Kind.String(),
-			FilePath: d.FilePath, StartLine: d.StartLine, EndLine: d.EndLine,
-			Signature: d.Signature, Exported: d.Exported,
-		}
-	}
-
-	data, _ := json.MarshalIndent(results, "", "  ")
-	return mcp.NewToolResultText(string(data)), nil
 }
 
 func (m *MCPServer) handleFindImports(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

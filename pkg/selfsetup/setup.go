@@ -83,6 +83,7 @@ func Run() error {
 	fmt.Println("  go-indexing-mcp --configure opencode")
 	fmt.Println("  go-indexing-mcp --configure kilocode")
 	fmt.Println("  go-indexing-mcp --configure pi")
+	fmt.Println("  go-indexing-mcp --configure claude")
 	fmt.Println()
 	fmt.Println("Each command adds the MCP server to the agent's config")
 	fmt.Println("and writes a global AGENTS.md with mandatory search instructions.")

@@ -21,8 +21,8 @@ import (
 )
 
 // Manager handles llama-server download, startup, health-check, and termination.
-// On Windows, it uses a Job Object (KILL_ON_JOB_CLOSE) to ensure the child process
-// is terminated when the parent exits.
+// Uses a cross-process lock file so multiple MCP processes share one server;
+// the last process to release the lock stops the server.
 type Manager struct {
 	Cfg       *config.Config
 	cmd       *exec.Cmd
@@ -307,7 +307,6 @@ func (m *Manager) applyVariantProfile() {
 
 // Start launches llama-server as a subprocess with embedding mode.
 // Finds a free port, sets up the process, waits until the health check passes (up to 120s).
-// On Windows, assigns the child to a Job Object for guaranteed cleanup on exit.
 // Uses a cross-process lock file (~/.go-mcp/llama-server.lock) so multiple MCP processes
 // share the same server — only the last process to release the lock stops it.
 func (m *Manager) Start() error {

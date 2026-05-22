@@ -29,6 +29,7 @@ func TestDetectLanguage(t *testing.T) {
 		{"main.swift", "swift"},
 		{"App.kt", "kotlin"},
 		{"App.scala", "scala"},
+		{"main.zig", "zig"},
 		{"query.sql", "sql"},
 		{"deploy.sh", "bash"},
 		{"script.bash", "bash"},

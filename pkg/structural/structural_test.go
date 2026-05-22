@@ -108,6 +108,46 @@ class MyClass:
 	}
 }
 
+func TestParseBlocks_ZigFunctions(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.zig")
+	content := `const std = @import("std");
+
+pub fn main() void {
+    std.debug.print("hello\n", .{});
+}
+
+fn add(a: i32, b: i32) i32 {
+    return a + b;
+}
+
+pub const Struct = struct {
+    x: i32,
+    y: i32,
+};
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "zig")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks, got %d", len(blocks))
+	}
+	if blocks[0].StartLine != 3 {
+		t.Errorf("expected first block start at 3 (pub fn main), got %d", blocks[0].StartLine)
+	}
+	if blocks[1].StartLine != 7 {
+		t.Errorf("expected second block start at 7 (fn add), got %d", blocks[1].StartLine)
+	}
+	if blocks[2].StartLine != 11 {
+		t.Errorf("expected third block start at 11 (struct), got %d", blocks[2].StartLine)
+	}
+}
+
 func TestParseBlocks_JavaScript(t *testing.T) {
 	s := New()
 	dir := t.TempDir()

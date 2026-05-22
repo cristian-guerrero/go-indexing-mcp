@@ -67,6 +67,10 @@ var structuralNodeTypes = map[string]string{
 	"generator_function":     "function",
 	"function_signature":     "function",
 	"method_signature":       "method",
+	"union_declaration":      "union",
+	"opaque_declaration":     "opaque",
+	"test_declaration":       "test",
+	"comptime_declaration":   "comptime",
 }
 
 // knownTreeSitterGrammars lists languages for which we have pre-built grammar DLLs.
@@ -82,6 +86,7 @@ var knownTreeSitterGrammars = map[string]bool{
 	"cpp":        true,
 	"php":        true,
 	"rust":       true,
+	"zig":        true,
 }
 
 // structuralPreferLanguages are languages where the regex-based structural

@@ -1,6 +1,6 @@
 // Package structural detects structural code blocks (functions, classes, methods)
 // per language using regex pattern matching and brace/indent counting.
-// Supports 17 languages with decorator/annotation backward scanning.
+// Supports 19 languages with decorator/annotation backward scanning.
 // No external parser dependencies — pure regex-based structural analysis.
 package structural
 
@@ -163,6 +163,18 @@ var languages = map[string]languageDef{
 	"scala": {
 		StartPatterns: []*regexp.Regexp{
 			regexp.MustCompile(`^\s*(?:def|class|trait|object|enum)\s`),
+		},
+		FindEnd: findBraceEnd,
+	},
+	"zig": {
+		StartPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*(?:pub\s+)?(?:export\s+)?(?:extern\s+(?:"[^"]*"\s+)?)?(?:inline\s+|noinline\s+)?fn\s`),
+			regexp.MustCompile(`^\s*(?:pub\s+)?(?:const\s+|var\s+)?\w+\s*=\s*(?:extern\s+|packed\s+)?struct\s`),
+			regexp.MustCompile(`^\s*(?:pub\s+)?(?:const\s+|var\s+)?\w+\s*=\s*(?:extern\s+|packed\s+)?enum\s`),
+			regexp.MustCompile(`^\s*(?:pub\s+)?(?:const\s+|var\s+)?\w+\s*=\s*(?:extern\s+|packed\s+)?union\s`),
+			regexp.MustCompile(`^\s*(?:pub\s+)?(?:const\s+|var\s+)?\w+\s*=\s*opaque\s`),
+			regexp.MustCompile(`^\s*(?:pub\s+)?test\s`),
+			regexp.MustCompile(`^\s*(?:pub\s+)?comptime\s`),
 		},
 		FindEnd: findBraceEnd,
 	},

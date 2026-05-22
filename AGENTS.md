@@ -80,7 +80,7 @@
 
 - `pkg/chunker/` orchestrates file splitting into chunks
 - `pkg/structural/` detects structural blocks per language using regex + brace counting
-- `{}` languages: brace depth tracking to find block closure
+- `{}` languages (Go, JS/TS, Rust, Java, C, C++, C#, PHP, Swift, Kotlin, Scala, Zig, Bash): brace depth tracking to find block closure
 - Indentation-based (Python, Ruby, YAML): detects when indentation returns to the initial level
 - Section-based (TOML, Markdown): block ends at next header/section
 - JSON: supports `{}` and `[]` as block delimiters

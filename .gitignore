@@ -1,6 +1,6 @@
 # Binarios
 bin/
-*.exe
+*.exe*
 *.test
 
 # Go

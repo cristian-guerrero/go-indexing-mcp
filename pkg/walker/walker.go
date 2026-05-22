@@ -236,6 +236,8 @@ func detectLanguage(path string) string {
 		return "kotlin"
 	case ".scala":
 		return "scala"
+	case ".zig":
+		return "zig"
 	case ".sql":
 		return "sql"
 	case ".sh", ".bash":

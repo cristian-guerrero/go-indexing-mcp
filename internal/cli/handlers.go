@@ -1099,8 +1099,47 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 	}
 
 	if gq.NeedsReindex() {
-		fmt.Fprintln(os.Stderr, "Graph format version changed. Run --generate or --query to rebuild the graph index.")
-		return 1
+		slog.Warn("graph format version changed, clearing and re-extracting")
+		if err := gq.DB.Clear(); err != nil {
+			slog.Error("clear graph", "error", err)
+			return 1
+		}
+		// Re-open the cleared graph so Cache is fresh
+		gq.Cache.Clear()
+	}
+
+	symCount, _ := gq.Cache.Stats()
+	if symCount == 0 {
+		ext := graph.NewExtractor()
+		if ext != nil {
+			slog.Info("knowledge graph is empty, auto-extracting from source files")
+			files, wErr := w.Walk()
+			if wErr != nil {
+				slog.Warn("graph: walk files for auto-extract", "error", wErr)
+			} else {
+				extracted := 0
+				for _, fi := range files {
+					content, rErr := os.ReadFile(fi.Path)
+					if rErr != nil {
+						continue
+					}
+					symbols, refs, xErr := ext.Extract(
+						string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
+					)
+					if xErr != nil {
+						slog.Debug("graph: extract skip", "file", fi.RelPath, "error", xErr)
+						continue
+					}
+					if len(symbols) > 0 {
+						if err := gq.StoreFile(fi.RelPath, symbols, refs); err != nil {
+							slog.Warn("graph: store", "file", fi.RelPath, "error", err)
+						}
+						extracted++
+					}
+				}
+				slog.Info("graph auto-extraction complete", "files_with_symbols", extracted)
+			}
+		}
 	}
 
 	symCount, refCount := gq.Cache.Stats()

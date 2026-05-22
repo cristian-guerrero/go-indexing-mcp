@@ -50,6 +50,12 @@
 
 `grep_code` does NOT auto-index. If no index exists, you must run `search_code` first to build it.
 
+## Auto-extraction on CLI graph queries
+
+`--symbol-info` and `--find-imports` now auto-extract the knowledge graph from source files when the graph is empty (fresh clone or new branch). This uses only the tree-sitter extractor — no llama-server needed. Works when the binary is built with `-tags onnx`.
+
+If the graph is non-empty but stale, use `--generate` or `--query` to trigger a full reindex with graph extraction.
+
 ### MCP tools
 
 | Tool | Description | Requires llama.cpp |

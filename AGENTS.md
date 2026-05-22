@@ -33,7 +33,7 @@
 - `pkg/storage/` — gob persistence + normalized dot product + branch-isolated indices + BM25 inverted index (`bm25.go`) + lightweight `fileIndex` for memory-free resume. Single `vectors.gob` (or `vectors-{branch}.gob`) per branch. `SaveAndFree()` writes all records atomically, then clears in-memory state (records, byID, byPath, BM25) but keeps `fileIndex` so `IsFileIndexed()` still works. Vectors are L2-normalized at store time so cosine similarity reduces to dot product. **Format versioning**: `StorageData.Version` detects breaking changes; `NeedsReindex()` / `ClearAll()` auto-triggers full reindex on version mismatch.
 - `pkg/storage/simd/` — AVX2+FMA-accelerated dot product (amd64), scalar fallback (all platforms). ~18x speedup for 768-dim vectors
 - `pkg/indexer/` — orchestrator: walk → chunk → embed → store. `Llama` manager and `MemoryFreeInterval` control periodic save+clear+restart during large indexing (every N files, saves merged gob, clears Go memory, restarts llama-server). `MaxMemoryMB` triggers the same process when llama-server RSS exceeds a threshold (configurable). `IndexAll()` processes files one at a time (no upfront bulk chunking) for bounded memory. Optionally extracts graph symbols per file (extractor + graph)
-- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (build tag onnx), in-memory KnowledgeGraph with indexed lookups, file-based JSON persistence (1 JSON file per source file, atomic writes via tmp+rename), branch-isolated indexes (switch via `SwitchBranch`), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_imports, symbol_info). No external DB dependency. `HasOldFormat()` auto-detects old BadgerDB databases and drops them on startup. **Format versioning**: individual `version.json` per graph directory with `GraphFormatVersion`; `NeedsReindex()`/`Clear()` auto-trigger re-extraction on version mismatch
+- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (build tag onnx), in-memory KnowledgeGraph with indexed lookups, file-based JSON persistence (1 JSON file per source file, atomic writes via tmp+rename), branch-isolated indexes (switch via `SwitchBranch`), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_imports, symbol_info). Supported languages: go, python, typescript, javascript, tsx, c, cpp, php, rust, zig. No external DB dependency. `HasOldFormat()` auto-detects old BadgerDB databases and drops them on startup. **Format versioning**: individual `version.json` per graph directory with `GraphFormatVersion`; `NeedsReindex()`/`Clear()` auto-trigger re-extraction on version mismatch
 - `pkg/mcp/` — MCP server with tools: search_code, grep_code, find_imports, symbol_info
 
 ## search_code behavior
@@ -49,6 +49,12 @@
 7. `Search()` returns results
 
 `grep_code` does NOT auto-index. If no index exists, you must run `search_code` first to build it.
+
+## Auto-extraction on CLI graph queries
+
+`--symbol-info` and `--find-imports` now auto-extract the knowledge graph from source files when the graph is empty (fresh clone or new branch). This uses only the tree-sitter extractor — no llama-server needed. Works when the binary is built with `-tags onnx`.
+
+If the graph is non-empty but stale, use `--generate` or `--query` to trigger a full reindex with graph extraction.
 
 ### MCP tools
 
@@ -81,6 +87,8 @@
 - `pkg/chunker/` orchestrates file splitting into chunks
 - `pkg/structural/` detects structural blocks per language using regex + brace counting
 - `{}` languages (Go, JS/TS, Rust, Java, C, C++, C#, PHP, Swift, Kotlin, Scala, Zig, Bash): brace depth tracking to find block closure
+- SQL: `;`-terminated DDL detection with `BEGIN`/`END` nesting for PL/SQL
+- Markdown: heading-based sections PLUS fenced code block (```/~~~) detection
 - Indentation-based (Python, Ruby, YAML): detects when indentation returns to the initial level
 - Section-based (TOML, Markdown): block ends at next header/section
 - JSON: supports `{}` and `[]` as block delimiters

@@ -29,10 +29,11 @@
 
 | Tipo | Lenguajes | Detección |
 |------|-----------|-----------|
-| Brace `{}` | Go, JS/TS, Rust, Java, C, C++, C#, PHP, Swift, Kotlin, Scala, Bash | Regex de inicio + conteo de `{}` con manejo de strings/comentarios |
+| Brace `{}` | Go, JS/TS, Rust, Java, C, C++, C#, PHP, Swift, Kotlin, Scala, Zig, Bash | Regex de inicio + conteo de `{}` con manejo de strings/comentarios |
 | Brace `{}[]` | JSON | Regex de clave top-level + conteo de `{}` y `[]` |
 | Indentación | Python, Ruby, YAML | Regex de inicio + detección de indentación decreciente |
 | Sección | TOML, Markdown | Regex de header + bloque hasta el siguiente header |
+| SQL `;` | SQL | Regex de DDL + `;` semántico con manejo de `BEGIN`/`END` |
 
 ### Estrategias de fin de bloque
 

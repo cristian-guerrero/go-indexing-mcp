@@ -1,6 +1,6 @@
 // Package structural detects structural code blocks (functions, classes, methods)
 // per language using regex pattern matching and brace/indent counting.
-// Supports 19 languages with decorator/annotation backward scanning.
+// Supports 21 languages with decorator/annotation backward scanning.
 // No external parser dependencies — pure regex-based structural analysis.
 package structural
 
@@ -38,6 +38,9 @@ var (
 	reJSONKey   = regexp.MustCompile(`^\s*"\w+"\s*:\s*[{[]`)
 	reTOMLSect  = regexp.MustCompile(`^\s*\[{1,2}[\w."]+\]{1,2}\s*$`)
 	reMDHeading = regexp.MustCompile(`^#{1,6}\s+`)
+	reMDFence   = regexp.MustCompile("^\\s*(?:```|~~~)")
+
+	reSQLDDL = regexp.MustCompile(`^\s*(?:CREATE\s+(?:OR\s+REPLACE\s+)?(?:TABLE|VIEW|FUNCTION|PROCEDURE|TRIGGER|INDEX|SEQUENCE|SCHEMA|DATABASE|MATERIALIZED\s+VIEW)|ALTER\s+(?:TABLE|VIEW|FUNCTION|PROCEDURE|TRIGGER|INDEX|SCHEMA|DATABASE)|DROP\s+(?:TABLE|VIEW|FUNCTION|PROCEDURE|TRIGGER|INDEX|SEQUENCE|SCHEMA|DATABASE))\b`)
 )
 
 var languages = map[string]languageDef{
@@ -166,6 +169,10 @@ var languages = map[string]languageDef{
 		},
 		FindEnd: findBraceEnd,
 	},
+	"sql": {
+		StartPatterns: []*regexp.Regexp{reSQLDDL},
+		FindEnd:       findSQLEnd,
+	},
 	"zig": {
 		StartPatterns: []*regexp.Regexp{
 			regexp.MustCompile(`^\s*(?:pub\s+)?(?:export\s+)?(?:extern\s+(?:"[^"]*"\s+)?)?(?:inline\s+|noinline\s+)?fn\s`),
@@ -200,8 +207,8 @@ var languages = map[string]languageDef{
 		FindEnd:       findSectionEnd,
 	},
 	"markdown": {
-		StartPatterns: []*regexp.Regexp{reMDHeading},
-		FindEnd:       findSectionEnd,
+		StartPatterns: []*regexp.Regexp{reMDHeading, reMDFence},
+		FindEnd:       findMDEnd,
 	},
 }
 
@@ -446,6 +453,115 @@ func findSectionEnd(lines []string, startPatterns []*regexp.Regexp, start int) i
 		}
 	}
 	return len(lines) - 1
+}
+
+// findSQLEnd finds the end of a SQL DDL statement terminated by ';'.
+// Handles single-quoted strings ('') with escaped quotes (''),
+// double-quoted identifiers, backtick identifiers, line comments (--),
+// block comments (/* */), and tracks BEGIN/END nesting for PL/SQL blocks.
+func findSQLEnd(lines []string, _ []*regexp.Regexp, start int) int {
+	depth := 0
+	inString := false
+	stringChar := byte(0)
+	inLineComment := false
+	inBlockComment := false
+
+	for i := start; i < len(lines); i++ {
+		line := lines[i]
+		inLineComment = false
+
+		for j := 0; j < len(line); j++ {
+			ch := line[j]
+
+			if inLineComment {
+				break
+			}
+
+			if inBlockComment {
+				if ch == '*' && j+1 < len(line) && line[j+1] == '/' {
+					inBlockComment = false
+					j++
+				}
+				continue
+			}
+
+			if inString {
+				if ch == stringChar && j+1 < len(line) && line[j+1] == stringChar {
+					j++
+					continue
+				}
+				if ch == stringChar {
+					inString = false
+				}
+				continue
+			}
+
+			if ch == '\'' || ch == '"' || ch == '`' {
+				inString = true
+				stringChar = ch
+				continue
+			}
+
+			if ch == '-' && j+1 < len(line) && line[j+1] == '-' {
+				inLineComment = true
+				break
+			}
+
+			if ch == '/' && j+1 < len(line) && line[j+1] == '*' {
+				inBlockComment = true
+				j++
+				continue
+			}
+
+			upper := ch
+			if ch >= 'a' && ch <= 'z' {
+				upper = ch - 32
+			}
+
+			if ch == ';' && depth == 0 {
+				return i
+			}
+
+			if upper == 'B' && j+4 < len(line) &&
+				line[j+1] == 'E' && line[j+2] == 'G' && line[j+3] == 'I' && line[j+4] == 'N' &&
+				(j+5 >= len(line) || !isLetter(line[j+5])) {
+				depth++
+			}
+
+			if upper == 'E' && j+2 < len(line) &&
+				line[j+1] == 'N' && line[j+2] == 'D' &&
+				(j+3 >= len(line) || !isLetter(line[j+3])) {
+				if depth > 0 {
+					depth--
+				}
+			}
+		}
+	}
+
+	return len(lines) - 1
+}
+
+// isLetter checks if a byte is an ASCII letter.
+func isLetter(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+}
+
+// findMDEnd finds the end of a markdown block. For fenced code blocks,
+// it locates the matching closing fence. For headings, it uses section-based
+// end (next heading or fence).
+func findMDEnd(lines []string, startPatterns []*regexp.Regexp, start int) int {
+	if reMDFence.MatchString(lines[start]) {
+		fence := strings.TrimSpace(lines[start])
+		fencePrefix := fence[:3]
+		for i := start + 1; i < len(lines); i++ {
+			trimmed := strings.TrimSpace(lines[i])
+			if trimmed == fencePrefix || trimmed == fence {
+				return i
+			}
+		}
+		return len(lines) - 1
+	}
+	return findSectionEnd(lines, startPatterns, start)
 }
 
 // countIndent measures the indentation level of a line (spaces or tabs).

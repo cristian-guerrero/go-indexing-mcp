@@ -49,27 +49,65 @@ import (
 const maxParseSize = 10 * 1024 * 1024 // 10 MB
 
 // extractSymbolNodeTypes maps tree-sitter node types to symbol kinds for definitions.
+// Each node type can appear once; comments show which languages use it.
 var definitionNodeTypes = map[string]SymbolKind{
+	// Go, Zig
+	"function_declaration":     SymbolFunction,
+	// Go, PHP
+	"method_declaration":       SymbolMethod,
 	// Go
-	"function_declaration":  SymbolFunction,
-	"method_declaration":    SymbolMethod,
-	"type_declaration":      SymbolType,   // child determines struct/interface
-	"var_declaration":       SymbolVariable,
-	"const_declaration":     SymbolConstant,
-	"package_clause":        SymbolModule,
+	"type_declaration":         SymbolType,
+	// Go
+	"var_declaration":          SymbolVariable,
+	// Go, PHP
+	"const_declaration":        SymbolConstant,
+	// Go
+	"package_clause":           SymbolModule,
+	// Python, C, C++, PHP
+	"function_definition":      SymbolFunction,
 	// Python
-	"function_definition":   SymbolFunction,
-	"class_definition":      SymbolClass,
-	// TypeScript/JavaScript
-	"arrow_function":            SymbolFunction,
-	"generator_function":        SymbolFunction,
-	"method_definition":         SymbolMethod,
-	"lexical_declaration":       SymbolVariable, // const/let
-	"variable_declaration":      SymbolVariable, // var
-	"class_declaration":         SymbolClass,
-	"interface_declaration":     SymbolInterface,
-	"type_alias_declaration":    SymbolType,
-	"enum_declaration":          SymbolEnum,
+	"class_definition":         SymbolClass,
+	// TS/JS, PHP
+	"class_declaration":        SymbolClass,
+	// TS/JS, PHP, Zig
+	"enum_declaration":         SymbolEnum,
+	// TS/JS
+	"arrow_function":           SymbolFunction,
+	"generator_function":       SymbolFunction,
+	"method_definition":        SymbolMethod,
+	"lexical_declaration":      SymbolVariable,
+	// TS/JS, Zig
+	"variable_declaration":     SymbolVariable,
+	// TS/JS, PHP
+	"interface_declaration":    SymbolInterface,
+	"type_alias_declaration":   SymbolType,
+	// C, C++
+	"struct_specifier":         SymbolStruct,
+	"enum_specifier":           SymbolEnum,
+	"union_specifier":          SymbolType,
+	"type_definition":          SymbolType,
+	"preproc_def":              SymbolConstant,
+	// C++
+	"class_specifier":          SymbolClass,
+	"namespace_definition":     SymbolModule,
+	// PHP
+	"trait_declaration":        SymbolType,
+	"property_declaration":     SymbolVariable,
+	// Rust
+	"function_item":            SymbolFunction,
+	"struct_item":              SymbolStruct,
+	"enum_item":                SymbolEnum,
+	"union_item":               SymbolType,
+	"trait_item":               SymbolInterface,
+	"type_item":                SymbolType,
+	"const_item":               SymbolConstant,
+	"static_item":              SymbolVariable,
+	"mod_item":                 SymbolModule,
+	// Zig
+	"struct_declaration":       SymbolStruct,
+	"union_declaration":        SymbolType,
+	"opaque_declaration":       SymbolType,
+	"test_declaration":         SymbolFunction,
 }
 
 // importNodeTypes identifies nodes that contain import statements.
@@ -82,17 +120,23 @@ var importNodeTypes = map[string]bool{
 
 // callNodeTypes identifies function/method call nodes.
 var callNodeTypes = map[string]bool{
-	"call_expression":           true, // Go, TS/JS
+	"call_expression":           true, // Go, TS/JS, C/C++
 	"call":                      true, // Python
 }
 
 // knownExtractorLanguages lists languages for which we have grammar support.
+// Must match the languages built by build-grammars.ps1 with valid tree-sitter grammar DLLs.
 var knownExtractorLanguages = map[string]bool{
 	"go":         true,
 	"python":     true,
 	"typescript": true,
 	"javascript": true,
 	"tsx":        true,
+	"c":          true,
+	"cpp":        true,
+	"php":        true,
+	"rust":       true,
+	"zig":        true,
 }
 
 // Extractor extracts symbols and references from source code using tree-sitter AST.
@@ -235,6 +279,13 @@ func walkAST(node *sitter.Node, source []byte, language, filePath, relPath, file
 		}
 		if specs := extractGoSpecDeclarations(node, source, specType, kind, filePath, relPath, fileHash); specs != nil {
 			*symbols = append(*symbols, specs...)
+		}
+	}
+
+	// Handle C/C++ function_definition: name is nested in declarator → function_declarator.
+	if ntype == "function_definition" && (language == "c" || language == "cpp") {
+		if sym := extractCFunctionDefinition(node, source, language, filePath, relPath, fileHash, startLine, endLine); sym != nil {
+			*symbols = append(*symbols, *sym)
 		}
 	}
 
@@ -394,6 +445,53 @@ func extractGoSpecDeclarations(node *sitter.Node, source []byte, specType string
 		})
 	}
 	return symbols
+}
+
+// extractCFunctionDefinition extracts a function name from a C/C++ function_definition node.
+// The name is nested inside declarator → function_declarator → declarator → identifier.
+func extractCFunctionDefinition(node *sitter.Node, source []byte, language, filePath, relPath, fileHash string, startLine, endLine int) *Symbol {
+	decl := node.ChildByFieldName("declarator")
+	if decl == nil {
+		return nil
+	}
+
+	var name string
+
+	if decl.Type() == "function_declarator" {
+		// Directly a function_declarator (simple case)
+		name = extractNodeName(decl, source)
+	} else {
+		// Search for function_declarator inside declarator
+		for i := 0; i < int(decl.ChildCount()); i++ {
+			child := decl.Child(i)
+			if child == nil || child.Type() != "function_declarator" {
+				continue
+			}
+			inner := child.ChildByFieldName("declarator")
+			if inner != nil {
+				name = extractNodeName(inner, source)
+			}
+			if name == "" {
+				name = extractNodeName(child, source)
+			}
+			break
+		}
+	}
+
+	if name == "" {
+		return nil
+	}
+
+	sig := extractSignatureLine(node, source)
+	exported := isExported(name, language)
+
+	id := symbolID(fileHash, relPath, startLine, name)
+	return &Symbol{
+		ID: id, Name: name, Kind: SymbolFunction,
+		FilePath: filePath, RelPath: relPath,
+		StartLine: startLine, EndLine: endLine,
+		Signature: sig, Exported: exported,
+	}
 }
 
 // extractGoReceiver extracts the receiver type from a Go method declaration.
@@ -608,8 +706,8 @@ func extractCallName(node *sitter.Node, source []byte, language string) string {
 		// Direct function call: foo()
 		return firstChild.Content(source)
 
-	case ftype == "selector_expression" || ftype == "attribute":
-		// Method call: obj.method() or obj.method()
+	case ftype == "selector_expression" || ftype == "attribute" || ftype == "field_expression":
+		// Method call: obj.method() (Go/TS: selector_expression, C#: attribute, C++: field_expression)
 		// Last child is the method name
 		nc := int(firstChild.ChildCount())
 		if nc > 0 {

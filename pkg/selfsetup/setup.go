@@ -69,12 +69,6 @@ func Run() error {
 		fmt.Println("✓ MCP bin dir added to PATH")
 	}
 
-	if err := createRunScript(); err != nil {
-		fmt.Printf("⚠ Create run script: %s\n", err)
-	} else {
-		fmt.Println("✓ Run script created")
-	}
-
 	fmt.Println()
 	fmt.Println("Setup complete!")
 	fmt.Println()
@@ -156,31 +150,64 @@ func copySelf() error {
 	return nil
 }
 
-// addToPATH appends ~/.go-mcp/indexing/bin/ to the system PATH
-// (persistently on Windows via SetEnvironmentVariable, in-process on Unix).
+// addToPATH appends ~/.go-mcp/indexing/bin/ to the PATH:
+// - Windows: persists via SetEnvironmentVariable (user-level).
+// - Unix: persists to ~/.bashrc, ~/.zshrc, or ~/.profile (whichever exists).
+// Also updates the in-process PATH so the current session can find the binary.
 func addToPATH() error {
 	binDir := config.McpBinDir()
-	pathEnv := os.Getenv("PATH")
-	sep := ";"
-	if runtime.GOOS != "windows" {
-		sep = ":"
-	}
 
-	for _, entry := range filepath.SplitList(pathEnv) {
+	// Check if already in PATH
+	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
 		if filepath.Clean(entry) == filepath.Clean(binDir) {
 			return nil
 		}
 	}
 
-	newPath := pathEnv + sep + binDir
+	updateEnv := func() {
+		os.Setenv("PATH", os.Getenv("PATH")+string(filepath.ListSeparator)+binDir)
+	}
 
 	if runtime.GOOS == "windows" {
+		newPath := os.Getenv("PATH") + ";" + binDir
 		if err := setWindowsPATH(newPath); err != nil {
 			return err
 		}
+		updateEnv()
+		return nil
 	}
 
-	os.Setenv("PATH", newPath)
+	// Unix: persist to shell rc file
+	home, err := os.UserHomeDir()
+	if err != nil {
+		updateEnv()
+		return nil
+	}
+
+	line := "\n# Added by go-indexing-mcp\nexport PATH=\"$PATH:" + binDir + "\"\n"
+
+	// Try rc files in order of preference
+	rcCandidates := []string{".bashrc", ".zshrc", ".profile"}
+	for _, rc := range rcCandidates {
+		rcPath := filepath.Join(home, rc)
+		data, err := os.ReadFile(rcPath)
+		if err != nil {
+			continue
+		}
+		if strings.Contains(string(data), "go-indexing-mcp") || strings.Contains(string(data), binDir) {
+			break
+		}
+		f, err := os.OpenFile(rcPath, os.O_APPEND|os.O_WRONLY, 0644)
+		if err != nil {
+			continue
+		}
+		f.WriteString(line)
+		f.Close()
+		slog.Info("added to PATH in " + rc)
+		break
+	}
+
+	updateEnv()
 	return nil
 }
 
@@ -191,35 +218,4 @@ func setWindowsPATH(newPath string) error {
 	return cmd.Run()
 }
 
-// createRunScript writes a run.sh (Unix) or run.bat (Windows) script at ~/.go-mcp/indexing/
-// that invokes the MCP server binary with --mcp flag, forwarding arguments.
-func createRunScript() error {
-	binName := "go-indexing-mcp"
-	if runtime.GOOS == "windows" {
-		binName += ".exe"
-	}
-	if runtime.GOOS == "windows" {
-		script := fmt.Sprintf(`@echo off
-"%%~dp0bin\%s" --mcp %%*
-`, binName)
-		scriptPath := filepath.Join(config.McpDir(), "run.bat")
-		return os.WriteFile(scriptPath, []byte(script), 0755)
-	}
 
-	script := fmt.Sprintf(`#!/bin/bash
-exec "$(dirname "$0")/bin/%s" --mcp "$@"
-`, binName)
-	scriptPath := filepath.Join(config.McpDir(), "run.sh")
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		return err
-	}
-	return nil
-}
-
-// runScriptPath returns the path to the generated run script (run.bat on Windows, run.sh on Unix).
-func runScriptPath() string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(config.McpDir(), "run.bat")
-	}
-	return filepath.Join(config.McpDir(), "run.sh")
-}

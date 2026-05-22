@@ -9,12 +9,15 @@ import (
 
 func TestParseBlocks_UnsupportedLanguage(t *testing.T) {
 	s := New()
-	blocks, err := s.ParseBlocks("test.sql", "sql")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.sql")
+	os.WriteFile(path, []byte("SELECT 1;"), 0644)
+	blocks, err := s.ParseBlocks(path, "unknown")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(blocks) != 0 {
-		t.Errorf("expected 0 blocks for sql, got %d", len(blocks))
+		t.Errorf("expected 0 blocks for unknown language, got %d", len(blocks))
 	}
 }
 
@@ -232,8 +235,11 @@ func TestParseBlocksBatch(t *testing.T) {
 
 func TestParseBlocksBatch_SkipsUnsupported(t *testing.T) {
 	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.sql")
+	os.WriteFile(path, []byte("SELECT 1;"), 0644)
 	files := []ParseFile{
-		{Path: "a.sql", Language: "sql"},
+		{Path: path, Language: "unknown"},
 	}
 	results, err := s.ParseBlocksBatch(files)
 	if err != nil {
@@ -420,6 +426,100 @@ More content
 
 	if len(blocks) != 3 {
 		t.Fatalf("expected 3 blocks, got %d", len(blocks))
+	}
+}
+
+func TestParseBlocks_MarkdownWithFencedCode(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	content := "# API Reference\n\nDescription\n\n```go\nfunc Hello() string {\n    return \"hello\"\n}\n```\n\n## Auth\n\n```python\ndef auth():\n    pass\n```\n"
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "markdown")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 4 {
+		t.Fatalf("expected 4 blocks (1 heading + 2 fenced code + 1 heading), got %d", len(blocks))
+	}
+	if blocks[0].StartLine != 1 {
+		t.Errorf("expected first block (heading) at line 1, got %d", blocks[0].StartLine)
+	}
+	if blocks[1].StartLine != 5 {
+		t.Errorf("expected second block (fenced code) at line 5, got %d", blocks[1].StartLine)
+	}
+	if blocks[2].StartLine != 11 {
+		t.Errorf("expected third block (heading) at line 11, got %d", blocks[2].StartLine)
+	}
+	if blocks[3].StartLine != 13 {
+		t.Errorf("expected fourth block (fenced code) at line 13, got %d", blocks[3].StartLine)
+	}
+}
+
+func TestParseBlocks_SQL(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "schema.sql")
+	content := `CREATE TABLE users (
+    id INT PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
+CREATE TABLE posts (
+    id INT PRIMARY KEY,
+    user_id INT REFERENCES users(id),
+    title TEXT
+);
+
+CREATE VIEW active_users AS
+SELECT * FROM users WHERE active = 1;
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks (2 tables + 1 view), got %d", len(blocks))
+	}
+	if blocks[0].StartLine != 1 {
+		t.Errorf("expected first block (CREATE TABLE users) at line 1, got %d", blocks[0].StartLine)
+	}
+	if blocks[1].StartLine != 6 {
+		t.Errorf("expected second block (CREATE TABLE posts) at line 6, got %d", blocks[1].StartLine)
+	}
+	if blocks[2].StartLine != 12 {
+		t.Errorf("expected third block (CREATE VIEW) at line 12, got %d", blocks[2].StartLine)
+	}
+}
+
+func TestParseBlocks_SQL_PLSQL(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proc.sql")
+	content := `CREATE OR REPLACE FUNCTION get_user_count() RETURNS INT AS $$
+BEGIN
+    RETURN (SELECT COUNT(*) FROM users);
+END;
+$$ LANGUAGE SQL;
+
+CREATE TABLE audit_log (
+    id INT PRIMARY KEY
+);
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks (1 function + 1 table), got %d", len(blocks))
 	}
 }
 

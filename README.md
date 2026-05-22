@@ -202,9 +202,9 @@ Requires Go 1.21+. CI builds multi-platform binaries on every tag and main branc
 
 ### Languages
 
-Structural splitting for: `go`, `python`, `javascript`, `typescript`, `rust`, `java`, `c`, `cpp`, `csharp`, `ruby`, `php`, `swift`, `kotlin`, `scala`, `bash`, `json`, `yaml`, `toml`, `markdown`.
+Structural splitting for: `go`, `python`, `javascript`, `typescript`, `rust`, `java`, `c`, `cpp`, `csharp`, `ruby`, `php`, `swift`, `kotlin`, `scala`, `zig`, `sql`, `bash`, `json`, `yaml`, `toml`, `markdown`.
 
-Indexing (sliding window fallback) for all the above plus: `sql`, `powershell`, `html`, `css`.
+Indexing (sliding window fallback) for all the above plus: `powershell`, `html`, `css`.
 
 ### Embeddings
 

@@ -93,12 +93,14 @@ var knownTreeSitterGrammars = map[string]bool{
 // splitter works well enough that tree-sitter adds negligible benefit.
 // Using tree-sitter for these would add parsing overhead without better blocks.
 var structuralPreferLanguages = map[string]bool{
-	"json": true,
-	"css":  true,
-	"html": true,
-	"yaml": true,
-	"toml": true,
-	"bash": true,
+	"json":     true,
+	"css":      true,
+	"html":     true,
+	"yaml":     true,
+	"toml":     true,
+	"bash":     true,
+	"markdown": true,
+	"sql":      true,
 }
 
 // TreeSitterParser uses tree-sitter AST parsing to extract structural blocks.

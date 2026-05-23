@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -55,6 +56,20 @@ func (g *KnowledgeGraph) AddReference(r Reference) {
 	g.ByTarget[targetName] = append(g.ByTarget[targetName], r)
 }
 
+// refMatchesPath checks if a reference's FilePath matches the given relative path.
+// References may store either a full path or a relative path, so we check both.
+func refMatchesPath(refFilePath, relPath string) bool {
+	if refFilePath == "" {
+		return false
+	}
+	if refFilePath == relPath {
+		return true
+	}
+	refSlash := filepath.ToSlash(refFilePath)
+	relSlash := filepath.ToSlash(relPath)
+	return strings.HasSuffix(refSlash, "/"+relSlash)
+}
+
 // RemoveFile deletes all symbols and references belonging to a file.
 func (g *KnowledgeGraph) RemoveFile(relPath string) {
 	g.mu.Lock()
@@ -83,7 +98,7 @@ func (g *KnowledgeGraph) RemoveFile(relPath string) {
 	// Remove references for this file
 	var kept []Reference
 	for _, ref := range g.Refs {
-		if ref.FilePath == relPath || ref.FilePath == "" {
+		if refMatchesPath(ref.FilePath, relPath) {
 			continue
 		}
 		kept = append(kept, ref)
@@ -94,7 +109,7 @@ func (g *KnowledgeGraph) RemoveFile(relPath string) {
 	for targetName := range g.ByTarget {
 		var keptRefs []Reference
 		for _, ref := range g.ByTarget[targetName] {
-			if ref.FilePath != relPath && ref.FilePath != "" {
+			if !refMatchesPath(ref.FilePath, relPath) {
 				keptRefs = append(keptRefs, ref)
 			}
 		}

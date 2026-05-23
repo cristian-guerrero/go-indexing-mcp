@@ -118,7 +118,7 @@ func RunGenerate(rootDir string) int {
 		}
 	}
 
-	idx := indexer.New(w, ch, em, st, nil, 0, 0)
+	idx := indexer.New(w, ch, em, st, nil, 0, 0, cfg.Indexing.IgnorePatterns)
 
 	// Wire knowledge graph
 	var graphQuery *graph.GraphQuery
@@ -347,7 +347,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 		}
 	}
 
-	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB)
+	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB, cfg.Indexing.IgnorePatterns)
 
 	var gq *graph.GraphQuery
 	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
@@ -409,7 +409,21 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 				if err := idx.IndexChanged(); err != nil {
 					slog.Warn("incremental index failed", "error", err)
 				}
+			} else {
+				// Check for uncommitted changes + untracked files even when SHA matches
+				if err := idx.IndexChanged(); err != nil {
+					slog.Warn("incremental index for working tree changes failed", "error", err)
+				}
 			}
+		}
+	}
+
+	// Check if ignore patterns changed — trigger full reindex if so
+	if needsLlama && idx.CheckIgnoreHash() {
+		fmt.Fprintln(pw, "Ignore patterns changed, reindexing to pick up newly unignored files...")
+		if err := idx.IndexAll(); err != nil {
+			slog.Error("reindex after ignore change", "error", err)
+			return 1
 		}
 	}
 
@@ -505,7 +519,7 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 		}
 	}
 
-	idx := indexer.New(w, ch, nil, st, nil, 0, 0)
+	idx := indexer.New(w, ch, nil, st, nil, 0, 0, cfg.Indexing.IgnorePatterns)
 
 	var gq *graph.GraphQuery
 	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
@@ -1093,6 +1107,17 @@ func RunSymbolInfo(name, pathFilter, rootDir string) int {
 	}, rootDir)
 }
 
+// pruneStaleGraphEntries removes graph entries for files that no longer exist on disk.
+func pruneStaleGraphEntries(w *walker.Walker, gq *graph.GraphQuery) {
+	for relPath := range gq.Cache.ByFile {
+		fullPath := filepath.Join(w.Root, relPath)
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			gq.RemoveFile(relPath)
+			slog.Info("pruned stale graph entry", "file", relPath)
+		}
+	}
+}
+
 // runGraphQuery opens the graph, runs fn, and returns an exit code.
 func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int {
 	cfg, err := config.Load()
@@ -1131,6 +1156,9 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 		// Re-open the cleared graph so Cache is fresh
 		gq.Cache.Clear()
 	}
+
+	// Prune stale graph entries for files that no longer exist on disk
+	pruneStaleGraphEntries(w, gq)
 
 	symCount, _ := gq.Cache.Stats()
 	if symCount == 0 {

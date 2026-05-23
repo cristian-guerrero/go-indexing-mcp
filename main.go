@@ -175,7 +175,7 @@ func main() {
 	}
 	defer st.Close()
 
-	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB)
+	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB, cfg.Indexing.IgnorePatterns)
 
 	branch := w.GetBranch()
 	worktree := w.GetWorktreeName()

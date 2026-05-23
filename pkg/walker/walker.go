@@ -154,6 +154,8 @@ func (w *Walker) GetBranch() string {
 
 // GetChangedFiles returns files modified, added, or deleted since the given SHA.
 // Uses `git diff --name-only <sha>`. If sha is empty, diffs against HEAD.
+// Also detects untracked files via `git ls-files --others --exclude-standard`
+// so renamed/moved files in new directories are picked up without a new commit.
 // Falls back to full Walk() if git diff fails.
 func (w *Walker) GetChangedFiles(sinceSHA string) ([]FileInfo, error) {
 	args := []string{"diff", "--name-only"}
@@ -170,11 +172,14 @@ func (w *Walker) GetChangedFiles(sinceSHA string) ([]FileInfo, error) {
 		return w.Walk()
 	}
 
+	seen := make(map[string]bool)
 	var files []FileInfo
+
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		if line == "" {
 			continue
 		}
+		seen[line] = true
 		if w.IgnoreMatcher.ShouldIgnore(line) {
 			continue
 		}
@@ -202,6 +207,37 @@ func (w *Walker) GetChangedFiles(sinceSHA string) ([]FileInfo, error) {
 			Size:     fi.Size(),
 		})
 	}
+
+	// Detect untracked files (new directories, renamed files without commit)
+	untrackedOut, uErr := exec.Command("git", "-C", w.Root, "ls-files", "--others", "--exclude-standard", "-z").Output()
+	if uErr == nil {
+		for _, line := range strings.Split(strings.TrimRight(string(untrackedOut), "\x00"), "\x00") {
+			if line == "" || seen[line] {
+				continue
+			}
+			if w.IgnoreMatcher.ShouldIgnore(line) {
+				continue
+			}
+			lang := detectLanguage(line)
+			if lang == "" {
+				continue
+			}
+			fullPath := filepath.Join(w.Root, line)
+			fi, err := os.Stat(fullPath)
+			if err != nil {
+				continue
+			}
+			hash, _ := fileHash(fullPath)
+			files = append(files, FileInfo{
+				Path:     fullPath,
+				RelPath:  line,
+				Hash:     hash,
+				Language: lang,
+				Size:     fi.Size(),
+			})
+		}
+	}
+
 	return files, nil
 }
 

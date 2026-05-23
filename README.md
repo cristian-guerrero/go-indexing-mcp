@@ -154,9 +154,10 @@ On startup and every search, the index freshness is checked automatically:
 1. **MCP startup** → detects git repo, checks index state, does full or incremental index immediately
 2. **No index** → synchronous full index of the project
 3. **New commits** → synchronous incremental index of changed files
-4. **Uncommitted changes only** → incremental index in background, search returns instantly
+4. **Uncommitted changes + untracked files** → incremental index, picks up moved/renamed files in new directories
 5. **Branch switch** → saves current index, loads target branch's index from disk
 6. **Periodic watch** → every 60s (configurable), checks for changes and re-indexes in background
+7. **Ignore pattern changes** → auto-detected, triggers full reindex to pick up newly unignored files
 
 ### Config
 

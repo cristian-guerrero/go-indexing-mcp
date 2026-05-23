@@ -4,11 +4,14 @@
 package indexer
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 
@@ -33,6 +36,7 @@ type Indexer struct {
 	MaxMemoryMB        int // 0 = disabled; llama-server memory threshold in MB
 	Graph              *graph.GraphQuery // knowledge graph (nil if not available)
 	Extractor          *graph.Extractor  // AST extractor (nil without onnx tag)
+	IgnorePatterns     []string          // active ignore patterns for change detection
 	mu                 sync.Mutex
 	Running            bool
 	Stats              IndexStats
@@ -51,7 +55,12 @@ type IndexStats struct {
 // Llama may be nil (when no llama-server management is needed).
 // memoryFreeInterval: 0 disables periodic memory freeing.
 // maxMemoryMB: 0 disables llama-server memory threshold restart.
-func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *storage.Storage, lm *llama.Manager, memoryFreeInterval int, maxMemoryMB int) *Indexer {
+// ignorePatterns: active ignore patterns for detecting when the ignore list changes.
+func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *storage.Storage, lm *llama.Manager, memoryFreeInterval int, maxMemoryMB int, ignorePatterns ...[]string) *Indexer {
+	var patterns []string
+	if len(ignorePatterns) > 0 {
+		patterns = ignorePatterns[0]
+	}
 	return &Indexer{
 		Walker:             w,
 		Chunker:            ch,
@@ -60,6 +69,7 @@ func New(w *walker.Walker, ch *chunker.Chunker, em *embedder.Embedder, st *stora
 		Llama:              lm,
 		MemoryFreeInterval: memoryFreeInterval,
 		MaxMemoryMB:        maxMemoryMB,
+		IgnorePatterns:     patterns,
 		Stats: IndexStats{
 			LastIndexed: "never",
 		},
@@ -384,15 +394,57 @@ func (idx *Indexer) ListFiles() []string {
 	return idx.Storage.ListFiles()
 }
 
-// PruneStaleEntries removes chunks for files that no longer exist on disk.
+// PruneStaleEntries removes chunks and graph entries for files that no longer exist on disk.
 func (idx *Indexer) PruneStaleEntries() {
 	for _, relPath := range idx.Storage.ListFiles() {
 		fullPath := filepath.Join(idx.Walker.Root, relPath)
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			idx.Storage.DeleteChunksByPath(fullPath)
+			if idx.Graph != nil {
+				idx.Graph.RemoveFile(relPath)
+			}
 			slog.Info("pruned stale entry", "file", relPath)
 		}
 	}
+}
+
+// computeIgnoreHash returns a SHA256 hash of the active ignore patterns and .gitignore content.
+// Used to detect when ignore rules change, triggering a reindex of newly unignored files.
+func (idx *Indexer) computeIgnoreHash() string {
+	h := sha256.New()
+	sorted := append([]string{}, idx.IgnorePatterns...)
+	sort.Strings(sorted)
+	for _, p := range sorted {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+	}
+	gitignorePath := filepath.Join(idx.Walker.Root, ".gitignore")
+	if data, err := os.ReadFile(gitignorePath); err == nil {
+		h.Write(data)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// CheckIgnoreHash compares the current ignore patterns hash against the stored hash.
+// Returns true if the ignore rules changed since the last index, signaling callers
+// to trigger a full reindex so newly unignored files are picked up.
+func (idx *Indexer) CheckIgnoreHash() bool {
+	if len(idx.IgnorePatterns) == 0 {
+		return false
+	}
+	currentHash := idx.computeIgnoreHash()
+	storedHash := idx.Storage.GetIgnoredFilesHash()
+	if storedHash == "" {
+		idx.Storage.SetIgnoredFilesHash(currentHash)
+		return false
+	}
+	if storedHash != currentHash {
+		slog.Info("ignore patterns changed, triggering reindex",
+			"old_hash", storedHash, "new_hash", currentHash)
+		idx.Storage.SetIgnoredFilesHash(currentHash)
+		return true
+	}
+	return false
 }
 
 // Search dispatches to hybrid (BM25 + vector) or grep mode based on the mode string.

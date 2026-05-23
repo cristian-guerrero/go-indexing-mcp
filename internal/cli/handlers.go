@@ -631,10 +631,20 @@ func roundDuration(d time.Duration) string {
 	return d.Round(time.Millisecond * 10).String()
 }
 
+// userHomeDir returns the current user's home directory, exiting on failure.
+func userHomeDir() string {
+	d, err := os.UserHomeDir()
+	if err != nil {
+		slog.Error("get home directory", "error", err)
+		os.Exit(1)
+	}
+	return d
+}
+
 // configurePi writes the MCP config and AGENTS.md into ~/.pi/agent/.
 func configurePi(exe string) int {
 	pw := progressWriter{}
-	agentsDir := filepath.Join(os.Getenv("USERPROFILE"), ".pi", "agent")
+	agentsDir := filepath.Join(userHomeDir(), ".pi", "agent")
 	agentsPath := filepath.Join(agentsDir, "AGENTS.md")
 
 	if err := os.MkdirAll(agentsDir, 0755); err != nil {
@@ -663,12 +673,12 @@ func configurePi(exe string) int {
 	return 0
 }
 
-// configureOpenCode adds the MCP server entry to ~/.config/opencode/opencode.json
+// configureOpenCode adds the MCP server entry to ~/.config/opencode/opencode.json(c)
 // and writes a global AGENTS.md with search_code/grep_code instructions.
 func configureOpenCode(exe string) int {
 	pw := progressWriter{}
-	configDir := filepath.Join(os.Getenv("USERPROFILE"), ".config", "opencode")
-	configPath := filepath.Join(configDir, "opencode.json")
+	configDir := filepath.Join(userHomeDir(), ".config", "opencode")
+	configPath := resolveOpenCodeConfig(configDir)
 
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		slog.Error("create opencode config dir", "error", err)
@@ -705,6 +715,20 @@ func configureOpenCode(exe string) int {
 	}
 	fmt.Fprintln(pw, "Done. Restart OpenCode for changes to take effect.")
 	return 0
+}
+
+// resolveOpenCodeConfig returns the path to opencode.jsonc or opencode.json, preferring jsonc.
+func resolveOpenCodeConfig(configDir string) string {
+	jsoncPath := filepath.Join(configDir, "opencode.jsonc")
+	jsonPath := filepath.Join(configDir, "opencode.json")
+	if _, err := os.Stat(jsoncPath); err == nil {
+		return jsoncPath
+	}
+	if _, err := os.Stat(jsonPath); err == nil {
+		return jsonPath
+	}
+	// Default to jsonc for new installs (OpenCode default format)
+	return jsoncPath
 }
 
 // resolveKiloConfig returns the path to kilo.jsonc or kilo.json, preferring jsonc.
@@ -747,7 +771,7 @@ func loadJSONConfig(configPath string) (map[string]any, error) {
 // ~/.config/kilo/kilo.json(c) and writes a global AGENTS.md.
 func configureKiloCode(exe string) int {
 	pw := progressWriter{}
-	configDir := filepath.Join(os.Getenv("USERPROFILE"), ".config", "kilo")
+	configDir := filepath.Join(userHomeDir(), ".config", "kilo")
 	configPath := resolveKiloConfig(configDir)
 
 	if err := os.MkdirAll(configDir, 0755); err != nil {
@@ -828,8 +852,8 @@ func configureKiloCode(exe string) int {
 func configureClaude(exe string) int {
 	pw := progressWriter{}
 
-	// MCP config: ~\.config\claude\mcp.json
-	configDir := filepath.Join(os.Getenv("USERPROFILE"), ".config", "claude")
+	// MCP config: ~/.config/claude/mcp.json
+	configDir := filepath.Join(userHomeDir(), ".config", "claude")
 	configPath := filepath.Join(configDir, "mcp.json")
 
 	if err := os.MkdirAll(configDir, 0755); err != nil {
@@ -874,8 +898,8 @@ func configureClaude(exe string) int {
 	}
 	fmt.Fprintln(pw, "✓ Claude Code MCP server configured")
 
-	// Global instructions: ~\.claude\CLAUDE.md
-	claudeDir := filepath.Join(os.Getenv("USERPROFILE"), ".claude")
+	// Global instructions: ~/.claude/CLAUDE.md
+	claudeDir := filepath.Join(userHomeDir(), ".claude")
 	claudePath := filepath.Join(claudeDir, "CLAUDE.md")
 
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {

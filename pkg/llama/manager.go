@@ -3,7 +3,10 @@
 package llama
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -15,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
@@ -95,25 +99,121 @@ func (m *Manager) saveBinPath() {
 	}
 }
 
+// llamaReleasesURL is the GitHub API endpoint for the latest llama.cpp release.
+const llamaReleasesURL = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest"
+
+var (
+	fetchOnce sync.Once
+	cachedTag string
+)
+
+// release is a minimal GitHub release response for extracting the tag name.
+type release struct {
+	TagName string `json:"tag_name"`
+}
+
+// fetchLatestTag fetches the latest llama.cpp release tag from GitHub.
+// The result is cached so the API is only called once per process lifetime.
+func fetchLatestTag() string {
+	fetchOnce.Do(func() {
+		req, err := http.NewRequest("GET", llamaReleasesURL, nil)
+		if err != nil {
+			slog.Warn("create latest release request, using fallback tag", "error", err)
+			cachedTag = "b9291"
+			return
+		}
+		req.Header.Set("Accept", "application/json")
+
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			slog.Warn("fetch latest release, using fallback tag", "error", err)
+			cachedTag = "b9291"
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			slog.Warn("latest release API returned unexpected status, using fallback tag", "status", resp.Status)
+			cachedTag = "b9291"
+			return
+		}
+
+		var rel release
+		if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+			slog.Warn("decode latest release, using fallback tag", "error", err)
+			cachedTag = "b9291"
+			return
+		}
+
+		if rel.TagName == "" {
+			slog.Warn("latest release has empty tag, using fallback")
+			cachedTag = "b9291"
+			return
+		}
+
+		cachedTag = rel.TagName
+		slog.Info("fetched latest llama.cpp release", "tag", cachedTag)
+	})
+	return cachedTag
+}
+
 // downloadLlama fetches the llama-server binary from GitHub releases.
+// The latest release tag is fetched dynamically from the GitHub API.
 // On Windows CUDA variants, also downloads the matching CUDA runtime DLLs.
+// Linux/macOS releases use .tar.gz, Windows uses .zip.
 func (m *Manager) downloadLlama(dest string) error {
-	tag := "b4383"
+	tag := fetchLatestTag()
 	variant := llamaVariant()
 	extractDir := filepath.Dir(dest)
+	arch := fmt.Sprintf("llama-%s-bin-%s", tag, variant)
 
-	primaryURL := fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/llama-%s-bin-%s.zip", tag, tag, variant)
-	if err := downloadAndExtractZip(primaryURL, extractDir); err != nil {
+	var primaryURL string
+	isWindows := runtime.GOOS == "windows"
+	if isWindows {
+		primaryURL = fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/%s.zip", tag, arch)
+	} else {
+		primaryURL = fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/%s.tar.gz", tag, arch)
+	}
+
+	if err := downloadArchive(primaryURL, extractDir, isWindows); err != nil {
 		return fmt.Errorf("download llama: %w", err)
 	}
 
+	// On Windows CUDA, download CUDA runtime DLLs
 	if strings.HasPrefix(variant, "win-cuda-") {
-		cudaVer := strings.TrimPrefix(variant, "win-cuda-")
-		cudaVer = strings.TrimSuffix(cudaVer, "-x64")
-		cudartURL := fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/cudart-llama-bin-win-%s-x64.zip", tag, cudaVer)
+		cudaTag := strings.TrimPrefix(variant, "win-cuda-") // "12.4-x64"
+		cudaVer := strings.TrimSuffix(cudaTag, "-x64")     // "12.4"
+		cudartURL := fmt.Sprintf("https://github.com/ggml-org/llama.cpp/releases/download/%s/cudart-llama-bin-win-cuda-%s-x64.zip", tag, cudaVer)
 		slog.Info("downloading CUDA runtime DLLs", "url", cudartURL)
-		if err := downloadAndExtractZip(cudartURL, extractDir); err != nil {
+		if err := downloadArchive(cudartURL, extractDir, true); err != nil {
 			return fmt.Errorf("download CUDA runtime: %w", err)
+		}
+	}
+
+	// Relocate files if extracted into a versioned subdirectory (e.g. llama-b9291/)
+	// tar.gz releases extract into a versioned directory; Windows zip extracts at root.
+	versionedDir := filepath.Join(extractDir, fmt.Sprintf("llama-%s", tag))
+	if info, err := os.Stat(versionedDir); err == nil && info.IsDir() {
+		entries, err := os.ReadDir(versionedDir)
+		if err != nil {
+			return fmt.Errorf("read versioned dir: %w", err)
+		}
+		for _, entry := range entries {
+			oldPath := filepath.Join(versionedDir, entry.Name())
+			newPath := filepath.Join(extractDir, entry.Name())
+			if err := os.Rename(oldPath, newPath); err != nil {
+				return fmt.Errorf("relocate %s: %w", entry.Name(), err)
+			}
+		}
+		os.RemoveAll(versionedDir)
+		slog.Info("relocated files from versioned directory", "dir", versionedDir)
+	}
+
+	// Ensure the binary is executable (zip/tar.gz extraction does not preserve permissions on Linux)
+	if _, err := os.Stat(dest); err == nil {
+		if err := os.Chmod(dest, 0755); err != nil {
+			return fmt.Errorf("chmod llama binary: %w", err)
 		}
 	}
 
@@ -121,8 +221,8 @@ func (m *Manager) downloadLlama(dest string) error {
 	return nil
 }
 
-// downloadAndExtractZip downloads a ZIP file to a temp file and extracts it.
-func downloadAndExtractZip(url, extractDir string) error {
+// downloadArchive downloads an archive (zip or tar.gz) to a temp file and extracts it.
+func downloadArchive(url, extractDir string, isZip bool) error {
 	slog.Info("downloading", "url", url)
 	resp, err := http.Get(url)
 	if err != nil {
@@ -133,47 +233,58 @@ func downloadAndExtractZip(url, extractDir string) error {
 		return fmt.Errorf("download failed: %s", resp.Status)
 	}
 
-	tmpZip := filepath.Join(extractDir, "llama-download.tmp")
-	f, err := os.Create(tmpZip)
+	tmpFile := filepath.Join(extractDir, "llama-download.tmp")
+	f, err := os.Create(tmpFile)
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(f, resp.Body); err != nil {
 		f.Close()
-		os.Remove(tmpZip)
+		os.Remove(tmpFile)
 		return err
 	}
 	f.Close()
 
-	if err := ExtractZip(tmpZip, extractDir); err != nil {
-		os.Remove(tmpZip)
+	if isZip {
+		err = ExtractZip(tmpFile, extractDir)
+	} else {
+		err = ExtractTarGz(tmpFile, extractDir)
+	}
+	os.Remove(tmpFile)
+	if err != nil {
 		return err
 	}
-	os.Remove(tmpZip)
 	return nil
 }
 
 // llamaVariant returns the platform-specific release variant string for llama.cpp.
 // On Windows, probes for nvidia-smi (CUDA); non-CUDA systems get the Vulkan build
-// (llama.cpp falls back to CPU if Vulkan init fails). Linux only has CPU builds.
+// (llama.cpp falls back to CPU if Vulkan init fails). On Linux, selects the Vulkan
+// build when a GPU is detected; otherwise falls back to the CPU-only build.
 func llamaVariant() string {
 	osName := runtime.GOOS
 	arch := runtime.GOARCH
 
 	switch {
 	case osName == "windows" && arch == "arm64":
-		return "win-llvm-arm64"
+		return "win-cpu-arm64"
 	case osName == "windows" && arch == "amd64":
 		switch config.DetectVariant() {
 		case "cuda":
 			slog.Info("nvidia GPU detected, selecting CUDA variant")
-			return "win-cuda-cu12.4-x64"
+			return "win-cuda-12.4-x64"
 		default:
 			slog.Info("no CUDA detected, selecting Vulkan variant (falls back to CPU if unavailable)")
 			return "win-vulkan-x64"
 		}
 	case osName == "linux" && arch == "amd64":
-		return "ubuntu-x64"
+		switch config.DetectVariant() {
+		case "cuda", "vulkan":
+			slog.Info("GPU detected on Linux, selecting Vulkan variant (falls back to CPU if unavailable)")
+			return "ubuntu-vulkan-x64"
+		default:
+			return "ubuntu-x64"
+		}
 	case osName == "linux" && arch == "arm64":
 		return "ubuntu-arm64"
 	case osName == "darwin" && arch == "arm64":
@@ -181,7 +292,7 @@ func llamaVariant() string {
 	case osName == "darwin" && arch == "amd64":
 		return "macos-x64"
 	default:
-		return "win-avx2-x64"
+		return "win-cpu-x64"
 	}
 }
 
@@ -293,14 +404,28 @@ func downloadFile(dest, url string) error {
 
 // applyVariantProfile checks if the configured variant matches the detected system variant.
 // If they differ (e.g. hardware changed), applies the optimal profile for the detected variant.
+// Also migrates old flag names (e.g. --cram → -cram) if the binary version changed.
 func (m *Manager) applyVariantProfile() {
+	changed := false
 	detected := config.DetectVariant()
 	if m.Cfg.Llama.Variant != detected {
 		slog.Info("hardware variant changed, applying optimal profile",
 			"from", m.Cfg.Llama.Variant, "to", detected)
 		m.Cfg.ApplyProfile(detected)
+		changed = true
+	}
+
+	// Migrate old --cram to -cram (b9291 uses single-dash for this flag)
+	for i, arg := range m.Cfg.Llama.ExtraArgs {
+		if arg == "--cram" {
+			m.Cfg.Llama.ExtraArgs[i] = "-cram"
+			changed = true
+		}
+	}
+
+	if changed {
 		if err := config.Save(m.Cfg); err != nil {
-			slog.Warn("save config after variant profile update", "error", err)
+			slog.Warn("save config after migration", "error", err)
 		}
 	}
 }
@@ -689,6 +814,96 @@ func findFreePort(min, max int) int {
 		}
 	}
 	return min
+}
+
+// downloadAndExtractZip downloads a ZIP file to a temp file and extracts it.
+// Kept for backward compatibility and Windows CUDA runtime DLL extraction.
+func downloadAndExtractZip(url, extractDir string) error {
+	slog.Info("downloading", "url", url)
+	resp, err := http.Get(url)
+	if err != nil {
+		return fmt.Errorf("http get: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: %s", resp.Status)
+	}
+
+	tmpZip := filepath.Join(extractDir, "llama-download.tmp")
+	f, err := os.Create(tmpZip)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(tmpZip)
+		return err
+	}
+	f.Close()
+
+	if err := ExtractZip(tmpZip, extractDir); err != nil {
+		os.Remove(tmpZip)
+		return err
+	}
+	os.Remove(tmpZip)
+	return nil
+}
+
+// ExtractTarGz extracts a tar.gz archive to the given destination directory.
+func ExtractTarGz(src, dest string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gzr, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+
+	tr := tar.NewReader(gzr)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+
+		fpath := filepath.Join(dest, header.Name)
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(fpath, 0755); err != nil {
+				return err
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
+				return err
+			}
+			out, err := os.Create(fpath)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(out, tr); err != nil {
+				out.Close()
+				return err
+			}
+			out.Close()
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(filepath.Dir(fpath), 0755); err != nil {
+				return err
+			}
+			// Remove existing file/symlink at target, then create symlink
+			os.Remove(fpath)
+			if err := os.Symlink(header.Linkname, fpath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ExtractZip extracts a ZIP archive to the given destination directory.

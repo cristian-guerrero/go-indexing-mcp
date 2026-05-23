@@ -20,9 +20,13 @@ Thumbs.db
 # MCP local data
 .env
 
+# Config local
+.config/
+
 # Temp
 tmp/
 info.txt
 .go-mcp
 information
 .kilo
+go-indexing-mcp

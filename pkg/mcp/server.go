@@ -156,8 +156,23 @@ func (m *MCPServer) indexOnStartup() {
 			}
 			m.runIndexChanged()
 		} else {
-			slog.Info("index is up to date")
+			slog.Info("index is up to date, checking for working tree changes")
+			if err := m.ensureLlama(); err != nil {
+				slog.Warn("llama not available for working tree check on startup", "error", err)
+			} else {
+				m.runIndexChanged()
+			}
 		}
+	}
+
+	// Check if ignore patterns changed — trigger full reindex if so
+	if m.indexer.CheckIgnoreHash() {
+		slog.Info("ignore patterns changed, triggering full reindex on startup")
+		if err := m.ensureLlama(); err != nil {
+			slog.Error("llama not available for reindex after ignore change", "error", err)
+			return
+		}
+		m.runIndexAll()
 	}
 }
 
@@ -367,6 +382,17 @@ func (m *MCPServer) watchChecker() {
 			continue
 		}
 
+		// Check if ignore patterns changed — trigger full reindex if so
+		if m.indexer.CheckIgnoreHash() {
+			slog.Info("watch: ignore patterns changed, triggering full reindex")
+			if err := m.ensureLlama(); err != nil {
+				slog.Warn("watch: llama not available for reindex after ignore change", "error", err)
+				continue
+			}
+			m.runIndexAll()
+			continue
+		}
+
 		// If the graph is empty but index has data and extractor is available,
 		// do a full reindex to populate the graph (upgrade from non-onnx build).
 		if stats.TotalChunks > 0 && m.indexer.Graph != nil && m.indexer.Extractor != nil {
@@ -482,6 +508,22 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		} else {
 			return mcp.NewToolResultText(msgNoIndex), nil
 		}
+	}
+
+	// Incremental index for uncommitted changes and untracked files
+	lastSHA := m.indexer.Storage.GetCommitSHA()
+	headSHA := m.indexer.Walker.GetHeadSHA()
+	if headSHA != "" && headSHA != lastSHA {
+		slog.Info("search: new commits detected, updating index")
+		m.runIndexChanged()
+	} else {
+		m.runIndexChanged()
+	}
+
+	// Check if ignore patterns changed
+	if m.indexer.CheckIgnoreHash() {
+		slog.Info("search: ignore patterns changed, triggering full reindex")
+		m.runIndexAll()
 	}
 
 	results, err := m.indexer.Search(query, pathFilter, limit, "hybrid")

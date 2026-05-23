@@ -45,8 +45,10 @@
 3. Branch detected → `SwitchBranch()` if changed (branch-isolated index)
 4. Empty index → synchronous `IndexAll()` (first time)
 5. New commits since last saved SHA → synchronous `IndexChanged()`
-6. Uncommitted changes only → `IndexChanged()` in background
-7. `Search()` returns results
+6. Uncommitted changes + untracked files → `IndexChanged()` detects moved/renamed files in new directories
+7. Ignore pattern changes → auto-detected via hash comparison, triggers `IndexAll()`
+8. Stale entries → pruned from both vector index and knowledge graph on every search
+9. `Search()` returns results
 
 `grep_code` does NOT auto-index. If no index exists, you must run `search_code` first to build it.
 

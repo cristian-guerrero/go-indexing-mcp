@@ -69,10 +69,11 @@ const GraphFormatVersion = 1
 
 // StorageData is the on-disk format: records + commit SHA for git tracking.
 type StorageData struct {
-	Version   int
-	Records   []ChunkRecord
-	CommitSHA string
-	Trigrams  *TrigramData // persisted trigram index; nil on legacy files
+	Version          int
+	Records          []ChunkRecord
+	CommitSHA        string
+	Trigrams         *TrigramData // persisted trigram index; nil on legacy files
+	IgnoredFilesHash string       // hash of ignore patterns for change detection
 }
 
 // Storage manages chunk records with O(1) lookups by ID and file path,
@@ -86,13 +87,14 @@ type StorageData struct {
 //	  vectors.gob                     (main branch)
 //	  vectors-{worktree}-{branch}.gob (other branches)
 type Storage struct {
-	path           string // current gob file path (may include branch suffix)
-	pathPrefix     string // base path without .gob, used for branch switching
-	dimensions     int
-	mu             sync.RWMutex
-	records        []ChunkRecord
-	commitSHA      string
-	diskVersion    int // version read from disk (0 = pre-versioning or compatible)
+	path             string // current gob file path (may include branch suffix)
+	pathPrefix       string // base path without .gob, used for branch switching
+	dimensions       int
+	mu               sync.RWMutex
+	records          []ChunkRecord
+	commitSHA        string
+	ignoredFilesHash string
+	diskVersion      int // version read from disk (0 = pre-versioning or compatible)
 	byID           map[string]int
 	byPath         map[string][]int
 	dirty          bool
@@ -389,6 +391,21 @@ func (s *Storage) GetCommitSHA() string {
 	return s.commitSHA
 }
 
+// SetIgnoredFilesHash records the hash of current ignore patterns for change detection.
+func (s *Storage) SetIgnoredFilesHash(hash string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ignoredFilesHash = hash
+	s.dirty = true
+}
+
+// GetIgnoredFilesHash returns the stored ignore pattern hash.
+func (s *Storage) GetIgnoredFilesHash() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.ignoredFilesHash
+}
+
 // load reads the index from disk. Tries the current gob file path, then
 // falls back to legacy formats for backward compatibility.
 func (s *Storage) load() error {
@@ -406,6 +423,7 @@ func (s *Storage) load() error {
 	if err := dec.Decode(&data); err == nil {
 		s.rebuildIndex(data.Records)
 		s.commitSHA = data.CommitSHA
+		s.ignoredFilesHash = data.IgnoredFilesHash
 		s.diskVersion = data.Version
 		s.recordsPartial = false
 
@@ -498,10 +516,11 @@ func (s *Storage) saveLocked() error {
 	}
 
 	data := StorageData{
-		Version:   StorageFormatVersion,
-		Records:   recordsToWrite,
-		CommitSHA: commitSHA,
-		Trigrams:  &tgData,
+		Version:          StorageFormatVersion,
+		Records:          recordsToWrite,
+		CommitSHA:        commitSHA,
+		Trigrams:         &tgData,
+		IgnoredFilesHash: s.ignoredFilesHash,
 	}
 
 	tmpPath := s.path + ".tmp"

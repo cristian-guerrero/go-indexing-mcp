@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/graph"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -47,6 +50,7 @@ func (m *MCPServer) handleFindImports(ctx context.Context, req mcp.CallToolReque
 	}
 
 	m.touchActivity()
+	m.pruneGraph()
 
 	g := m.indexer.Graph
 	if g == nil {
@@ -89,6 +93,7 @@ func (m *MCPServer) handleSymbolInfo(ctx context.Context, req mcp.CallToolReques
 	}
 
 	m.touchActivity()
+	m.pruneGraph()
 
 	g := m.indexer.Graph
 	if g == nil {
@@ -180,6 +185,21 @@ func (m *MCPServer) handleSymbolInfo(ctx context.Context, req mcp.CallToolReques
 
 	data, _ := json.MarshalIndent(result, "", "  ")
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+// pruneGraph removes stale entries from the knowledge graph (files no longer on disk).
+func (m *MCPServer) pruneGraph() {
+	if m.indexer == nil || m.indexer.Graph == nil {
+		return
+	}
+	root := m.indexer.Walker.Root
+	for relPath := range m.indexer.Graph.Cache.ByFile {
+		fullPath := filepath.Join(root, relPath)
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			m.indexer.Graph.RemoveFile(relPath)
+			slog.Info("pruned stale graph entry", "file", relPath)
+		}
+	}
 }
 
 // ensure graph package is used

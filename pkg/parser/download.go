@@ -59,7 +59,11 @@ func GrammarExists(language string) bool {
 func grammarDownloadURL(language string, cfg ParserConfig) string {
 	baseURL := cfg.GrammarURL
 	if baseURL == "" {
-		baseURL = "https://github.com/cristian-guerrero/go-indexing-mcp/releases/download/grammars-v1"
+		tag := "grammars-v1"
+		if runtime.GOOS == "linux" {
+			tag = "grammars-linux-v1"
+		}
+		baseURL = fmt.Sprintf("https://github.com/cristian-guerrero/go-indexing-mcp/releases/download/%s", tag)
 	}
 	return fmt.Sprintf("%s/%s", baseURL, grammarFileName(language))
 }

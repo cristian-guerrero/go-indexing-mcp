@@ -35,13 +35,13 @@ GRAMMARS=(
   "javascript:tree-sitter/tree-sitter-javascript:v0.23.1:src:yes"
   "typescript:tree-sitter/tree-sitter-typescript:v0.23.2:typescript/src:yes"
   "tsx:tree-sitter/tree-sitter-typescript:v0.23.2:tsx/src:yes"
-  "c:tree-sitter/tree-sitter-c:v0.24.2:src:yes"
+  "c:tree-sitter/tree-sitter-c:v0.23.6:src:yes"
   "cpp:tree-sitter/tree-sitter-cpp:v0.23.4:src:yes"
   "html:tree-sitter/tree-sitter-html:v0.23.2:src:yes"
-  "php:tree-sitter/tree-sitter-php:v0.24.2:php/src:yes:common"
-  "css:tree-sitter/tree-sitter-css:v0.25.0:src:yes"
-  "rust:tree-sitter/tree-sitter-rust:v0.24.2:src:yes"
-  "json:tree-sitter/tree-sitter-json:v0.24.8:src:no"
+  "php:tree-sitter/tree-sitter-php:v0.23.12:php/src:yes:common"
+  "css:tree-sitter/tree-sitter-css:v0.23.2:src:yes"
+  "rust:tree-sitter/tree-sitter-rust:v0.23.3:src:yes"
+  "json:tree-sitter/tree-sitter-json:v0.23.0:src:no"
   "zig:tree-sitter-grammars/tree-sitter-zig:v1.1.2:src:no"
 )
 

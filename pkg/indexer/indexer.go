@@ -137,7 +137,7 @@ func (idx *Indexer) IndexAll() error {
 		idx.mu.Unlock()
 	}()
 
-	slog.Info("starting full index")
+	slog.Info("starting index")
 
 	files, err := idx.Walker.Walk()
 	if err != nil {

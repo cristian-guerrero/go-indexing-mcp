@@ -109,9 +109,9 @@ func (m *MCPServer) indexOnStartup() {
 		m.currentWorktree = worktree
 		m.indexer.SetExpectedBranch(branch, worktree)
 
-		// Try seeding if the current branch has no index yet (first time visit)
+		// Try seeding if the current branch has no index or was interrupted
 		startupStats := m.indexer.GetStats()
-		if startupStats.TotalChunks == 0 {
+		if startupStats.TotalChunks == 0 || m.indexer.Storage.GetCommitSHA() == "" {
 			if m.seedBranchFrom(branch, worktree) {
 				slog.Info("startup: branch seeded from another branch, will use incremental index")
 			}
@@ -179,7 +179,7 @@ func (m *MCPServer) indexOnStartup() {
 		lastSHA := m.indexer.Storage.GetCommitSHA()
 
 		if lastSHA == "" {
-			slog.Info("interrupted index detected, resuming partial index")
+			slog.Info("partial index found, filling remaining gaps")
 			if err := m.ensureLlama(); err != nil {
 				slog.Error("llama not available for startup reindex", "error", err)
 				return
@@ -291,12 +291,17 @@ type branchSource struct {
 }
 
 // findBestSource looks for the best branch to seed from when the target
-// branch has no existing index. Priority: main → currentBranch → largest index.
+// branch has no existing index or its index is incomplete. Priority:
+// main → other complete branches → largest index. Skips the target branch
+// itself (seeding from the same branch is a no-op).
 // Returns nil if no suitable source is found.
-func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker, targetBranch string) *branchSource {
+func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker, targetBranch, targetWorktree string) *branchSource {
 	var candidates []branchSource
 
 	tryBranch := func(branch, worktree string) {
+		if branch == targetBranch && worktree == targetWorktree {
+			return
+		}
 		gobPath := st.GobPath(branch, worktree)
 		if _, err := os.Stat(gobPath); err != nil {
 			return
@@ -337,11 +342,12 @@ func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		return nil
 	}
 
-	// Pick the candidate with the most records (tie-break: main first)
+	// Pick the candidate with the most records; prefer complete sources on ties
 	best := &candidates[0]
 	for i := 1; i < len(candidates); i++ {
-		if candidates[i].records > best.records {
-			best = &candidates[i]
+		ci, bi := &candidates[i], best
+		if ci.records > bi.records || (ci.records == bi.records && ci.hasCommitSHA && !bi.hasCommitSHA) {
+			best = ci
 		}
 	}
 	slog.Info("branch seeding: selected source",
@@ -381,6 +387,12 @@ func execGit(dir string, args ...string) (string, error) {
 // branches need re-indexing. Returns true if seeding was performed and
 // the storage/graph have been switched to the target branch.
 //
+// Seeding applies in two cases:
+//  1. The target gob doesn't exist yet (first visit to this branch).
+//  2. The target gob exists but is incomplete (commitSHA == ""), and the
+//     source branch has more records — allowing the partial index to be
+//     upgraded instead of starting from scratch.
+//
 // After seeding: target gob contains all source records minus files that
 // differ between merge-base and target HEAD, and commitSHA is set to the
 // merge-base so IndexChanged correctly diffs only changed files.
@@ -389,13 +401,32 @@ func execGit(dir string, args ...string) (string, error) {
 func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker, targetBranch, targetWorktree string) bool {
 	targetGob := st.GobPath(targetBranch, targetWorktree)
 
-	// Only seed if the target gob doesn't exist yet
-	if _, err := os.Stat(targetGob); err == nil {
+	// Check target gob state
+	targetSize := 0
+	if data := storage.LoadGob(targetGob); data != nil {
+		if data.CommitSHA != "" {
+			return false // already complete
+		}
+		targetSize = len(data.Records) // incomplete — may still benefit from seeding
+	}
+
+	source := findBestSource(st, gq, w, targetBranch, targetWorktree)
+	if source == nil {
 		return false
 	}
 
-	source := findBestSource(st, gq, w, targetBranch)
-	if source == nil {
+	// Don't seed from the same branch (would be a no-op)
+	if source.branch == targetBranch && source.worktree == targetWorktree {
+		slog.Debug("branch seeding: only available source is the target itself, skipping",
+			"branch", targetBranch)
+		return false
+	}
+
+	// If target has a partial index, only seed if source is strictly better
+	if targetSize > 0 && source.records <= targetSize {
+		slog.Info("branch seeding: source not better than partial target, skipping",
+			"source", source.branch, "source_records", source.records,
+			"target_records", targetSize)
 		return false
 	}
 
@@ -743,9 +774,9 @@ func (m *MCPServer) watchChecker() {
 			m.currentWorktree = worktree
 			m.indexer.SetExpectedBranch(branch, worktree)
 
-			// Refresh stats after switch and try seeding if the new branch is empty
+			// Refresh stats after switch and try seeding if empty or incomplete
 			stats = m.indexer.GetStats()
-			if stats.TotalChunks == 0 {
+			if stats.TotalChunks == 0 || m.indexer.Storage.GetCommitSHA() == "" {
 				if m.seedBranchFrom(branch, worktree) {
 					stats = m.indexer.GetStats()
 				}
@@ -818,7 +849,7 @@ func (m *MCPServer) watchChecker() {
 		headSHA := m.indexer.Walker.GetHeadSHA()
 
 		if lastSHA == "" {
-			slog.Info("watch: interrupted index detected, resuming partial index")
+			slog.Info("watch: partial index found, filling remaining gaps")
 			if err := m.ensureLlama(); err != nil {
 				slog.Warn("watch: llama not available for reindex", "error", err)
 				continue

@@ -394,11 +394,11 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 
 		stats := idx.GetStats()
 
-		// Try seeding from another branch if this branch has no index yet
-		if stats.TotalChunks == 0 {
+		// Try seeding if empty or incomplete (interrupted mid-index)
+		if stats.TotalChunks == 0 || st.GetCommitSHA() == "" {
 			if mcp.SeedBranchFrom(st, gq, w, branch, worktree) {
 				stats = idx.GetStats()
-				slog.Info("branch seeded from another branch, skipping full index")
+				slog.Info("branch seeded from another branch")
 			}
 		}
 
@@ -416,7 +416,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 		} else if needsLlama {
 			lastSHA := st.GetCommitSHA()
 			if lastSHA == "" {
-				fmt.Fprintln(pw, "Index has no commit SHA, performing full reindex...")
+				fmt.Fprintln(pw, "Partial index found, filling remaining gaps...")
 				indexErr = idx.IndexAll()
 			} else {
 				headSHA := w.GetHeadSHA()

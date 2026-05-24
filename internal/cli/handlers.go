@@ -95,6 +95,11 @@ func RunGenerate(rootDir string) int {
 		}
 	}
 
+	// Skip tree-sitter AST for chunking during indexing (Option A).
+	// Regex structural + sliding window is fast enough for chunk quality,
+	// while tree-sitter chunking creates CPU-bound gaps where llama-server sits idle.
+	ch.SkipAST = true
+
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize, cfg.Embedding.QueryPrefix)
 	dbDir := config.StoragePath(rootPath)
 

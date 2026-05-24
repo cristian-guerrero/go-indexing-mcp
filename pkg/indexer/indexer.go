@@ -116,12 +116,16 @@ func (idx *Indexer) Cancel() {
 	idx.cancelReq.Store(true)
 }
 
-// IndexAll performs a full index: walks all files, then chunks, embeds, and stores
-// each file one at a time. Skips files already in the index with matching hashes
-// (resume support). Graph extraction (tree-sitter) is deferred to PendingGraph for
-// later processing by RunGraphExtraction(), so vector indexing is never blocked by
-// slow tree-sitter parsing. Periodically saves, clears in-memory records, and
-// restarts llama-server to free memory when MemoryFreeInterval > 0.
+// IndexAll performs a full index: walks all files, chunks, embeds, and stores.
+// Skips files already in the index with matching hashes (resume support). Graph
+// extraction (tree-sitter) is deferred to PendingGraph for later processing by
+// RunGraphExtraction(), so vector indexing is never blocked by slow tree-sitter
+// parsing. Uses SkipAST mode (regex structural chunking, no tree-sitter) during
+// the hot path to avoid CPU-bound gaps that stall llama-server. Cross-file
+// embedding batching accumulates up to 32 chunks before sending to llama-server,
+// reducing per-file HTTP overhead and keeping the embedding endpoint busy longer.
+// Periodically saves, clears in-memory records, and restarts llama-server to
+// free memory when MemoryFreeInterval > 0.
 func (idx *Indexer) IndexAll() error {
 	idx.mu.Lock()
 	if idx.Running {
@@ -165,6 +169,127 @@ func (idx *Indexer) IndexAll() error {
 	// windowFiles tracks files indexed since the last branch check, so we can
 	// discard them if the branch changes mid-window.
 	var windowFiles []walker.FileInfo
+
+	// Option A: skip tree-sitter AST during indexing hot path.
+	// Use regex structural + sliding window for chunking instead.
+	// Tree-sitter is still used for graph extraction (RunGraphExtraction).
+	idx.Chunker.SkipAST = true
+
+	// Option C: cross-file embedding batching.
+	// Accumulate chunks from multiple files before sending to llama-server,
+	// reducing per-file HTTP overhead and keeping llama-server busy longer.
+	const crossFileBatchChunks = 32
+
+	type pendingFile struct {
+		fi     walker.FileInfo
+		chunks []chunker.Chunk
+	}
+
+	var batchChunks []chunker.Chunk
+	var batchFiles []pendingFile
+
+	// saveWg tracks background periodic saves. SaveSnapshot copies records
+	// under the lock (fast, ~3ms) then serializes WITHOUT holding the lock,
+	// so the main goroutine never blocks on serialization.
+	var saveWg sync.WaitGroup
+	var saveInFlight atomic.Bool
+
+	flushBatch := func() error {
+		if len(batchChunks) == 0 {
+			return nil
+		}
+
+		embeddings, err := idx.Embedder.EmbedChunks(batchChunks)
+		if err != nil {
+			if idx.Llama != nil && strings.Contains(err.Error(), "connection refused") {
+				slog.Warn("llama-server unresponsive, restarting and retrying batch",
+					"chunks", len(batchChunks))
+				if rerr := idx.restartLlama(); rerr != nil {
+					slog.Warn("restart after embed failure", "error", rerr)
+				}
+				embeddings, err = idx.Embedder.EmbedChunks(batchChunks)
+			}
+			if err != nil {
+				return fmt.Errorf("embed batch of %d chunks: %w", len(batchChunks), err)
+			}
+		}
+
+		var wantsSave bool
+		for _, pf := range batchFiles {
+			fileEmb := make(map[string][]float32, len(pf.chunks))
+			for _, ch := range pf.chunks {
+				if v, ok := embeddings[ch.ID]; ok {
+					fileEmb[ch.ID] = v
+				}
+			}
+
+			idx.Storage.DeleteChunksByPath(pf.fi.Path)
+			if err := idx.Storage.UpsertChunks(pf.chunks, fileEmb); err != nil {
+				return fmt.Errorf("store %s: %w", pf.fi.RelPath, err)
+			}
+			windowFiles = append(windowFiles, pf.fi)
+			totalChunks += len(pf.chunks)
+			indexedFiles++
+			indexedSinceFree++
+
+			if indexedFiles%10 == 0 {
+				wantsSave = true
+			}
+
+			if idx.MemoryFreeInterval > 0 && indexedSinceFree >= idx.MemoryFreeInterval {
+				slog.Info("memory free threshold reached, freeing memory",
+					"files_indexed_so_far", indexedFiles, "interval", idx.MemoryFreeInterval)
+				if err := idx.Storage.SaveAndFree(); err != nil {
+					slog.Warn("save and free memory", "error", err)
+				}
+				if idx.Llama != nil {
+					if err := idx.restartLlama(); err != nil {
+						slog.Warn("restart llama-server after memory free", "error", err)
+					}
+				}
+				indexedSinceFree = 0
+				slog.Info("memory freed, continuing indexing", "files_indexed_so_far", indexedFiles)
+			}
+
+			if idx.MaxMemoryMB > 0 && idx.Llama != nil {
+				usage, mErr := idx.Llama.MemoryUsageMB()
+				if mErr != nil {
+					slog.Debug("check memory threshold", "error", mErr)
+				} else if usage >= uint64(idx.MaxMemoryMB) {
+					slog.Warn("llama-server memory threshold exceeded, saving and restarting",
+						"usage_mb", usage, "threshold_mb", idx.MaxMemoryMB)
+					if err := idx.Storage.SaveAndFree(); err != nil {
+						slog.Warn("save and free before memory restart", "error", err)
+					}
+					if err := idx.restartLlama(); err != nil {
+						slog.Warn("restart after memory threshold", "error", err)
+					}
+				}
+			}
+		}
+
+		// Start async periodic save in background. SaveSnapshot copies
+		// records under the lock (~3ms) then serializes WITHOUT holding the
+		// lock, so the main goroutine never blocks. The serialization runs
+		// during the next batch's ChunkFile + EmbedChunks (HTTP wait).
+		if wantsSave && saveInFlight.CompareAndSwap(false, true) {
+			f := indexedFiles
+			saveWg.Add(1)
+			go func() {
+				defer saveWg.Done()
+				defer saveInFlight.Store(false)
+				if err := idx.Storage.SaveSnapshot(); err != nil {
+					slog.Warn("async periodic save", "error", err)
+				} else {
+					slog.Info("index progress saved", "files", f)
+				}
+			}()
+		}
+
+		batchChunks = batchChunks[:0]
+		batchFiles = batchFiles[:0]
+		return nil
+	}
 
 	for _, fi := range files {
 		processedFiles++
@@ -248,72 +373,23 @@ func (idx *Indexer) IndexAll() error {
 			slog.Warn("slow chunk", "file", fi.RelPath, "lang", fi.Language, "ms", chunkDur.Milliseconds())
 		}
 
-		embeddings, err := idx.Embedder.EmbedChunks(chunks)
-		if err != nil {
-			if idx.Llama != nil && strings.Contains(err.Error(), "connection refused") {
-				slog.Warn("llama-server unresponsive, restarting and retrying", "file", fi.RelPath, "error", err)
-				if rerr := idx.restartLlama(); rerr != nil {
-					slog.Warn("restart after embed failure", "error", rerr)
-				}
-				embeddings, err = idx.Embedder.EmbedChunks(chunks)
-			}
-			if err != nil {
-				return fmt.Errorf("embed %s: %w", fi.RelPath, err)
-			}
-		}
+		batchChunks = append(batchChunks, chunks...)
+		batchFiles = append(batchFiles, pendingFile{fi: fi, chunks: chunks})
 
-		idx.Storage.DeleteChunksByPath(fi.Path)
-
-		if err := idx.Storage.UpsertChunks(chunks, embeddings); err != nil {
-			return fmt.Errorf("store %s: %w", fi.RelPath, err)
-		}
-		windowFiles = append(windowFiles, fi)
-		totalChunks += len(chunks)
-		indexedFiles++
-		indexedSinceFree++
-
-		if indexedFiles%10 == 0 {
-			if err := idx.Storage.Save(); err != nil {
-				slog.Warn("periodic save", "error", err)
-			} else {
-				slog.Info("index progress saved", "files", indexedFiles, "chunks", totalChunks)
-			}
-		}
-
-		if idx.MemoryFreeInterval > 0 && indexedSinceFree >= idx.MemoryFreeInterval {
-			slog.Info("memory free threshold reached, freeing memory",
-				"files_indexed_so_far", indexedFiles, "interval", idx.MemoryFreeInterval)
-
-			if err := idx.Storage.SaveAndFree(); err != nil {
-				slog.Warn("save and free memory", "error", err)
-			}
-
-			if idx.Llama != nil {
-				if err := idx.restartLlama(); err != nil {
-					slog.Warn("restart llama-server after memory free", "error", err)
-				}
-			}
-
-			indexedSinceFree = 0
-			slog.Info("memory freed, continuing indexing", "files_indexed_so_far", indexedFiles)
-		}
-
-		if idx.MaxMemoryMB > 0 && idx.Llama != nil {
-			usage, err := idx.Llama.MemoryUsageMB()
-			if err != nil {
-				slog.Debug("check memory threshold", "error", err)
-			} else if usage >= uint64(idx.MaxMemoryMB) {
-				slog.Warn("llama-server memory threshold exceeded, saving and restarting",
-					"usage_mb", usage, "threshold_mb", idx.MaxMemoryMB)
-				if err := idx.Storage.SaveAndFree(); err != nil {
-					slog.Warn("save and free before memory restart", "error", err)
-				}
-				if err := idx.restartLlama(); err != nil {
-					slog.Warn("restart after memory threshold", "error", err)
-				}
+		if len(batchChunks) >= crossFileBatchChunks {
+			if err := flushBatch(); err != nil {
+				return err
 			}
 		}
 	}
+
+	// Flush any remaining batch
+	if err := flushBatch(); err != nil {
+		return err
+	}
+
+	// Wait for all background saves before the final save (with trigrams)
+	saveWg.Wait()
 
 	idx.mu.Lock()
 	idx.Stats.TotalChunks = totalChunks
@@ -381,6 +457,10 @@ func (idx *Indexer) IndexChanged() error {
 	}
 
 	slog.Info("incremental index", "files", len(files), "since", sinceSHA)
+
+	// Skip AST (tree-sitter) during chunking — regex structural is fast enough
+	// and avoids CPU pauses that stall llama-server between embedding batches.
+	idx.Chunker.SkipAST = true
 
 	chunksMap, err := idx.Chunker.ChunkFiles(files)
 	if err != nil {

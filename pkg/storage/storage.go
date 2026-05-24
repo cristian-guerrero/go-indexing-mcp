@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage/simd"
@@ -294,7 +295,7 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	defer s.mu.Unlock()
 
 	if s.dirty {
-		if err := s.saveLocked(); err != nil {
+		if err := s.saveLocked(false); err != nil {
 			return fmt.Errorf("save current branch: %w", err)
 		}
 	}
@@ -323,6 +324,101 @@ func (s *Storage) Close() error {
 // Save flushes the current state to disk immediately.
 func (s *Storage) Save() error {
 	return s.save()
+}
+
+// SavePeriodic is like Save but skips trigram persistence.
+// Trigrams are expensive to rebuild (full content scan) and only needed by grep
+// queries, which never run during active indexing. Periodic saves during
+// indexing skip trigrams to avoid multi-second pauses. The final save after
+// indexing persists trigrams so grep works on reload.
+func (s *Storage) SavePeriodic() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked(true)
+}
+
+// SaveSnapshot copies all records under the lock (fast, ~3ms for 10k records),
+// releases the lock immediately, then serializes the copy to disk in the
+// background WITHOUT holding the lock. This means the main indexing goroutine
+// never blocks on serialization (gob encoding 30MB+ of embeddings).
+//
+// Safe because Go strings are immutable and []float32 embeddings are never
+// modified in place — UpsertChunks always creates new records. The on-disk
+// state is at most one batch behind memory, which is fine for crash recovery.
+func (s *Storage) SaveSnapshot() error {
+	s.mu.Lock()
+
+	if !s.dirty && !s.recordsPartial {
+		s.mu.Unlock()
+		return nil
+	}
+
+	var recordsToWrite []ChunkRecord
+	sha := s.commitSHA
+
+	if s.recordsPartial {
+		diskData := s.readDiskStateLocked()
+		merged := make(map[string]ChunkRecord, len(diskData.Records)+len(s.records))
+		for _, rec := range diskData.Records {
+			merged[rec.ID] = rec
+		}
+		for _, rec := range s.records {
+			merged[rec.ID] = rec
+		}
+		recordsToWrite = make([]ChunkRecord, 0, len(merged))
+		for _, rec := range merged {
+			recordsToWrite = append(recordsToWrite, rec)
+		}
+		if sha == "" {
+			sha = diskData.CommitSHA
+		}
+	} else {
+		recordsToWrite = make([]ChunkRecord, len(s.records))
+		copy(recordsToWrite, s.records)
+	}
+	ihash := s.ignoredFilesHash
+
+	s.dirty = false
+	s.mu.Unlock()
+
+	// Serialize WITHOUT holding the lock (this is the expensive part)
+	data := StorageData{
+		Version:          StorageFormatVersion,
+		Records:          recordsToWrite,
+		CommitSHA:        sha,
+		Trigrams:         nil,
+		IgnoredFilesHash: ihash,
+	}
+
+	tmpPath := s.path + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+
+	enc := gob.NewEncoder(f)
+	if err := enc.Encode(data); err != nil {
+		f.Close()
+		os.Remove(tmpPath)
+		return fmt.Errorf("encode: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	// Retry rename on Windows — file handles can transiently hold the lock
+	// after closing, causing ERROR_ACCESS_DENIED on rename.
+	for retries := 0; retries < 3; retries++ {
+		if err := os.Rename(tmpPath, s.path); err != nil {
+			if retries < 2 {
+				time.Sleep(time.Duration(10*(retries+1)) * time.Millisecond)
+				continue
+			}
+			return fmt.Errorf("rename after %d retries: %w", retries, err)
+		}
+		break
+	}
+	return nil
 }
 
 // NeedsReindex returns true when the on-disk format version differs from the
@@ -494,14 +590,16 @@ func (s *Storage) load() error {
 func (s *Storage) save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.saveLocked()
+	return s.saveLocked(false)
 }
 
 // saveLocked writes all records to the single gob file atomically.
 // When recordsPartial is true (after SaveAndFree), it reads the existing
 // gob from disk and merges with in-memory records to avoid data loss.
+// When skipTrigrams is true, the trigram index is not rebuilt/persisted
+// (safe during indexing since grep queries never run mid-index).
 // Caller must hold s.mu write lock.
-func (s *Storage) saveLocked() error {
+func (s *Storage) saveLocked(skipTrigrams bool) error {
 	if !s.dirty {
 		return nil
 	}
@@ -531,20 +629,22 @@ func (s *Storage) saveLocked() error {
 		recordsToWrite = s.records
 	}
 
-	// Build and persist trigrams if not already built
-	if s.trigrams == nil {
-		s.trigrams = buildTrigramIndex(recordsToWrite)
-	}
-	tgData := TrigramData{
-		Index:    s.trigrams.index,
-		DocCount: len(recordsToWrite),
+	var trigramData *TrigramData
+	if !skipTrigrams {
+		if s.trigrams == nil {
+			s.trigrams = buildTrigramIndex(recordsToWrite)
+		}
+		trigramData = &TrigramData{
+			Index:    s.trigrams.index,
+			DocCount: len(recordsToWrite),
+		}
 	}
 
 	data := StorageData{
 		Version:          StorageFormatVersion,
 		Records:          recordsToWrite,
 		CommitSHA:        commitSHA,
-		Trigrams:         &tgData,
+		Trigrams:         trigramData,
 		IgnoredFilesHash: s.ignoredFilesHash,
 	}
 
@@ -599,7 +699,7 @@ func (s *Storage) SaveAndFree() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveLocked(false); err != nil {
 		return err
 	}
 

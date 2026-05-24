@@ -32,13 +32,13 @@
 - `pkg/embedder/` — HTTP client to llama.cpp `/v1/embeddings`. Uses connection pooling (`MaxIdleConns`) and buffer pool for reduced allocations
 - `pkg/storage/` — gob persistence + normalized dot product + branch-isolated indices + BM25 inverted index (`bm25.go`) + lightweight `fileIndex` for memory-free resume. Single `vectors.gob` (or `vectors-{branch}.gob`) per branch. `SaveAndFree()` writes all records atomically, then clears in-memory state (records, byID, byPath, BM25) but keeps `fileIndex` so `IsFileIndexed()` still works. Vectors are L2-normalized at store time so cosine similarity reduces to dot product. **Format versioning**: `StorageData.Version` detects breaking changes; `NeedsReindex()` / `ClearAll()` auto-triggers full reindex on version mismatch.
 - `pkg/storage/simd/` — AVX2+FMA-accelerated dot product (amd64), scalar fallback (all platforms). ~18x speedup for 768-dim vectors
-- `pkg/indexer/` — orchestrator: walk → chunk → embed → store. `Llama` manager and `MemoryFreeInterval` control periodic save+clear+restart during large indexing (every N files, saves merged gob, clears Go memory, restarts llama-server). `MaxMemoryMB` triggers the same process when llama-server RSS exceeds a threshold (configurable). `IndexAll()` processes files one at a time (no upfront bulk chunking) for bounded memory. Optionally extracts graph symbols per file (extractor + graph)
-- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (build tag onnx), in-memory KnowledgeGraph with indexed lookups, file-based JSON persistence (1 JSON file per source file, atomic writes via tmp+rename), branch-isolated indexes (switch via `SwitchBranch`), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_imports, symbol_info). Supported languages: go, python, typescript, javascript, tsx, c, cpp, php, rust, zig. No external DB dependency. `HasOldFormat()` auto-detects old BadgerDB databases and drops them on startup. **Format versioning**: individual `version.json` per graph directory with `GraphFormatVersion`; `NeedsReindex()`/`Clear()` auto-trigger re-extraction on version mismatch
+- `pkg/indexer/` — orchestrator: walk → chunk → embed → store. `Llama` manager and `MemoryFreeInterval` control periodic save+clear+restart during large indexing (every N files, saves merged gob, clears Go memory, restarts llama-server). `MaxMemoryMB` triggers the same process when llama-server RSS exceeds a threshold (configurable). `IndexAll()` processes files one at a time (no upfront bulk chunking) for bounded memory. Graph extraction (tree-sitter) is deferred to `PendingGraph` and processed later by `RunGraphExtraction()` — called explicitly from startup, watch, and reindex, but NOT from `search_code`, `grep_code`, `--query`, or `--grep`, so those respond fast without waiting for tree-sitter.
+- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (build tag onnx), in-memory KnowledgeGraph with indexed lookups, file-based JSON persistence (1 JSON file per source file, atomic writes via tmp+rename), branch-isolated indexes (switch via `SwitchBranch`), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_imports, symbol_info). Supported languages: go, python, typescript, javascript, tsx, c, cpp, php, rust, zig. No external DB dependency. `HasOldFormat()` auto-detects old BadgerDB databases and drops them on startup. **Format versioning**: individual `version.json` per graph directory with `GraphFormatVersion`; `NeedsReindex()`/`Clear()` auto-trigger re-extraction on version mismatch. **Format versioning**: individual `version.json` per graph directory with `GraphFormatVersion`; `NeedsReindex()`/`Clear()` auto-trigger re-extraction on version mismatch
 - `pkg/mcp/` — MCP server with tools: search_code, grep_code, find_imports, symbol_info
 
 ## search_code behavior
 
-`search_code` (hybrid mode) keeps the index auto-updated:
+`search_code` (hybrid mode) keeps the index auto-updated. Graph extraction is **not** triggered during search/query/grep — only during initial index, watch ticks, and explicit reindex:
 
 1. **On MCP startup** (git repo detected) → auto-indexes if empty or outdated
 2. **Format version mismatch** → clears DB and triggers `IndexAll()` (reindex on breaking changes)
@@ -56,7 +56,7 @@
 
 `--symbol-info` and `--find-imports` now auto-extract the knowledge graph from source files when the graph is empty (fresh clone or new branch). This uses only the tree-sitter extractor — no llama-server needed. Works when the binary is built with `-tags onnx`.
 
-If the graph is non-empty but stale, use `--generate` or `--query` to trigger a full reindex with graph extraction.
+If the graph is non-empty but stale, use `--generate` or `--mcp` (watch tick) to trigger a full reindex with graph extraction. Note that `--query` and `--grep` do **not** trigger graph extraction — they search the vector index only.
 
 ### MCP tools
 

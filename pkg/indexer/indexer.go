@@ -52,6 +52,7 @@ type Indexer struct {
 	Graph              *graph.GraphQuery  // knowledge graph (nil if not available)
 	Extractor          *graph.Extractor   // AST extractor (nil without onnx tag)
 	IgnorePatterns     []string           // active ignore patterns for change detection
+	PendingGraph       []walker.FileInfo  // files queued for tree-sitter extraction (Phase 2)
 	mu                 sync.Mutex
 	Running            bool
 	Stats              IndexStats
@@ -117,9 +118,10 @@ func (idx *Indexer) Cancel() {
 
 // IndexAll performs a full index: walks all files, then chunks, embeds, and stores
 // each file one at a time. Skips files already in the index with matching hashes
-// (resume support). Graph extraction (tree-sitter) is deferred to a second pass so
-// vector indexing is not blocked by slow parsing. Periodically saves, clears
-// in-memory records, and restarts llama-server to free memory when MemoryFreeInterval > 0.
+// (resume support). Graph extraction (tree-sitter) is deferred to PendingGraph for
+// later processing by RunGraphExtraction(), so vector indexing is never blocked by
+// slow tree-sitter parsing. Periodically saves, clears in-memory records, and
+// restarts llama-server to free memory when MemoryFreeInterval > 0.
 func (idx *Indexer) IndexAll() error {
 	idx.mu.Lock()
 	if idx.Running {
@@ -319,52 +321,7 @@ func (idx *Indexer) IndexAll() error {
 	idx.Stats.LastIndexed = "just now"
 	idx.mu.Unlock()
 
-	// ---- Phase 2: Graph extraction (tree-sitter) — deferred, non-blocking ----
-	if len(pendingGraph) > 0 && idx.Extractor != nil && idx.Graph != nil {
-		slog.Info("graph: extracting symbols for pending files", "count", len(pendingGraph))
-		for idx2, fi := range pendingGraph {
-			if idx.cancelReq.Load() {
-				idx.cancelReq.Store(false)
-				slog.Info("graph: extraction cancelled")
-				return ErrBranchChanged
-			}
-
-			// Branch check every 100 files (git is expensive on Windows)
-			if idx2%20 == 0 {
-				v := idx.expected.Load()
-				if v != nil {
-					info := v.(*expectedBranchInfo)
-					if info.branch != "" {
-						branch := idx.Walker.GetBranch()
-						worktree := idx.Walker.GetWorktreeName()
-						if branch != info.branch || worktree != info.worktree {
-							slog.Info("graph: extraction cancelled: branch changed")
-							return ErrBranchChanged
-						}
-					}
-				}
-			}
-
-			content, rErr := os.ReadFile(fi.Path)
-			if rErr != nil {
-				slog.Warn("graph: read file", "file", fi.RelPath, "error", rErr)
-				continue
-			}
-			symbols, refs, xErr := idx.Extractor.Extract(
-				string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
-			)
-			if xErr != nil {
-				slog.Warn("graph: extract", "file", fi.RelPath, "lang", fi.Language, "error", xErr)
-			} else if len(symbols) == 0 {
-				slog.Debug("graph: no symbols", "file", fi.RelPath, "lang", fi.Language)
-			} else {
-				if err := idx.Graph.StoreFile(fi.RelPath, symbols, refs); err != nil {
-					slog.Warn("graph: store", "file", fi.RelPath, "error", err)
-				}
-			}
-		}
-		slog.Info("graph: extraction complete", "files", len(pendingGraph))
-	}
+	idx.PendingGraph = pendingGraph
 
 	if indexedFiles > 0 {
 		headSHA := idx.Walker.GetHeadSHA()
@@ -506,36 +463,7 @@ func (idx *Indexer) IndexChanged() error {
 		slog.Info("re-indexed changed file", "file", fi.RelPath, "chunks", len(chunks))
 	}
 
-	// ---- Phase 2: Graph extraction (tree-sitter) — deferred, non-blocking ----
-	if len(pendingGraph) > 0 && idx.Extractor != nil && idx.Graph != nil {
-		slog.Info("graph: extracting symbols for pending files", "count", len(pendingGraph))
-		for _, fi := range pendingGraph {
-			if idx.cancelReq.Load() {
-				idx.cancelReq.Store(false)
-				slog.Info("graph: extraction cancelled")
-				return ErrBranchChanged
-			}
-
-			content, rErr := os.ReadFile(fi.Path)
-			if rErr != nil {
-				slog.Warn("graph: read file", "file", fi.RelPath, "error", rErr)
-				continue
-			}
-			symbols, refs, xErr := idx.Extractor.Extract(
-				string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
-			)
-			if xErr != nil {
-				slog.Warn("graph: extract", "file", fi.RelPath, "lang", fi.Language, "error", xErr)
-			} else if len(symbols) == 0 {
-				slog.Debug("graph: no symbols", "file", fi.RelPath, "lang", fi.Language)
-			} else {
-				if err := idx.Graph.StoreFile(fi.RelPath, symbols, refs); err != nil {
-					slog.Warn("graph: store", "file", fi.RelPath, "error", err)
-				}
-			}
-		}
-		slog.Info("graph: extraction complete", "files", len(pendingGraph))
-	}
+	idx.PendingGraph = pendingGraph
 
 	headSHA := idx.Walker.GetHeadSHA()
 	if headSHA != "" {
@@ -741,6 +669,45 @@ func matchesPath(relPath, filter string) bool {
 		return false
 	}
 	return strings.EqualFold(relPath[:len(filter)], filter)
+}
+
+// RunGraphExtraction processes files queued by IndexAll or IndexChanged for
+// tree-sitter symbol extraction (Phase 2). This is called explicitly by index
+// orchestration paths (startup, watch, reindex) but NOT by search/query/grep,
+// so those respond fast without waiting for slow tree-sitter parsing.
+func (idx *Indexer) RunGraphExtraction() {
+	pendingGraph := idx.PendingGraph
+	idx.PendingGraph = nil
+	if len(pendingGraph) == 0 || idx.Extractor == nil || idx.Graph == nil {
+		return
+	}
+	slog.Info("graph: extracting symbols for pending files", "count", len(pendingGraph))
+	for _, fi := range pendingGraph {
+		if idx.cancelReq.Load() {
+			idx.cancelReq.Store(false)
+			slog.Info("graph: extraction cancelled")
+			return
+		}
+
+		content, rErr := os.ReadFile(fi.Path)
+		if rErr != nil {
+			slog.Warn("graph: read file", "file", fi.RelPath, "error", rErr)
+			continue
+		}
+		symbols, refs, xErr := idx.Extractor.Extract(
+			string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
+		)
+		if xErr != nil {
+			slog.Warn("graph: extract", "file", fi.RelPath, "lang", fi.Language, "error", xErr)
+		} else if len(symbols) == 0 {
+			slog.Debug("graph: no symbols", "file", fi.RelPath, "lang", fi.Language)
+		} else {
+			if err := idx.Graph.StoreFile(fi.RelPath, symbols, refs); err != nil {
+				slog.Warn("graph: store", "file", fi.RelPath, "error", err)
+			}
+		}
+	}
+	slog.Info("graph: extraction complete", "files", len(pendingGraph))
 }
 
 // restartLlama attempts to force-restart llama-server to free its memory.

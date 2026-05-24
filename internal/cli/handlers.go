@@ -452,22 +452,6 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 			}
 		}
 
-		// Check if graph is empty but index has data — populate it
-		if idx.Extractor != nil && idx.Graph != nil {
-			symCount, _ := idx.Graph.Cache.Stats()
-			if symCount == 0 && stats.TotalChunks > 0 {
-				fmt.Fprintln(pw, "Knowledge graph is empty, indexing to populate graph...")
-				if err := idx.IndexAll(); err != nil {
-					if errors.Is(err, indexer.ErrBranchChanged) {
-						fmt.Fprintln(pw, "Branch changed during indexing, restarting on new branch...")
-						continue
-					}
-					slog.Error("full index for graph population", "error", err)
-					return 1
-				}
-			}
-		}
-
 		if limit <= 0 || limit > 50 {
 			limit = 25
 		}

@@ -155,6 +155,7 @@ func (m *MCPServer) indexOnStartup() {
 				if indexErr != nil {
 					slog.Warn("startup graph population aborted", "error", indexErr)
 				}
+				m.indexer.RunGraphExtraction()
 				return
 			}
 		}
@@ -171,9 +172,10 @@ func (m *MCPServer) indexOnStartup() {
 				continue
 			}
 			if indexErr != nil {
-				slog.Warn("startup full index failed", "error", indexErr)
-			}
-			return
+					slog.Warn("startup full index failed", "error", indexErr)
+				}
+				m.indexer.RunGraphExtraction()
+				return
 		}
 
 		lastSHA := m.indexer.Storage.GetCommitSHA()
@@ -190,9 +192,10 @@ func (m *MCPServer) indexOnStartup() {
 				continue
 			}
 			if indexErr != nil {
-				slog.Warn("startup interrupted index failed", "error", indexErr)
-			}
-			return
+					slog.Warn("startup interrupted index failed", "error", indexErr)
+				}
+				m.indexer.RunGraphExtraction()
+				return
 		}
 
 		headSHA := m.indexer.Walker.GetHeadSHA()
@@ -239,10 +242,11 @@ func (m *MCPServer) indexOnStartup() {
 				continue
 			}
 			if indexErr != nil {
-				slog.Warn("startup reindex after ignore change failed", "error", indexErr)
-			}
+					slog.Warn("startup reindex after ignore change failed", "error", indexErr)
+				}
 		}
 
+		m.indexer.RunGraphExtraction()
 		return
 	}
 
@@ -576,8 +580,8 @@ func (m *MCPServer) runIndexAll() error {
 	return fmt.Errorf("full index failed after 3 attempts")
 }
 
-// runReindexAll clears both vector and graph databases, then runs a full index.
-// Used when a format version mismatch is detected.
+// runReindexAll clears both vector and graph databases, then runs a full index
+// with graph extraction. Used when a format version mismatch is detected.
 func (m *MCPServer) runReindexAll() {
 	if err := m.indexer.Storage.ClearAll(); err != nil {
 		slog.Error("clear storage for reindex", "error", err)
@@ -592,6 +596,7 @@ func (m *MCPServer) runReindexAll() {
 	if err := m.runIndexAll(); err != nil {
 		slog.Warn("reindex aborted", "error", err)
 	}
+	m.indexer.RunGraphExtraction()
 }
 
 // runIndexChanged calls IndexChanged with up to 3 retries on failure.
@@ -813,6 +818,7 @@ func (m *MCPServer) watchChecker() {
 			if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
 				slog.Warn("watch: full index aborted", "error", err)
 			}
+			m.indexer.RunGraphExtraction()
 			continue
 		}
 
@@ -829,6 +835,7 @@ func (m *MCPServer) watchChecker() {
 				if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
 					slog.Warn("watch: graph population index aborted", "error", err)
 				}
+				m.indexer.RunGraphExtraction()
 				continue
 			}
 		}
@@ -842,6 +849,7 @@ func (m *MCPServer) watchChecker() {
 			if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
 				slog.Warn("watch: full index aborted", "error", err)
 			}
+			m.indexer.RunGraphExtraction()
 			continue
 		}
 
@@ -857,6 +865,7 @@ func (m *MCPServer) watchChecker() {
 			if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
 				slog.Warn("watch: full index aborted", "error", err)
 			}
+			m.indexer.RunGraphExtraction()
 		} else if headSHA != "" && headSHA != lastSHA {
 			slog.Info("watch: new commits detected, indexing changes", "last", lastSHA, "head", headSHA)
 			if err := m.ensureLlama(); err != nil {
@@ -866,6 +875,7 @@ func (m *MCPServer) watchChecker() {
 			if err := m.retryOnBranchChange(m.runIndexChanged); err != nil {
 				slog.Warn("watch: incremental index aborted", "error", err)
 			}
+			m.indexer.RunGraphExtraction()
 		} else {
 			slog.Debug("watch: checking for uncommitted changes")
 			if err := m.ensureLlama(); err != nil {
@@ -876,6 +886,7 @@ func (m *MCPServer) watchChecker() {
 				if err := m.retryOnBranchChange(m.runIndexChanged); err != nil {
 					slog.Warn("watch: background index aborted", "error", err)
 				}
+				m.indexer.RunGraphExtraction()
 			}()
 		}
 	}

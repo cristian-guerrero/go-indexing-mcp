@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -67,6 +68,7 @@ func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int, watchEna
 
 // indexOnStartup checks the index state on MCP startup (git repos only):
 // empty → IndexAll, interrupted → IndexAll, new commits → IndexChanged, up to date → skip.
+// Retries up to 3 times if the branch changes during indexing.
 func (m *MCPServer) indexOnStartup() {
 	if m.indexer == nil || m.indexer.Embedder == nil {
 		return
@@ -80,73 +82,105 @@ func (m *MCPServer) indexOnStartup() {
 	}
 
 	slog.Info("git repository detected, checking index state on startup", "branch", branch, "worktree", worktree)
-	if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
-		slog.Warn("branch switch failed on startup", "error", err)
-	}
-	if m.indexer.Graph != nil {
-		if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
-			slog.Warn("graph: branch switch on startup", "error", err)
-		}
-	}
-	m.currentBranch = branch
-	m.currentWorktree = worktree
 
-	// Check for on-disk format version mismatch (breaking changes)
-	storageNeedsReindex := m.indexer.Storage.NeedsReindex()
-	var graphNeedsReindex bool
-	if m.indexer.Graph != nil {
-		graphNeedsReindex = m.indexer.Graph.NeedsReindex()
-	}
-	if storageNeedsReindex || graphNeedsReindex {
-		slog.Warn("on-disk format version mismatch detected, triggering full reindex",
-			"storage_needs_reindex", storageNeedsReindex,
-			"graph_needs_reindex", graphNeedsReindex)
-		if err := m.ensureLlama(); err != nil {
-			slog.Error("llama not available for reindex on version mismatch", "error", err)
+	for attempts := 0; attempts < 3; attempts++ {
+		// Re-detect branch each attempt (it may have changed)
+		branch = m.indexer.Walker.GetBranch()
+		worktree = m.indexer.Walker.GetWorktreeName()
+		if branch == "" {
+			slog.Debug("not a git repository, skipping startup index")
 			return
 		}
-		m.runReindexAll()
-		return
-	}
+		if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
+			slog.Warn("branch switch failed on startup", "error", err)
+		}
+		if m.indexer.Graph != nil {
+			if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
+				slog.Warn("graph: branch switch on startup", "error", err)
+			}
+		}
+		m.currentBranch = branch
+		m.currentWorktree = worktree
+		m.indexer.SetExpectedBranch(branch, worktree)
 
-	stats := m.indexer.GetStats()
-	// If the knowledge graph is empty but the vector index has data and an
-	// extractor is available (build with -tags onnx), force a full reindex to
-	// populate the graph. This handles the case where the binary was upgraded
-	// from a non-onnx build that indexed files without graph extraction.
-	if stats.TotalChunks > 0 && m.indexer.Graph != nil && m.indexer.Extractor != nil {
-		symCount, _ := m.indexer.Graph.Cache.Stats()
-		if symCount == 0 {
-			slog.Info("knowledge graph is empty but index has data, triggering full reindex to populate graph")
+		// Check for on-disk format version mismatch (breaking changes)
+		storageNeedsReindex := m.indexer.Storage.NeedsReindex()
+		var graphNeedsReindex bool
+		if m.indexer.Graph != nil {
+			graphNeedsReindex = m.indexer.Graph.NeedsReindex()
+		}
+		if storageNeedsReindex || graphNeedsReindex {
+			slog.Warn("on-disk format version mismatch detected, triggering full reindex",
+				"storage_needs_reindex", storageNeedsReindex,
+				"graph_needs_reindex", graphNeedsReindex)
 			if err := m.ensureLlama(); err != nil {
-				slog.Error("llama not available for graph population", "error", err)
+				slog.Error("llama not available for reindex on version mismatch", "error", err)
 				return
 			}
-			m.runIndexAll()
+			m.runReindexAll()
 			return
 		}
-	}
 
-	if stats.TotalChunks == 0 {
-		slog.Info("index is empty, indexing on startup")
-		if err := m.ensureLlama(); err != nil {
-			slog.Error("llama not available for startup index", "error", err)
+		stats := m.indexer.GetStats()
+		var indexErr error
+
+		// If the knowledge graph is empty but index has data — populate it
+		if stats.TotalChunks > 0 && m.indexer.Graph != nil && m.indexer.Extractor != nil {
+			symCount, _ := m.indexer.Graph.Cache.Stats()
+			if symCount == 0 {
+				slog.Info("knowledge graph is empty, triggering full reindex to populate graph")
+				if err := m.ensureLlama(); err != nil {
+					slog.Error("llama not available for graph population", "error", err)
+					return
+				}
+				indexErr = m.runIndexAll()
+				if errors.Is(indexErr, indexer.ErrBranchChanged) {
+					slog.Info("startup: branch changed during graph population, retrying", "attempt", attempts+1)
+					continue
+				}
+				if indexErr != nil {
+					slog.Warn("startup graph population aborted", "error", indexErr)
+				}
+				return
+			}
+		}
+
+		if stats.TotalChunks == 0 {
+			slog.Info("index is empty, indexing on startup")
+			if err := m.ensureLlama(); err != nil {
+				slog.Error("llama not available for startup index", "error", err)
+				return
+			}
+			indexErr = m.runIndexAll()
+			if errors.Is(indexErr, indexer.ErrBranchChanged) {
+				slog.Info("startup: branch changed during empty index, retrying", "attempt", attempts+1)
+				continue
+			}
+			if indexErr != nil {
+				slog.Warn("startup full index failed", "error", indexErr)
+			}
 			return
 		}
-		m.runIndexAll()
-		return
-	}
 
-	lastSHA := m.indexer.Storage.GetCommitSHA()
+		lastSHA := m.indexer.Storage.GetCommitSHA()
 
-	if lastSHA == "" {
-		slog.Info("interrupted index detected, resuming partial index")
-		if err := m.ensureLlama(); err != nil {
-			slog.Error("llama not available for startup reindex", "error", err)
+		if lastSHA == "" {
+			slog.Info("interrupted index detected, resuming partial index")
+			if err := m.ensureLlama(); err != nil {
+				slog.Error("llama not available for startup reindex", "error", err)
+				return
+			}
+			indexErr = m.runIndexAll()
+			if errors.Is(indexErr, indexer.ErrBranchChanged) {
+				slog.Info("startup: branch changed during interrupted index, retrying", "attempt", attempts+1)
+				continue
+			}
+			if indexErr != nil {
+				slog.Warn("startup interrupted index failed", "error", indexErr)
+			}
 			return
 		}
-		m.runIndexAll()
-	} else {
+
 		headSHA := m.indexer.Walker.GetHeadSHA()
 		if headSHA != "" && headSHA != lastSHA {
 			slog.Info("new commits detected, incremental index on startup", "last", lastSHA, "head", headSHA)
@@ -154,30 +188,87 @@ func (m *MCPServer) indexOnStartup() {
 				slog.Error("llama not available for startup incremental index", "error", err)
 				return
 			}
-			m.runIndexChanged()
+			indexErr = m.runIndexChanged()
+			if errors.Is(indexErr, indexer.ErrBranchChanged) {
+				slog.Info("startup: branch changed during incremental index, retrying", "attempt", attempts+1)
+				continue
+			}
+			if indexErr != nil {
+				slog.Warn("startup incremental index failed", "error", indexErr)
+			}
 		} else {
 			slog.Info("index is up to date, checking for working tree changes")
 			if err := m.ensureLlama(); err != nil {
 				slog.Warn("llama not available for working tree check on startup", "error", err)
 			} else {
-				m.runIndexChanged()
+				indexErr = m.runIndexChanged()
+				if errors.Is(indexErr, indexer.ErrBranchChanged) {
+					slog.Info("startup: branch changed during working tree index, retrying", "attempt", attempts+1)
+					continue
+				}
+				if indexErr != nil {
+					slog.Warn("startup working tree index failed", "error", indexErr)
+				}
 			}
 		}
+
+		// Check if ignore patterns changed — trigger full reindex if so
+		if m.indexer.CheckIgnoreHash() {
+			slog.Info("ignore patterns changed, triggering full reindex on startup")
+			if err := m.ensureLlama(); err != nil {
+				slog.Error("llama not available for reindex after ignore change", "error", err)
+				return
+			}
+			indexErr = m.runIndexAll()
+			if errors.Is(indexErr, indexer.ErrBranchChanged) {
+				slog.Info("startup: branch changed during ignore reindex, retrying", "attempt", attempts+1)
+				continue
+			}
+			if indexErr != nil {
+				slog.Warn("startup reindex after ignore change failed", "error", indexErr)
+			}
+		}
+
+		return
 	}
 
-	// Check if ignore patterns changed — trigger full reindex if so
-	if m.indexer.CheckIgnoreHash() {
-		slog.Info("ignore patterns changed, triggering full reindex on startup")
-		if err := m.ensureLlama(); err != nil {
-			slog.Error("llama not available for reindex after ignore change", "error", err)
-			return
+	slog.Warn("startup index aborted after 3 retries (branch changed repeatedly)")
+}
+
+// retryOnBranchChange calls fn, retrying up to 3 times on ErrBranchChanged.
+// On each branch change, it re-detects the current branch and switches storage/graph.
+func (m *MCPServer) retryOnBranchChange(fn func() error) error {
+	for attempts := 0; attempts < 3; attempts++ {
+		err := fn()
+		if err == nil {
+			return nil
 		}
-		m.runIndexAll()
+		if errors.Is(err, indexer.ErrBranchChanged) {
+			branch := m.indexer.Walker.GetBranch()
+			worktree := m.indexer.Walker.GetWorktreeName()
+			if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
+				slog.Warn("retry: branch switch failed", "error", err)
+			}
+			if m.indexer.Graph != nil {
+				if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
+					slog.Warn("retry: graph branch switch failed", "error", err)
+				}
+			}
+			m.currentBranch = branch
+			m.currentWorktree = worktree
+			m.indexer.SetExpectedBranch(branch, worktree)
+			slog.Info("retry: branch changed, retrying index on new branch", "branch", branch, "worktree", worktree, "attempt", attempts+1)
+			continue
+		}
+		return err
 	}
+	return fmt.Errorf("index failed after 3 retries (branch changed repeatedly)")
 }
 
 // runIndexAll calls IndexAll with up to 3 retries on failure.
-func (m *MCPServer) runIndexAll() {
+// Returns ErrBranchChanged without retrying — the caller should adapt to the new branch.
+// Other errors are retried up to 3 times.
+func (m *MCPServer) runIndexAll() error {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(2 * time.Second)
@@ -188,12 +279,17 @@ func (m *MCPServer) runIndexAll() {
 			}
 		}
 		if err := m.indexer.IndexAll(); err != nil {
+			if errors.Is(err, indexer.ErrBranchChanged) {
+				slog.Info("full index cancelled: branch change detected")
+				return err
+			}
 			slog.Error("full index failed", "attempt", attempt+1, "error", err)
 			continue
 		}
 		slog.Info("full index complete")
-		return
+		return nil
 	}
+	return fmt.Errorf("full index failed after 3 attempts")
 }
 
 // runReindexAll clears both vector and graph databases, then runs a full index.
@@ -209,11 +305,15 @@ func (m *MCPServer) runReindexAll() {
 	}
 	// Re-read stats after clearing (GetStats refreshes from storage)
 	m.indexer.GetStats()
-	m.runIndexAll()
+	if err := m.runIndexAll(); err != nil {
+		slog.Warn("reindex aborted", "error", err)
+	}
 }
 
 // runIndexChanged calls IndexChanged with up to 3 retries on failure.
-func (m *MCPServer) runIndexChanged() {
+// Returns ErrBranchChanged without retrying — the caller should adapt to the new branch.
+// Other errors are retried up to 3 times.
+func (m *MCPServer) runIndexChanged() error {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(2 * time.Second)
@@ -224,12 +324,17 @@ func (m *MCPServer) runIndexChanged() {
 			}
 		}
 		if err := m.indexer.IndexChanged(); err != nil {
+			if errors.Is(err, indexer.ErrBranchChanged) {
+				slog.Info("incremental index cancelled: branch change detected")
+				return err
+			}
 			slog.Warn("incremental index failed", "attempt", attempt+1, "error", err)
 			continue
 		}
 		slog.Info("incremental index complete")
-		return
+		return nil
 	}
+	return fmt.Errorf("incremental index failed after 3 attempts")
 }
 
 // registerTools registers the search_code and grep_code MCP tools with the server.
@@ -343,6 +448,29 @@ func (m *MCPServer) watchChecker() {
 
 		stats := m.indexer.GetStats()
 		if stats.IsIndexing {
+			// If branch changed during indexing, cancel and let the next tick restart
+			if branch != m.currentBranch || worktree != m.currentWorktree {
+				slog.Info("watch: branch changed during indexing, cancelling",
+					"from", m.currentBranch+"/"+m.currentWorktree,
+					"to", branch+"/"+worktree,
+				)
+				m.indexer.Cancel()
+				for m.indexer.GetStats().IsIndexing {
+					time.Sleep(100 * time.Millisecond)
+				}
+				if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
+					slog.Warn("watch: branch switch after cancel failed", "error", err)
+				}
+				if m.indexer.Graph != nil {
+					if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
+						slog.Warn("watch: graph branch switch after cancel failed", "error", err)
+					}
+				}
+				m.currentBranch = branch
+				m.currentWorktree = worktree
+				m.indexer.SetExpectedBranch(branch, worktree)
+				// Don't start indexing now — the next tick will handle the new branch
+			}
 			continue
 		}
 
@@ -360,6 +488,7 @@ func (m *MCPServer) watchChecker() {
 			}
 			m.currentBranch = branch
 			m.currentWorktree = worktree
+			m.indexer.SetExpectedBranch(branch, worktree)
 		}
 
 		// Check for on-disk format version mismatch
@@ -389,7 +518,9 @@ func (m *MCPServer) watchChecker() {
 				slog.Warn("watch: llama not available for reindex after ignore change", "error", err)
 				continue
 			}
-			m.runIndexAll()
+			if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
+				slog.Warn("watch: full index aborted", "error", err)
+			}
 			continue
 		}
 
@@ -403,7 +534,9 @@ func (m *MCPServer) watchChecker() {
 					slog.Warn("watch: llama not available for graph population", "error", err)
 					continue
 				}
-				m.runIndexAll()
+				if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
+					slog.Warn("watch: graph population index aborted", "error", err)
+				}
 				continue
 			}
 		}
@@ -414,7 +547,9 @@ func (m *MCPServer) watchChecker() {
 				slog.Warn("watch: llama not available for full index", "error", err)
 				continue
 			}
-			m.runIndexAll()
+			if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
+				slog.Warn("watch: full index aborted", "error", err)
+			}
 			continue
 		}
 
@@ -427,21 +562,29 @@ func (m *MCPServer) watchChecker() {
 				slog.Warn("watch: llama not available for reindex", "error", err)
 				continue
 			}
-			m.runIndexAll()
+			if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
+				slog.Warn("watch: full index aborted", "error", err)
+			}
 		} else if headSHA != "" && headSHA != lastSHA {
 			slog.Info("watch: new commits detected, indexing changes", "last", lastSHA, "head", headSHA)
 			if err := m.ensureLlama(); err != nil {
 				slog.Warn("watch: llama not available for incremental index", "error", err)
 				continue
 			}
-			m.runIndexChanged()
+			if err := m.retryOnBranchChange(m.runIndexChanged); err != nil {
+				slog.Warn("watch: incremental index aborted", "error", err)
+			}
 		} else {
 			slog.Debug("watch: checking for uncommitted changes")
 			if err := m.ensureLlama(); err != nil {
 				slog.Warn("watch: llama not available for background index", "error", err)
 				continue
 			}
-			go m.runIndexChanged()
+			go func() {
+				if err := m.retryOnBranchChange(m.runIndexChanged); err != nil {
+					slog.Warn("watch: background index aborted", "error", err)
+				}
+			}()
 		}
 	}
 }
@@ -452,8 +595,9 @@ const (
 )
 
 // handleSearch is the MCP tool handler for search_code.
-// Wakes llama-server, switches branch if needed, waits for in-progress indexing,
-// and returns JSON results.
+// Wakes llama-server, switches branch if needed, cancels any in-progress index
+// on a stale branch, waits for in-progress indexing on the current branch, and
+// returns JSON results.  Retries from scratch if the branch changes mid-index.
 func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	query, _ := args["query"].(string)
@@ -475,78 +619,106 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		return mcp.NewToolResultError(fmt.Sprintf("llama-server wake failed: %s", err)), nil
 	}
 
-	branch := m.indexer.Walker.GetBranch()
-	worktree := m.indexer.Walker.GetWorktreeName()
-	if branch != m.currentBranch || worktree != m.currentWorktree {
-		slog.Info("branch/worktree changed", "from", m.currentBranch+"/"+m.currentWorktree, "to", branch+"/"+worktree)
-		if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
-			slog.Warn("branch switch failed, continuing", "error", err)
-		}
-		if m.indexer.Graph != nil {
-			if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
-				slog.Warn("search: graph branch switch failed", "error", err)
+	for attempts := 0; attempts < 3; attempts++ {
+		branch := m.indexer.Walker.GetBranch()
+		worktree := m.indexer.Walker.GetWorktreeName()
+
+		if branch != m.currentBranch || worktree != m.currentWorktree {
+			slog.Info("search: branch/worktree changed", "from", m.currentBranch+"/"+m.currentWorktree, "to", branch+"/"+worktree)
+			// Cancel any in-progress index on the stale branch
+			m.indexer.Cancel()
+			if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
+				slog.Warn("search: branch switch failed", "error", err)
 			}
-		}
-		m.currentBranch = branch
-		m.currentWorktree = worktree
-	}
-
-	stats := m.indexer.GetStats()
-
-	if stats.TotalChunks == 0 {
-		if stats.IsIndexing {
-			for i := 0; i < 50; i++ {
-				time.Sleep(500 * time.Millisecond)
-				stats = m.indexer.GetStats()
-				if !stats.IsIndexing {
-					break
+			if m.indexer.Graph != nil {
+				if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
+					slog.Warn("search: graph branch switch failed", "error", err)
 				}
 			}
-			if stats.TotalChunks == 0 {
-				return mcp.NewToolResultText(msgIndexBuilding), nil
-			}
-		} else {
-			return mcp.NewToolResultText(msgNoIndex), nil
+			m.currentBranch = branch
+			m.currentWorktree = worktree
 		}
+
+		stats := m.indexer.GetStats()
+
+		if stats.TotalChunks == 0 {
+			if stats.IsIndexing {
+				for i := 0; i < 50; i++ {
+					time.Sleep(500 * time.Millisecond)
+					stats = m.indexer.GetStats()
+					if !stats.IsIndexing {
+						break
+					}
+				}
+				if stats.TotalChunks == 0 {
+					return mcp.NewToolResultText(msgIndexBuilding), nil
+				}
+			} else {
+				return mcp.NewToolResultText(msgNoIndex), nil
+			}
+		}
+
+		// Set expected branch so the indexer can detect mid-index branch switches
+		m.indexer.SetExpectedBranch(branch, worktree)
+
+		// Incremental index for uncommitted changes and untracked files
+		lastSHA := m.indexer.Storage.GetCommitSHA()
+		headSHA := m.indexer.Walker.GetHeadSHA()
+		var indexErr error
+		if headSHA != "" && headSHA != lastSHA {
+			slog.Info("search: new commits detected, updating index")
+			indexErr = m.runIndexChanged()
+		} else {
+			indexErr = m.runIndexChanged()
+		}
+
+		if errors.Is(indexErr, indexer.ErrBranchChanged) {
+			slog.Info("search: index cancelled due to branch change, retrying handler")
+			m.currentBranch = "" // force branch re-detection on next attempt
+			continue
+		}
+		if indexErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("incremental index failed: %s", indexErr)), nil
+		}
+
+		// Check if ignore patterns changed
+		if m.indexer.CheckIgnoreHash() {
+			slog.Info("search: ignore patterns changed, triggering full reindex")
+			if err := m.runIndexAll(); err != nil {
+				if errors.Is(err, indexer.ErrBranchChanged) {
+					slog.Info("search: full index cancelled due to branch change, retrying handler")
+					m.currentBranch = ""
+					continue
+				}
+				slog.Warn("search: full index aborted", "error", err)
+			}
+		}
+
+		results, err := m.indexer.Search(query, pathFilter, limit, "hybrid")
+		if err != nil {
+			slog.Error("search failed", "error", err)
+			return mcp.NewToolResultError(fmt.Sprintf("search failed: %s", err)), nil
+		}
+
+		slog.Debug("search completed",
+			"query", query,
+			"results", len(results),
+			"path_filter", pathFilter,
+		)
+
+		if len(results) == 0 {
+			return mcp.NewToolResultText("No results found. The index may not contain files from this path. Check that the path_filter matches indexed files, or that the project has been indexed."), nil
+		}
+		data, _ := json.MarshalIndent(results, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
 	}
 
-	// Incremental index for uncommitted changes and untracked files
-	lastSHA := m.indexer.Storage.GetCommitSHA()
-	headSHA := m.indexer.Walker.GetHeadSHA()
-	if headSHA != "" && headSHA != lastSHA {
-		slog.Info("search: new commits detected, updating index")
-		m.runIndexChanged()
-	} else {
-		m.runIndexChanged()
-	}
-
-	// Check if ignore patterns changed
-	if m.indexer.CheckIgnoreHash() {
-		slog.Info("search: ignore patterns changed, triggering full reindex")
-		m.runIndexAll()
-	}
-
-	results, err := m.indexer.Search(query, pathFilter, limit, "hybrid")
-	if err != nil {
-		slog.Error("search failed", "error", err)
-		return mcp.NewToolResultError(fmt.Sprintf("search failed: %s", err)), nil
-	}
-
-	slog.Debug("search completed",
-		"query", query,
-		"results", len(results),
-		"path_filter", pathFilter,
-	)
-
-	if len(results) == 0 {
-		return mcp.NewToolResultText("No results found. The index may not contain files from this path. Check that the path_filter matches indexed files, or that the project has been indexed."), nil
-	}
-	data, _ := json.MarshalIndent(results, "", "  ")
-	return mcp.NewToolResultText(string(data)), nil
+	return mcp.NewToolResultError("search failed after retries (branch changed repeatedly)"), nil
 }
 
 // handleGrepSearch is the MCP tool handler for grep_code.
 // Performs substring/regex matching on cached chunks. Does NOT need llama.cpp.
+// Retries from scratch if the branch changes mid-request.
 func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	args := req.GetArguments()
 	query, _ := args["query"].(string)
@@ -573,64 +745,71 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 		"limit", limit,
 	)
 
-	branch := m.indexer.Walker.GetBranch()
-	worktree := m.indexer.Walker.GetWorktreeName()
-	if branch != m.currentBranch || worktree != m.currentWorktree {
-		slog.Info("branch/worktree changed", "from", m.currentBranch+"/"+m.currentWorktree, "to", branch+"/"+worktree)
-		if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
-			slog.Warn("branch switch failed, continuing", "error", err)
-		}
-		if m.indexer.Graph != nil {
-			if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
-				slog.Warn("grep: graph branch switch failed", "error", err)
+	for attempts := 0; attempts < 3; attempts++ {
+		branch := m.indexer.Walker.GetBranch()
+		worktree := m.indexer.Walker.GetWorktreeName()
+
+		if branch != m.currentBranch || worktree != m.currentWorktree {
+			slog.Info("grep: branch/worktree changed", "from", m.currentBranch+"/"+m.currentWorktree, "to", branch+"/"+worktree)
+			// Cancel any in-progress index on the stale branch
+			m.indexer.Cancel()
+			if err := m.indexer.Storage.SwitchBranch(branch, worktree); err != nil {
+				slog.Warn("grep: branch switch failed", "error", err)
 			}
-		}
-		m.currentBranch = branch
-		m.currentWorktree = worktree
-	}
-
-	stats := m.indexer.GetStats()
-
-	if stats.TotalChunks == 0 || stats.TotalFiles == 0 {
-		if stats.IsIndexing {
-			for i := 0; i < 50; i++ {
-				time.Sleep(500 * time.Millisecond)
-				stats = m.indexer.GetStats()
-				if !stats.IsIndexing {
-					break
+			if m.indexer.Graph != nil {
+				if err := m.indexer.Graph.SwitchBranch(branch, worktree); err != nil {
+					slog.Warn("grep: graph branch switch failed", "error", err)
 				}
 			}
-			if stats.TotalChunks == 0 || stats.TotalFiles == 0 {
-				return mcp.NewToolResultText(msgIndexBuilding), nil
-			}
-		} else {
-			return mcp.NewToolResultText(msgNoIndex), nil
+			m.currentBranch = branch
+			m.currentWorktree = worktree
 		}
+
+		stats := m.indexer.GetStats()
+
+		if stats.TotalChunks == 0 || stats.TotalFiles == 0 {
+			if stats.IsIndexing {
+				for i := 0; i < 50; i++ {
+					time.Sleep(500 * time.Millisecond)
+					stats = m.indexer.GetStats()
+					if !stats.IsIndexing {
+						break
+					}
+				}
+				if stats.TotalChunks == 0 || stats.TotalFiles == 0 {
+					return mcp.NewToolResultText(msgIndexBuilding), nil
+				}
+			} else {
+				return mcp.NewToolResultText(msgNoIndex), nil
+			}
+		}
+
+		results, err := m.indexer.SearchGrep(storage.GrepOptions{
+			Query:         query,
+			Limit:         limit,
+			CaseSensitive: caseSensitive,
+			WholeWord:     wordBoundary,
+			Language:      lang,
+		}, pathFilter)
+		if err != nil {
+			slog.Error("grep search failed", "error", err)
+			return mcp.NewToolResultError(fmt.Sprintf("grep search failed: %s", err)), nil
+		}
+
+		slog.Debug("grep search completed",
+			"query", query,
+			"results", len(results),
+			"path_filter", pathFilter,
+		)
+
+		if len(results) == 0 {
+			return mcp.NewToolResultText("No matches found."), nil
+		}
+		data, _ := json.MarshalIndent(results, "", "  ")
+		return mcp.NewToolResultText(string(data)), nil
 	}
 
-	results, err := m.indexer.SearchGrep(storage.GrepOptions{
-		Query:         query,
-		Limit:         limit,
-		CaseSensitive: caseSensitive,
-		WholeWord:     wordBoundary,
-		Language:      lang,
-	}, pathFilter)
-	if err != nil {
-		slog.Error("grep search failed", "error", err)
-		return mcp.NewToolResultError(fmt.Sprintf("grep search failed: %s", err)), nil
-	}
-
-	slog.Debug("grep search completed",
-		"query", query,
-		"results", len(results),
-		"path_filter", pathFilter,
-	)
-
-	if len(results) == 0 {
-		return mcp.NewToolResultText("No matches found."), nil
-	}
-	data, _ := json.MarshalIndent(results, "", "  ")
-	return mcp.NewToolResultText(string(data)), nil
+	return mcp.NewToolResultError("grep search failed after retries (branch changed repeatedly)"), nil
 }
 
 // Serve starts the MCP stdio server. Blocks until the client disconnects.

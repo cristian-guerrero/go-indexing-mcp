@@ -6,6 +6,7 @@ package indexer
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/embedder"
@@ -22,6 +24,18 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
+
+// ErrBranchChanged is returned when the git branch or worktree changes
+// during an indexing operation. Callers should retry on the new branch.
+var ErrBranchChanged = errors.New("branch changed during indexing")
+
+// expectedBranchInfo holds the branch and worktree that an indexing operation
+// expects to remain constant. Stored in atomic.Value for lock-free reads
+// during the indexing loop.
+type expectedBranchInfo struct {
+	branch   string
+	worktree string
+}
 
 // Indexer ties together the walker, chunker, embedder, storage, and llama manager
 // into a single pipeline. Supports periodic memory freeing (SaveAndFree + llama restart)
@@ -32,14 +46,16 @@ type Indexer struct {
 	Embedder           *embedder.Embedder
 	Storage            *storage.Storage
 	Llama              *llama.Manager
-	MemoryFreeInterval int // 0 = disabled; save+clear+restart every N files
-	MaxMemoryMB        int // 0 = disabled; llama-server memory threshold in MB
-	Graph              *graph.GraphQuery // knowledge graph (nil if not available)
-	Extractor          *graph.Extractor  // AST extractor (nil without onnx tag)
-	IgnorePatterns     []string          // active ignore patterns for change detection
+	MemoryFreeInterval int                // 0 = disabled; save+clear+restart every N files
+	MaxMemoryMB        int                // 0 = disabled; llama-server memory threshold in MB
+	Graph              *graph.GraphQuery  // knowledge graph (nil if not available)
+	Extractor          *graph.Extractor   // AST extractor (nil without onnx tag)
+	IgnorePatterns     []string           // active ignore patterns for change detection
 	mu                 sync.Mutex
 	Running            bool
 	Stats              IndexStats
+	expected           atomic.Value      // stores *expectedBranchInfo or nil
+	cancelReq          atomic.Bool       // set by Cancel() to request mid-index cancellation
 }
 
 // IndexStats holds cumulative indexing statistics, updated after each operation.
@@ -83,6 +99,21 @@ func (idx *Indexer) WithGraph(g *graph.GraphQuery, ext *graph.Extractor) *Indexe
 	return idx
 }
 
+// SetExpectedBranch records the git branch and worktree that the next
+// indexing operation expects to remain constant. If the branch changes
+// during indexing, the operation is aborted with ErrBranchChanged.
+// Call before IndexAll / IndexChanged.
+func (idx *Indexer) SetExpectedBranch(branch, worktree string) {
+	idx.expected.Store(&expectedBranchInfo{branch: branch, worktree: worktree})
+	idx.cancelReq.Store(false)
+}
+
+// Cancel requests that a running IndexAll or IndexChanged abort as soon
+// as possible. The operation will return ErrBranchChanged.
+func (idx *Indexer) Cancel() {
+	idx.cancelReq.Store(true)
+}
+
 // IndexAll performs a full index: walks all files, then chunks, embeds, and stores
 // each file one at a time. Skips files already in the index with matching hashes
 // (resume support). Periodically saves, clears in-memory records, and restarts
@@ -120,6 +151,28 @@ func (idx *Indexer) IndexAll() error {
 	var indexedSinceFree int
 
 	for _, fi := range files {
+		// Check for cancellation or branch change before processing each file
+		if idx.cancelReq.Load() {
+			idx.cancelReq.Store(false)
+			slog.Info("full index cancelled by request")
+			idx.Storage.SetCommitSHA("")
+			idx.Storage.Save()
+			return ErrBranchChanged
+		}
+		if v := idx.expected.Load(); v != nil {
+			info := v.(*expectedBranchInfo)
+			if info.branch != "" {
+				branch := idx.Walker.GetBranch()
+				worktree := idx.Walker.GetWorktreeName()
+				if branch != info.branch || worktree != info.worktree {
+					slog.Info("full index cancelled: branch changed", "expected", info.branch, "got", branch)
+					idx.Storage.SetCommitSHA("")
+					idx.Storage.Save()
+					return ErrBranchChanged
+				}
+			}
+		}
+
 		// Extract symbols and references for the knowledge graph (always, even if
 		// the file is already in the vector index — the graph is independent storage).
 		if idx.Extractor != nil && idx.Graph != nil {
@@ -302,6 +355,26 @@ func (idx *Indexer) IndexChanged() error {
 	}
 
 	for _, fi := range files {
+		// Check for cancellation or branch change before processing each file
+		if idx.cancelReq.Load() {
+			idx.cancelReq.Store(false)
+			slog.Info("incremental index cancelled by request")
+			idx.Storage.Save()
+			return ErrBranchChanged
+		}
+		if v := idx.expected.Load(); v != nil {
+			info := v.(*expectedBranchInfo)
+			if info.branch != "" {
+				branch := idx.Walker.GetBranch()
+				worktree := idx.Walker.GetWorktreeName()
+				if branch != info.branch || worktree != info.worktree {
+					slog.Info("incremental index cancelled: branch changed", "expected", info.branch, "got", branch)
+					idx.Storage.Save()
+					return ErrBranchChanged
+				}
+			}
+		}
+
 		if fi.Deleted {
 			idx.Storage.DeleteChunksByPath(fi.Path)
 			if idx.Graph != nil {

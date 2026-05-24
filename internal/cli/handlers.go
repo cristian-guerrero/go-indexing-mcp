@@ -4,6 +4,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -381,100 +382,122 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 		}
 	}
 
-	stats := idx.GetStats()
-	if stats.TotalChunks == 0 {
-		if needsLlama {
-			fmt.Fprintln(pw, "No index found, indexing before search...")
-			if err := idx.IndexAll(); err != nil {
-				slog.Error("index", "error", err)
-				return 1
-			}
-		} else {
-			fmt.Fprintln(pw, "No index found. Run a hybrid search first to build the index.")
-			fmt.Fprintln(pw, "======================")
-			return 1
+	// Retry loop: if branch changes during indexing, re-detect the new branch and restart
+	for attempts := 0; attempts < 3; attempts++ {
+		branch = w.GetBranch()
+		worktree = w.GetWorktreeName()
+		if err := st.SwitchBranch(branch, worktree); err != nil {
+			slog.Warn("branch switch failed", "error", err)
 		}
-	} else if needsLlama {
-		lastSHA := st.GetCommitSHA()
-		if lastSHA == "" {
-			fmt.Fprintln(pw, "Index has no commit SHA, performing full reindex...")
-			if err := idx.IndexAll(); err != nil {
-				slog.Error("full reindex", "error", err)
-				return 1
-			}
-		} else {
-			headSHA := w.GetHeadSHA()
-			if headSHA != "" && headSHA != lastSHA {
-				fmt.Fprintln(pw, "New commits detected, updating index...")
-				if err := idx.IndexChanged(); err != nil {
-					slog.Warn("incremental index failed", "error", err)
-				}
+		idx.SetExpectedBranch(branch, worktree)
+
+		stats := idx.GetStats()
+		var indexErr error
+
+		if stats.TotalChunks == 0 {
+			if needsLlama {
+				fmt.Fprintln(pw, "No index found, indexing before search...")
+				indexErr = idx.IndexAll()
 			} else {
-				// Check for uncommitted changes + untracked files even when SHA matches
-				if err := idx.IndexChanged(); err != nil {
-					slog.Warn("incremental index for working tree changes failed", "error", err)
+				fmt.Fprintln(pw, "No index found. Run a hybrid search first to build the index.")
+				fmt.Fprintln(pw, "======================")
+				return 1
+			}
+		} else if needsLlama {
+			lastSHA := st.GetCommitSHA()
+			if lastSHA == "" {
+				fmt.Fprintln(pw, "Index has no commit SHA, performing full reindex...")
+				indexErr = idx.IndexAll()
+			} else {
+				headSHA := w.GetHeadSHA()
+				if headSHA != "" && headSHA != lastSHA {
+					fmt.Fprintln(pw, "New commits detected, updating index...")
+					indexErr = idx.IndexChanged()
+				} else {
+					fmt.Fprintln(pw, "Checking for working tree changes...")
+					indexErr = idx.IndexChanged()
 				}
 			}
 		}
-	}
 
-	// Check if ignore patterns changed — trigger full reindex if so
-	if needsLlama && idx.CheckIgnoreHash() {
-		fmt.Fprintln(pw, "Ignore patterns changed, reindexing to pick up newly unignored files...")
-		if err := idx.IndexAll(); err != nil {
-			slog.Error("reindex after ignore change", "error", err)
+		if errors.Is(indexErr, indexer.ErrBranchChanged) {
+			fmt.Fprintln(pw, "Branch changed during indexing, restarting on new branch...")
+			continue
+		}
+		if indexErr != nil {
+			slog.Error("index", "error", indexErr)
 			return 1
 		}
-	}
 
-	// Check if graph is empty but index has data — populate it on upgrade from non-onnx build
-	if idx.Extractor != nil && idx.Graph != nil && stats.TotalChunks > 0 {
-		symCount, _ := idx.Graph.Cache.Stats()
-		if symCount == 0 {
-			fmt.Fprintln(pw, "Knowledge graph is empty, indexing to populate graph...")
+		// Check if ignore patterns changed — trigger full reindex if so
+		if needsLlama && idx.CheckIgnoreHash() {
+			fmt.Fprintln(pw, "Ignore patterns changed, reindexing to pick up newly unignored files...")
 			if err := idx.IndexAll(); err != nil {
-				slog.Error("full index for graph population", "error", err)
+				if errors.Is(err, indexer.ErrBranchChanged) {
+					fmt.Fprintln(pw, "Branch changed during indexing, restarting on new branch...")
+					continue
+				}
+				slog.Error("reindex after ignore change", "error", err)
 				return 1
 			}
 		}
-	}
 
-	if limit <= 0 || limit > 50 {
-		limit = 25
-	}
-	results, err := idx.Search(query, pathFilter, limit, mode)
-	if err != nil {
-		slog.Error("search", "error", err)
-		return 1
-	}
-
-	fmt.Fprintln(pw)
-	fmt.Fprintln(pw, "=== Search Results ===")
-	fmt.Fprintf(pw, " Query: %s\n", query)
-	fmt.Fprintf(pw, " Mode: %s\n", mode)
-	fmt.Fprintf(pw, " Results: %d\n", len(results))
-	fmt.Fprintln(pw)
-
-	for i, r := range results {
-		preview := r.Content
-		if len(preview) > 120 {
-			preview = preview[:120] + "..."
+		// Check if graph is empty but index has data — populate it
+		if idx.Extractor != nil && idx.Graph != nil {
+			symCount, _ := idx.Graph.Cache.Stats()
+			if symCount == 0 && stats.TotalChunks > 0 {
+				fmt.Fprintln(pw, "Knowledge graph is empty, indexing to populate graph...")
+				if err := idx.IndexAll(); err != nil {
+					if errors.Is(err, indexer.ErrBranchChanged) {
+						fmt.Fprintln(pw, "Branch changed during indexing, restarting on new branch...")
+						continue
+					}
+					slog.Error("full index for graph population", "error", err)
+					return 1
+				}
+			}
 		}
-		rel := r.RelPath
-		if rel == "" {
-			rel = r.FilePath
+
+		if limit <= 0 || limit > 50 {
+			limit = 25
 		}
-		fmt.Fprintf(pw, " %d. %s:%d-%d (%.2f)\n", i+1, rel, r.StartLine, r.EndLine, r.Score)
-		fmt.Fprintf(pw, "  %s\n", preview)
+		results, err := idx.Search(query, pathFilter, limit, mode)
+		if err != nil {
+			slog.Error("search", "error", err)
+			return 1
+		}
+
 		fmt.Fprintln(pw)
-	}
-	if len(results) == 0 {
-		fmt.Fprintln(pw, " No results found.")
-	}
-	fmt.Fprintf(pw, " Total time: %s\n", roundDuration(time.Since(tStart)))
-	fmt.Fprintln(pw, "======================")
+		fmt.Fprintln(pw, "=== Search Results ===")
+		fmt.Fprintf(pw, " Query: %s\n", query)
+		fmt.Fprintf(pw, " Mode: %s\n", mode)
+		fmt.Fprintf(pw, " Results: %d\n", len(results))
+		fmt.Fprintln(pw)
 
-	return 0
+		for i, r := range results {
+			preview := r.Content
+			if len(preview) > 120 {
+				preview = preview[:120] + "..."
+			}
+			rel := r.RelPath
+			if rel == "" {
+				rel = r.FilePath
+			}
+			fmt.Fprintf(pw, " %d. %s:%d-%d (%.2f)\n", i+1, rel, r.StartLine, r.EndLine, r.Score)
+			fmt.Fprintf(pw, "  %s\n", preview)
+			fmt.Fprintln(pw)
+		}
+		if len(results) == 0 {
+			fmt.Fprintln(pw, " No results found.")
+		}
+		fmt.Fprintf(pw, " Total time: %s\n", roundDuration(time.Since(tStart)))
+		fmt.Fprintln(pw, "======================")
+
+		return 0
+	}
+
+	fmt.Fprintln(pw, "Search failed after retries (branch changed repeatedly).")
+	return 1
 }
 
 // RunQueryGrep performs substring/regex matching on cached chunks.

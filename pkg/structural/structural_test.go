@@ -315,6 +315,84 @@ func TestFindIndentEnd_Python(t *testing.T) {
 	}
 }
 
+func TestFindBraceEnd_NoBrace(t *testing.T) {
+	// Go type alias without braces should not consume the rest of the file
+	lines := []string{
+		"type Foo int",
+		"",
+		"func bar() {}",
+	}
+
+	end := findBraceEnd(lines, nil, 0)
+	if end != 0 {
+		t.Errorf("expected type alias block to end at line 0 (no brace body), got %d", end)
+	}
+}
+
+func TestFindBraceEnd_ArrowFunc(t *testing.T) {
+	// JS arrow function without braces should not consume the rest of the file
+	lines := []string{
+		"const fn = () => expr",
+		"",
+		"function bar() {}",
+	}
+
+	end := findBraceEnd(lines, nil, 0)
+	if end != 0 {
+		t.Errorf("expected arrow function block to end at line 0 (no brace body), got %d", end)
+	}
+}
+
+func TestFindIndentEnd_RubyEnd(t *testing.T) {
+	// Ruby def...end should include the closing end line
+	lines := []string{
+		"def foo",
+		"  if cond",
+		"    do_something",
+		"  end",
+		"end",
+		"",
+		"def bar",
+		"end",
+	}
+
+	end := findIndentEnd(lines, nil, 0)
+	if end != 4 {
+		t.Errorf("expected Ruby def block to end at line 4 (include closing end), got %d", end)
+	}
+}
+
+func TestParseBlocks_GoTypeAlias(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "main.go")
+	content := `package main
+
+type Foo int
+
+func bar() {}
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 blocks (type alias + func), got %d", len(blocks))
+	}
+	if blocks[0].StartLine != 3 {
+		t.Errorf("expected type alias block at line 3, got %d", blocks[0].StartLine)
+	}
+	if blocks[0].EndLine != 3 {
+		t.Errorf("expected type alias block end at line 3, got %d", blocks[0].EndLine)
+	}
+	if blocks[1].StartLine != 5 {
+		t.Errorf("expected func bar block at line 5, got %d", blocks[1].StartLine)
+	}
+}
+
 func TestSupportedLanguages(t *testing.T) {
 	langs := SupportedLanguages()
 	popular := map[string]bool{"go": true, "python": true, "javascript": true, "rust": true, "java": true, "c": true, "cpp": true, "json": true, "yaml": true, "toml": true, "markdown": true}
@@ -970,5 +1048,115 @@ func TestCollectDecorators_NestedDecoratorsNotConsumed(t *testing.T) {
 	start := collectDecorators(lines, 1, patterns)
 	if start != 0 {
 		t.Errorf("expected start=0 (@Controller line only), got %d, should not include @Get/@HttpCode which are inside the class", start)
+	}
+}
+
+func TestCollectDecorators_MultiLinePython(t *testing.T) {
+	// Python decorator with parenthesized arguments spanning multiple lines
+	// should be fully attached to the target function.
+	lines := []string{
+		"@app.route(",
+		"    '/api/cats',",
+		"    methods=['GET']",
+		")",
+		"def get_cats():",
+		"    return []",
+	}
+	patterns := []*regexp.Regexp{regexp.MustCompile(`^\s*@`)}
+
+	start := collectDecorators(lines, 4, patterns)
+	if start != 0 {
+		t.Errorf("expected start=0 (multi-line decorator from line 0), got %d", start)
+	}
+}
+
+func TestParseBlocks_TypeScript(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "service.ts")
+	content := `import { Injectable } from '@nestjs/common';
+
+@Injectable()
+export class CatService {
+    findAll(): Cat[] {
+        return [];
+    }
+}
+
+abstract class BaseService {
+    abstract find(): void;
+}
+
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "typescript")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 3 {
+		t.Fatalf("expected 3 blocks (class + abstract class + enum), got %d", len(blocks))
+	}
+	if blocks[0].StartLine != 3 {
+		t.Errorf("expected first block (class) at line 3 (@Injectable line), got %d", blocks[0].StartLine)
+	}
+	if blocks[1].StartLine != 10 {
+		t.Errorf("expected second block (abstract class) at line 10, got %d", blocks[1].StartLine)
+	}
+	if blocks[2].StartLine != 14 {
+		t.Errorf("expected third block (enum) at line 14, got %d", blocks[2].StartLine)
+	}
+}
+
+func TestParseBlocks_CPP_PointerFunction(t *testing.T) {
+	s := New()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api.cpp")
+	content := `#include <vector>
+#include <string>
+
+int* get_ptr() {
+    return nullptr;
+}
+
+std::string getName() {
+    return "test";
+}
+
+const char* getCStr() {
+    return "hello";
+}
+
+std::vector<int> getIds() {
+    return {};
+}
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	blocks, err := s.ParseBlocks(path, "cpp")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(blocks) != 4 {
+		t.Fatalf("expected 4 blocks (4 functions with various return types), got %d", len(blocks))
+	}
+	if blocks[0].StartLine != 4 {
+		t.Errorf("expected first block (int* get_ptr) at line 4, got %d", blocks[0].StartLine)
+	}
+	if blocks[1].StartLine != 8 {
+		t.Errorf("expected second block (std::string getName) at line 8, got %d", blocks[1].StartLine)
+	}
+	if blocks[2].StartLine != 12 {
+		t.Errorf("expected third block (const char* getCStr) at line 12, got %d", blocks[2].StartLine)
+	}
+	if blocks[3].StartLine != 16 {
+		t.Errorf("expected fourth block (std::vector<int> getIds) at line 16, got %d", blocks[3].StartLine)
 	}
 }

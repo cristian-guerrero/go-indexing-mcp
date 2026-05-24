@@ -14,6 +14,10 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/ignore"
 )
 
+// DefaultBranch is the name of the default git branch used as preferred
+// source during branch seeding.
+const DefaultBranch = "main"
+
 // FileInfo describes a discovered source file with metadata for indexing.
 type FileInfo struct {
 	Path     string
@@ -295,6 +299,25 @@ func detectLanguage(path string) string {
 	default:
 		return ""
 	}
+}
+
+// GetMergeBase returns the merge-base commit SHA between two branches.
+// Returns empty string on error (e.g., detached HEAD or no common ancestor).
+func (w *Walker) GetMergeBase(branchA, branchB string) string {
+	cmd := exec.Command("git", "merge-base", branchA, branchB)
+	cmd.Dir = w.Root
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// BranchExists checks if a git branch (or ref) exists locally.
+func (w *Walker) BranchExists(name string) bool {
+	cmd := exec.Command("git", "rev-parse", "--verify", name)
+	cmd.Dir = w.Root
+	return cmd.Run() == nil
 }
 
 // fileHash computes the first 8 bytes of SHA-256 of a file's contents.

@@ -19,6 +19,7 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/graph"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/indexer"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/llama"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/mcp"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/parser"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
@@ -392,6 +393,15 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 		idx.SetExpectedBranch(branch, worktree)
 
 		stats := idx.GetStats()
+
+		// Try seeding from another branch if this branch has no index yet
+		if stats.TotalChunks == 0 {
+			if mcp.SeedBranchFrom(st, gq, w, branch, worktree) {
+				stats = idx.GetStats()
+				slog.Info("branch seeded from another branch, skipping full index")
+			}
+		}
+
 		var indexErr error
 
 		if stats.TotalChunks == 0 {

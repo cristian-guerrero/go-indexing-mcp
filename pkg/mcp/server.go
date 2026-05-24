@@ -9,12 +9,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/graph"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/indexer"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/llama"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -102,6 +108,14 @@ func (m *MCPServer) indexOnStartup() {
 		m.currentBranch = branch
 		m.currentWorktree = worktree
 		m.indexer.SetExpectedBranch(branch, worktree)
+
+		// Try seeding if the current branch has no index yet (first time visit)
+		startupStats := m.indexer.GetStats()
+		if startupStats.TotalChunks == 0 {
+			if m.seedBranchFrom(branch, worktree) {
+				slog.Info("startup: branch seeded from another branch, will use incremental index")
+			}
+		}
 
 		// Check for on-disk format version mismatch (breaking changes)
 		storageNeedsReindex := m.indexer.Storage.NeedsReindex()
@@ -263,6 +277,245 @@ func (m *MCPServer) retryOnBranchChange(fn func() error) error {
 		return err
 	}
 	return fmt.Errorf("index failed after 3 retries (branch changed repeatedly)")
+}
+
+// branchSource describes a candidate branch whose index can be used
+// to seed another branch during branch switching.
+type branchSource struct {
+	branch       string
+	worktree     string
+	gobPath      string
+	graphDir     string
+	records      int
+	hasCommitSHA bool // true if the source index was ever fully completed
+}
+
+// findBestSource looks for the best branch to seed from when the target
+// branch has no existing index. Priority: main → currentBranch → largest index.
+// Returns nil if no suitable source is found.
+func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker, targetBranch string) *branchSource {
+	var candidates []branchSource
+
+	tryBranch := func(branch, worktree string) {
+		gobPath := st.GobPath(branch, worktree)
+		if _, err := os.Stat(gobPath); err != nil {
+			return
+		}
+		if !w.BranchExists(branch) {
+			return
+		}
+		data := storage.LoadGob(gobPath)
+		if data == nil || len(data.Records) == 0 {
+			return
+		}
+		var graphDir string
+		if gq != nil {
+			graphDir = gq.BranchDir(branch, worktree)
+		}
+		candidates = append(candidates, branchSource{
+			branch: branch, worktree: worktree,
+			gobPath: gobPath, graphDir: graphDir,
+			records: len(data.Records),
+			hasCommitSHA: data.CommitSHA != "",
+		})
+	}
+
+	// 1. Try main (preferred)
+	tryBranch(walker.DefaultBranch, "")
+	// 2. If target is not main, try any other branch via git branch list
+	if targetBranch != walker.DefaultBranch {
+		branches := listLocalBranches(w.Root)
+		for _, b := range branches {
+			if b == targetBranch || b == walker.DefaultBranch {
+				continue
+			}
+			tryBranch(b, "")
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	// Pick the candidate with the most records (tie-break: main first)
+	best := &candidates[0]
+	for i := 1; i < len(candidates); i++ {
+		if candidates[i].records > best.records {
+			best = &candidates[i]
+		}
+	}
+	slog.Info("branch seeding: selected source",
+		"branch", best.branch, "worktree", best.worktree,
+		"records", best.records)
+	return best
+}
+
+// listLocalBranches returns all local git branch names (without the "refs/heads/" prefix).
+func listLocalBranches(root string) []string {
+	out, err := execGit(root, "branch", "--format=%(refname:short)")
+	if err != nil {
+		return nil
+	}
+	var branches []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line != "" {
+			branches = append(branches, line)
+		}
+	}
+	return branches
+}
+
+// execGit runs a git command and returns stdout. Used internally.
+func execGit(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// SeedBranchFrom copies the index from the best available source branch
+// to the target branch so that only files that differ between the two
+// branches need re-indexing. Returns true if seeding was performed and
+// the storage/graph have been switched to the target branch.
+//
+// After seeding: target gob contains all source records minus files that
+// differ between merge-base and target HEAD, and commitSHA is set to the
+// merge-base so IndexChanged correctly diffs only changed files.
+//
+// This is a standalone function usable from both MCPServer and CLI handlers.
+func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker, targetBranch, targetWorktree string) bool {
+	targetGob := st.GobPath(targetBranch, targetWorktree)
+
+	// Only seed if the target gob doesn't exist yet
+	if _, err := os.Stat(targetGob); err == nil {
+		return false
+	}
+
+	source := findBestSource(st, gq, w, targetBranch)
+	if source == nil {
+		return false
+	}
+
+	mergeBase := w.GetMergeBase(source.branch, targetBranch)
+	if mergeBase == "" {
+		slog.Warn("branch seeding: no merge-base found", "source", source.branch, "target", targetBranch)
+		return false
+	}
+
+	changedOutput, err := execGit(w.Root, "diff", "--name-only", mergeBase, targetBranch)
+	if err != nil {
+		slog.Warn("branch seeding: git diff failed", "error", err)
+		return false
+	}
+	var changedFiles []string
+	for _, line := range strings.Split(strings.TrimSpace(changedOutput), "\n") {
+		if line != "" {
+			changedFiles = append(changedFiles, line)
+		}
+	}
+
+	if source.records > 0 && len(changedFiles)*2 > source.records {
+		slog.Info("branch seeding: too many changed files, falling back to full index",
+			"source", source.branch, "changed", len(changedFiles), "source_records", source.records)
+		return false
+	}
+
+	slog.Info("branch seeding: copying index",
+		"source", source.branch, "target", targetBranch,
+		"source_records", source.records, "changed_files", len(changedFiles))
+
+	input, err := os.ReadFile(source.gobPath)
+	if err != nil {
+		slog.Warn("branch seeding: read source gob failed", "error", err)
+		return false
+	}
+	if err := os.WriteFile(targetGob, input, 0644); err != nil {
+		slog.Warn("branch seeding: write target gob failed", "error", err)
+		return false
+	}
+
+	if source.graphDir != "" && gq != nil {
+		tgtGraphDir := gq.BranchDir(targetBranch, targetWorktree)
+		if err := os.RemoveAll(tgtGraphDir); err != nil {
+			slog.Warn("branch seeding: remove target graph dir", "error", err)
+		}
+		if err := copyDir(source.graphDir, tgtGraphDir); err != nil {
+			slog.Warn("branch seeding: copy graph dir failed", "error", err)
+		}
+	}
+
+	if err := st.SwitchBranch(targetBranch, targetWorktree); err != nil {
+		slog.Warn("branch seeding: switch branch failed", "error", err)
+		return false
+	}
+	if gq != nil {
+		if err := gq.SwitchBranch(targetBranch, targetWorktree); err != nil {
+			slog.Warn("branch seeding: graph switch branch failed", "error", err)
+		}
+	}
+
+	for _, relPath := range changedFiles {
+		fullPath := filepath.Join(w.Root, relPath)
+		st.DeleteChunksByPath(fullPath)
+		if gq != nil {
+			gq.RemoveFile(relPath)
+		}
+	}
+
+	if source.hasCommitSHA {
+		st.SetCommitSHA(mergeBase)
+		slog.Info("branch seeding: complete (complete source)",
+			"source", source.branch,
+			"stale_files_removed", len(changedFiles),
+			"commit_sha", mergeBase[:8]+"...")
+	} else {
+		// Source was incomplete (interrupted index). Leave commitSHA empty
+		// so the caller fills remaining gaps via IndexAll.
+		st.SetCommitSHA("")
+		slog.Info("branch seeding: complete (partial source, gaps will be filled)",
+			"source", source.branch,
+			"stale_files_removed", len(changedFiles))
+	}
+	st.Save()
+	return true
+}
+
+// seedBranchFrom delegates to the standalone SeedBranchFrom and updates
+// MCPServer state on success.
+func (m *MCPServer) seedBranchFrom(targetBranch, targetWorktree string) bool {
+	if !SeedBranchFrom(m.indexer.Storage, m.indexer.Graph, m.indexer.Walker, targetBranch, targetWorktree) {
+		return false
+	}
+	m.currentBranch = targetBranch
+	m.currentWorktree = targetWorktree
+	m.indexer.SetExpectedBranch(targetBranch, targetWorktree)
+	return true
+}
+
+// copyDir recursively copies a directory from src to dst.
+// Used during branch seeding to copy graph data between branches.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if fi.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0644)
+	})
 }
 
 // runIndexAll calls IndexAll with up to 3 retries on failure.
@@ -489,6 +742,14 @@ func (m *MCPServer) watchChecker() {
 			m.currentBranch = branch
 			m.currentWorktree = worktree
 			m.indexer.SetExpectedBranch(branch, worktree)
+
+			// Refresh stats after switch and try seeding if the new branch is empty
+			stats = m.indexer.GetStats()
+			if stats.TotalChunks == 0 {
+				if m.seedBranchFrom(branch, worktree) {
+					stats = m.indexer.GetStats()
+				}
+			}
 		}
 
 		// Check for on-disk format version mismatch

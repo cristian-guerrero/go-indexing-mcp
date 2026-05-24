@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/embedder"
@@ -116,8 +117,9 @@ func (idx *Indexer) Cancel() {
 
 // IndexAll performs a full index: walks all files, then chunks, embeds, and stores
 // each file one at a time. Skips files already in the index with matching hashes
-// (resume support). Periodically saves, clears in-memory records, and restarts
-// llama-server to free memory when MemoryFreeInterval > 0.
+// (resume support). Graph extraction (tree-sitter) is deferred to a second pass so
+// vector indexing is not blocked by slow parsing. Periodically saves, clears
+// in-memory records, and restarts llama-server to free memory when MemoryFreeInterval > 0.
 func (idx *Indexer) IndexAll() error {
 	idx.mu.Lock()
 	if idx.Running {
@@ -144,14 +146,36 @@ func (idx *Indexer) IndexAll() error {
 
 	slog.Info("found files to index", "count", len(files))
 
+	tPrune := time.Now()
 	idx.PruneStaleEntries()
+	slog.Info("prune stale entries",
+		"ms", time.Since(tPrune).Milliseconds(),
+		"storage_files", len(idx.Storage.ListFiles()),
+	)
 
 	var totalChunks int
 	var indexedFiles int
 	var indexedSinceFree int
+	var pendingGraph []walker.FileInfo
+	processedFiles := 0
+	loopStart := time.Now()
+
+	// windowFiles tracks files indexed since the last branch check, so we can
+	// discard them if the branch changes mid-window.
+	var windowFiles []walker.FileInfo
 
 	for _, fi := range files {
-		// Check for cancellation or branch change before processing each file
+		processedFiles++
+
+		if processedFiles%500 == 0 {
+			slog.Info("index progress",
+				"processed", processedFiles,
+				"total", len(files),
+				"indexed", indexedFiles,
+				"elapsed_s", int(time.Since(loopStart).Seconds()),
+			)
+		}
+		// Check for cancellation on every file (atomic, cheap)
 		if idx.cancelReq.Load() {
 			idx.cancelReq.Store(false)
 			slog.Info("full index cancelled by request")
@@ -159,59 +183,71 @@ func (idx *Indexer) IndexAll() error {
 			idx.Storage.Save()
 			return ErrBranchChanged
 		}
-		if v := idx.expected.Load(); v != nil {
-			info := v.(*expectedBranchInfo)
-			if info.branch != "" {
-				branch := idx.Walker.GetBranch()
-				worktree := idx.Walker.GetWorktreeName()
-				if branch != info.branch || worktree != info.worktree {
-					slog.Info("full index cancelled: branch changed", "expected", info.branch, "got", branch)
-					idx.Storage.SetCommitSHA("")
-					idx.Storage.Save()
-					return ErrBranchChanged
-				}
-			}
-		}
 
-		// Extract symbols and references for the knowledge graph (always, even if
-		// the file is already in the vector index — the graph is independent storage).
-		if idx.Extractor != nil && idx.Graph != nil {
-			content, rErr := os.ReadFile(fi.Path)
-			if rErr != nil {
-				slog.Warn("graph: read file", "file", fi.RelPath, "error", rErr)
-			} else {
-				symbols, refs, xErr := idx.Extractor.Extract(
-					string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
-				)
-				if xErr != nil {
-					slog.Warn("graph: extract", "file", fi.RelPath, "lang", fi.Language, "error", xErr)
-				} else if len(symbols) == 0 {
-					slog.Debug("graph: no symbols", "file", fi.RelPath, "lang", fi.Language)
-				} else {
-					if err := idx.Graph.StoreFile(fi.RelPath, symbols, refs); err != nil {
-						slog.Warn("graph: store", "file", fi.RelPath, "error", err)
-					}
-				}
-			}
-		}
+		alreadyIndexed := idx.Storage.IsFileIndexed(fi.Path, fi.Hash)
+		alreadyExtracted := idx.Graph != nil && idx.Graph.HasFile(fi.RelPath)
 
-		if idx.Storage.IsFileIndexed(fi.Path, fi.Hash) {
+		if alreadyIndexed && alreadyExtracted {
 			slog.Debug("skipping already indexed file", "file", fi.RelPath)
 			continue
 		}
 
+		// Defer graph extraction — if the file needs vector indexing, do it now
+		// and collect it for the graph pass later.
+		if !alreadyExtracted {
+			pendingGraph = append(pendingGraph, fi)
+		}
+
+		if alreadyIndexed {
+			continue
+		}
+
+		// Branch check only for files that will actually be indexed (git is expensive)
+		if processedFiles%20 == 0 {
+			v := idx.expected.Load()
+			if v != nil {
+				info := v.(*expectedBranchInfo)
+				if info.branch != "" {
+					branch := idx.Walker.GetBranch()
+					worktree := idx.Walker.GetWorktreeName()
+					if branch != info.branch || worktree != info.worktree {
+						// Discard files indexed since the last good check — they may
+						// be from the old or new branch, we can't tell which.
+						discarded := len(windowFiles)
+						for _, wf := range windowFiles {
+							idx.Storage.DeleteChunksByPath(wf.Path)
+							slog.Debug("discarded file from interrupted window", "file", wf.RelPath)
+						}
+						windowFiles = nil
+						slog.Info("full index cancelled: branch changed", "expected", info.branch, "got", branch,
+							"discarded", discarded)
+						idx.Storage.SetCommitSHA("")
+						idx.Storage.Save()
+						return ErrBranchChanged
+					}
+				}
+			}
+			// Check passed — safe to commit, clear window
+			windowFiles = nil
+		}
+
+		tChunk := time.Now()
 		chunks, err := idx.Chunker.ChunkFile(fi)
+		tChunkDone := time.Now()
+		chunkDur := tChunkDone.Sub(tChunk)
 		if err != nil {
-			slog.Warn("chunk file skipped", "file", fi.RelPath, "error", err)
+			slog.Warn("chunk file skipped", "file", fi.RelPath, "error", err, "chunk_ms", chunkDur.Milliseconds())
 			continue
 		}
 		if len(chunks) == 0 {
 			continue
 		}
+		if chunkDur > time.Second {
+			slog.Warn("slow chunk", "file", fi.RelPath, "lang", fi.Language, "ms", chunkDur.Milliseconds())
+		}
 
 		embeddings, err := idx.Embedder.EmbedChunks(chunks)
 		if err != nil {
-			// If llama crashed, try one restart + retry before giving up
 			if idx.Llama != nil && strings.Contains(err.Error(), "connection refused") {
 				slog.Warn("llama-server unresponsive, restarting and retrying", "file", fi.RelPath, "error", err)
 				if rerr := idx.restartLlama(); rerr != nil {
@@ -224,19 +260,16 @@ func (idx *Indexer) IndexAll() error {
 			}
 		}
 
-		// Remove old chunks for this file (hash changed) before upserting new ones
 		idx.Storage.DeleteChunksByPath(fi.Path)
 
 		if err := idx.Storage.UpsertChunks(chunks, embeddings); err != nil {
 			return fmt.Errorf("store %s: %w", fi.RelPath, err)
 		}
-
+		windowFiles = append(windowFiles, fi)
 		totalChunks += len(chunks)
 		indexedFiles++
 		indexedSinceFree++
-		slog.Debug("indexed file", "file", fi.RelPath, "chunks", len(chunks))
 
-		// Periodic save for crash resilience
 		if indexedFiles%10 == 0 {
 			if err := idx.Storage.Save(); err != nil {
 				slog.Warn("periodic save", "error", err)
@@ -245,7 +278,6 @@ func (idx *Indexer) IndexAll() error {
 			}
 		}
 
-		// Periodic memory free: save merged gob, clear Go memory, restart llama-server
 		if idx.MemoryFreeInterval > 0 && indexedSinceFree >= idx.MemoryFreeInterval {
 			slog.Info("memory free threshold reached, freeing memory",
 				"files_indexed_so_far", indexedFiles, "interval", idx.MemoryFreeInterval)
@@ -264,7 +296,6 @@ func (idx *Indexer) IndexAll() error {
 			slog.Info("memory freed, continuing indexing", "files_indexed_so_far", indexedFiles)
 		}
 
-		// Memory threshold: restart llama-server if its RSS exceeds MaxMemoryMB
 		if idx.MaxMemoryMB > 0 && idx.Llama != nil {
 			usage, err := idx.Llama.MemoryUsageMB()
 			if err != nil {
@@ -282,14 +313,59 @@ func (idx *Indexer) IndexAll() error {
 		}
 	}
 
-	// Update stats
 	idx.mu.Lock()
 	idx.Stats.TotalChunks = totalChunks
 	idx.Stats.TotalFiles = len(files)
 	idx.Stats.LastIndexed = "just now"
 	idx.mu.Unlock()
 
-	// Final save with commit SHA
+	// ---- Phase 2: Graph extraction (tree-sitter) — deferred, non-blocking ----
+	if len(pendingGraph) > 0 && idx.Extractor != nil && idx.Graph != nil {
+		slog.Info("graph: extracting symbols for pending files", "count", len(pendingGraph))
+		for idx2, fi := range pendingGraph {
+			if idx.cancelReq.Load() {
+				idx.cancelReq.Store(false)
+				slog.Info("graph: extraction cancelled")
+				return ErrBranchChanged
+			}
+
+			// Branch check every 100 files (git is expensive on Windows)
+			if idx2%20 == 0 {
+				v := idx.expected.Load()
+				if v != nil {
+					info := v.(*expectedBranchInfo)
+					if info.branch != "" {
+						branch := idx.Walker.GetBranch()
+						worktree := idx.Walker.GetWorktreeName()
+						if branch != info.branch || worktree != info.worktree {
+							slog.Info("graph: extraction cancelled: branch changed")
+							return ErrBranchChanged
+						}
+					}
+				}
+			}
+
+			content, rErr := os.ReadFile(fi.Path)
+			if rErr != nil {
+				slog.Warn("graph: read file", "file", fi.RelPath, "error", rErr)
+				continue
+			}
+			symbols, refs, xErr := idx.Extractor.Extract(
+				string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
+			)
+			if xErr != nil {
+				slog.Warn("graph: extract", "file", fi.RelPath, "lang", fi.Language, "error", xErr)
+			} else if len(symbols) == 0 {
+				slog.Debug("graph: no symbols", "file", fi.RelPath, "lang", fi.Language)
+			} else {
+				if err := idx.Graph.StoreFile(fi.RelPath, symbols, refs); err != nil {
+					slog.Warn("graph: store", "file", fi.RelPath, "error", err)
+				}
+			}
+		}
+		slog.Info("graph: extraction complete", "files", len(pendingGraph))
+	}
+
 	if indexedFiles > 0 {
 		headSHA := idx.Walker.GetHeadSHA()
 		if headSHA != "" {
@@ -354,25 +430,18 @@ func (idx *Indexer) IndexChanged() error {
 		return fmt.Errorf("chunk changed files: %w", err)
 	}
 
+	var pendingGraph []walker.FileInfo
+	processedFiles := 0
+
 	for _, fi := range files {
-		// Check for cancellation or branch change before processing each file
+		processedFiles++
+
+		// Check for cancellation on every file (atomic, cheap)
 		if idx.cancelReq.Load() {
 			idx.cancelReq.Store(false)
 			slog.Info("incremental index cancelled by request")
 			idx.Storage.Save()
 			return ErrBranchChanged
-		}
-		if v := idx.expected.Load(); v != nil {
-			info := v.(*expectedBranchInfo)
-			if info.branch != "" {
-				branch := idx.Walker.GetBranch()
-				worktree := idx.Walker.GetWorktreeName()
-				if branch != info.branch || worktree != info.worktree {
-					slog.Info("incremental index cancelled: branch changed", "expected", info.branch, "got", branch)
-					idx.Storage.Save()
-					return ErrBranchChanged
-				}
-			}
 		}
 
 		if fi.Deleted {
@@ -384,31 +453,39 @@ func (idx *Indexer) IndexChanged() error {
 			continue
 		}
 
-		// Extract symbols and references for the knowledge graph
-		if idx.Extractor != nil && idx.Graph != nil {
-			content, rErr := os.ReadFile(fi.Path)
-			if rErr != nil {
-				slog.Warn("graph: read file", "file", fi.RelPath, "error", rErr)
-			} else {
-				symbols, refs, xErr := idx.Extractor.Extract(
-					string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
-				)
-				if xErr != nil {
-					slog.Warn("graph: extract", "file", fi.RelPath, "lang", fi.Language, "error", xErr)
-				} else if len(symbols) == 0 {
-					slog.Debug("graph: no symbols", "file", fi.RelPath, "lang", fi.Language)
-				} else {
-					if err := idx.Graph.StoreFile(fi.RelPath, symbols, refs); err != nil {
-						slog.Warn("graph: store", "file", fi.RelPath, "error", err)
+		// Skip if file hash hasn't changed and graph already has it
+		alreadyIndexed := idx.Storage.IsFileIndexed(fi.Path, fi.Hash)
+		alreadyExtracted := idx.Graph != nil && idx.Graph.HasFile(fi.RelPath)
+
+		if alreadyIndexed && alreadyExtracted {
+			slog.Debug("file already up to date, skipping", "file", fi.RelPath)
+			continue
+		}
+
+		// Defer graph extraction — collect for the second pass
+		if !alreadyExtracted {
+			pendingGraph = append(pendingGraph, fi)
+		}
+
+		if alreadyIndexed {
+			continue
+		}
+
+		// Branch check only for files that will actually be indexed (git is expensive)
+		if processedFiles%20 == 0 {
+			v := idx.expected.Load()
+			if v != nil {
+				info := v.(*expectedBranchInfo)
+				if info.branch != "" {
+					branch := idx.Walker.GetBranch()
+					worktree := idx.Walker.GetWorktreeName()
+					if branch != info.branch || worktree != info.worktree {
+						slog.Info("incremental index cancelled: branch changed", "expected", info.branch, "got", branch)
+						idx.Storage.Save()
+						return ErrBranchChanged
 					}
 				}
 			}
-		}
-
-		// Skip expensive embedding if the file hash hasn't changed
-		if idx.Storage.IsFileIndexed(fi.Path, fi.Hash) {
-			slog.Debug("file already up to date, skipping", "file", fi.RelPath)
-			continue
 		}
 
 		chunks, ok := chunksMap[fi.Path]
@@ -427,6 +504,37 @@ func (idx *Indexer) IndexChanged() error {
 		}
 
 		slog.Info("re-indexed changed file", "file", fi.RelPath, "chunks", len(chunks))
+	}
+
+	// ---- Phase 2: Graph extraction (tree-sitter) — deferred, non-blocking ----
+	if len(pendingGraph) > 0 && idx.Extractor != nil && idx.Graph != nil {
+		slog.Info("graph: extracting symbols for pending files", "count", len(pendingGraph))
+		for _, fi := range pendingGraph {
+			if idx.cancelReq.Load() {
+				idx.cancelReq.Store(false)
+				slog.Info("graph: extraction cancelled")
+				return ErrBranchChanged
+			}
+
+			content, rErr := os.ReadFile(fi.Path)
+			if rErr != nil {
+				slog.Warn("graph: read file", "file", fi.RelPath, "error", rErr)
+				continue
+			}
+			symbols, refs, xErr := idx.Extractor.Extract(
+				string(content), fi.Language, fi.Path, fi.RelPath, fi.Hash,
+			)
+			if xErr != nil {
+				slog.Warn("graph: extract", "file", fi.RelPath, "lang", fi.Language, "error", xErr)
+			} else if len(symbols) == 0 {
+				slog.Debug("graph: no symbols", "file", fi.RelPath, "lang", fi.Language)
+			} else {
+				if err := idx.Graph.StoreFile(fi.RelPath, symbols, refs); err != nil {
+					slog.Warn("graph: store", "file", fi.RelPath, "error", err)
+				}
+			}
+		}
+		slog.Info("graph: extraction complete", "files", len(pendingGraph))
 	}
 
 	headSHA := idx.Walker.GetHeadSHA()

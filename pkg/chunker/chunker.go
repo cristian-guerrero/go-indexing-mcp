@@ -40,6 +40,7 @@ type Chunker struct {
 	ChunkSize      int
 	ChunkOverlap   int
 	MinASTLines    int             // files below this skip AST (0 = always use AST)
+	MaxASTLines    int             // files above this skip AST (0 = no limit); tree-sitter is slow for large files
 	structSplitter *structural.Splitter
 	Parser         parser.Parser   // optional AST parser (tree-sitter); nil = regex only
 	stats          Stats
@@ -60,6 +61,7 @@ func New(chunkSize, chunkOverlap int) *Chunker {
 	return &Chunker{
 		ChunkSize:      chunkSize,
 		ChunkOverlap:   chunkOverlap,
+		MaxASTLines:    2000, // skip tree-sitter for files above 2000 lines (too slow)
 		structSplitter: structural.New(),
 	}
 }
@@ -94,6 +96,11 @@ func (c *Chunker) ChunkFile(fi walker.FileInfo) ([]Chunk, error) {
 
 	// Skip AST for small files where regex structural is fast enough
 	if c.Parser != nil && c.MinASTLines > 0 && totalLines < c.MinASTLines {
+		return c.doStructuralSplit(lines, fi)
+	}
+
+	// Skip AST for very large files where tree-sitter is prohibitively slow
+	if c.Parser != nil && c.MaxASTLines > 0 && totalLines > c.MaxASTLines {
 		return c.doStructuralSplit(lines, fi)
 	}
 
@@ -169,6 +176,13 @@ func (c *Chunker) ChunkFiles(files []walker.FileInfo) (map[string][]Chunk, error
 
 		// Skip AST for small files where regex structural is fast enough
 		if c.Parser != nil && c.MinASTLines > 0 && len(lines) < c.MinASTLines {
+			chunks, _ := c.doStructuralSplit(lines, fi)
+			results[fi.Path] = chunks
+			continue
+		}
+
+		// Skip AST for very large files where tree-sitter is prohibitively slow
+		if c.Parser != nil && c.MaxASTLines > 0 && len(lines) > c.MaxASTLines {
 			chunks, _ := c.doStructuralSplit(lines, fi)
 			results[fi.Path] = chunks
 			continue

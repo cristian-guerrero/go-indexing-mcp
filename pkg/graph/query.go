@@ -130,6 +130,13 @@ func (g *GraphQuery) SwitchBranch(branch, worktree string) error {
 	return nil
 }
 
+// BranchDir returns the graph directory path for the given branch/worktree.
+// For main: {storageDir}/, for others: {storageDir}-{worktree}-{branch}/.
+// Used by MCPServer to check directory existence and copy graph data during branch seeding.
+func (g *GraphQuery) BranchDir(branch, worktree string) string {
+	return g.storageDir + branchSuffix(branch, worktree)
+}
+
 // Close closes the underlying DB.
 func (g *GraphQuery) Close() error {
 	if g.DB != nil {
@@ -155,6 +162,18 @@ func (g *GraphQuery) StoreFile(relPath string, symbols []Symbol, refs []Referenc
 	}
 
 	return nil
+}
+
+// HasFile returns true if the graph already has symbols extracted for the given
+// relative file path. Used by IndexAll to skip redundant tree-sitter parsing.
+func (g *GraphQuery) HasFile(relPath string) bool {
+	if g.Cache == nil {
+		return false
+	}
+	g.Cache.mu.RLock()
+	defer g.Cache.mu.RUnlock()
+	_, ok := g.Cache.ByFile[relPath]
+	return ok
 }
 
 // RemoveFile removes all symbols and references for a file.

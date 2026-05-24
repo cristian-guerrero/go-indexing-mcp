@@ -39,6 +39,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 	"unsafe"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -157,20 +158,27 @@ func (p *TreeSitterParser) Parse(content, language string) ([]Block, error) {
 
 	lang, ok := p.grammars[language]
 	if !ok {
+		tDL := time.Now()
 		path, err := DownloadGrammar(language, p.cfg)
 		if err != nil {
 			p.mu.Unlock()
 			return nil, fmt.Errorf("download grammar %s: %w", language, err)
 		}
+		dlMs := time.Since(tDL).Milliseconds()
 
+		tLoad := time.Now()
 		lang, err = loadGrammarFromDLL(path, language)
 		if err != nil {
 			p.mu.Unlock()
 			return nil, fmt.Errorf("load grammar %s: %w", language, err)
 		}
+		loadMs := time.Since(tLoad).Milliseconds()
 
 		p.grammars[language] = lang
-		slog.Info("tree-sitter grammar loaded", "language", language, "path", path)
+		slog.Info("tree-sitter grammar loaded",
+			"language", language, "path", path,
+			"download_ms", dlMs, "dll_load_ms", loadMs,
+		)
 	}
 
 	stParser, ok := p.parsers[language]
@@ -181,7 +189,13 @@ func (p *TreeSitterParser) Parse(content, language string) ([]Block, error) {
 	}
 	p.mu.Unlock()
 
+	tParse := time.Now()
 	tree := stParser.Parse(nil, []byte(content))
+	tParseDone := time.Now()
+	parseMs := tParseDone.Sub(tParse).Milliseconds()
+	if parseMs > 100 {
+		slog.Warn("tree-sitter parse", "language", language, "content_bytes", len(content), "parse_ms", parseMs)
+	}
 	if tree == nil {
 		return nil, fmt.Errorf("parse %s: tree is nil", language)
 	}

@@ -262,9 +262,10 @@ func (s *Storage) ListFiles() []string {
 	return files
 }
 
-// branchSuffix builds the filename suffix for non-main git branches.
+// BranchSuffix builds the filename suffix for non-main git branches.
 // Returns "" for main, "-{worktree}-{branch}" for other branches.
-func branchSuffix(branch, worktree string) string {
+// Exported for branch seeding in MCPServer.
+func BranchSuffix(branch, worktree string) string {
 	var parts []string
 	if worktree != "" {
 		parts = append(parts, worktree)
@@ -276,6 +277,13 @@ func branchSuffix(branch, worktree string) string {
 		return ""
 	}
 	return "-" + strings.Join(parts, "-")
+}
+
+// GobPath returns the full gob file path for a given branch/worktree,
+// using the storage's base path prefix. Used by MCPServer to check file
+// existence and copy gob data during branch seeding.
+func (s *Storage) GobPath(branch, worktree string) string {
+	return s.pathPrefix + BranchSuffix(branch, worktree) + ".gob"
 }
 
 // SwitchBranch persists the current index and loads the index for a different
@@ -291,7 +299,7 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 		}
 	}
 
-	suffix := branchSuffix(branch, worktree)
+	suffix := BranchSuffix(branch, worktree)
 	s.path = s.pathPrefix + suffix + ".gob"
 
 	s.records = nil
@@ -397,6 +405,23 @@ func (s *Storage) SetIgnoredFilesHash(hash string) {
 	defer s.mu.Unlock()
 	s.ignoredFilesHash = hash
 	s.dirty = true
+}
+
+// LoadGob reads a gob file from the given path and returns its decoded
+// StorageData. Returns nil on any error. Used by MCPServer to inspect
+// branch gobs during branch seeding.
+func LoadGob(gobPath string) *StorageData {
+	f, err := os.Open(gobPath)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	var data StorageData
+	dec := gob.NewDecoder(f)
+	if err := dec.Decode(&data); err != nil {
+		return nil
+	}
+	return &data
 }
 
 // GetIgnoredFilesHash returns the stored ignore pattern hash.

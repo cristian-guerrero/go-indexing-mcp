@@ -112,10 +112,11 @@ var definitionNodeTypes = map[string]SymbolKind{
 
 // importNodeTypes identifies nodes that contain import statements.
 var importNodeTypes = map[string]bool{
-	"import_declaration":        true, // Go
-	"import_statement":          true, // Python, TypeScript
-	"import_from_statement":     true, // Python
-	"require_call":              true, // JS/TS
+	"import_declaration":           true, // Go
+	"import_statement":             true, // Python, TypeScript
+	"import_from_statement":        true, // Python
+	"require_call":                 true, // JS/TS
+	"namespace_use_declaration":    true, // PHP
 }
 
 // callNodeTypes identifies function/method call nodes.
@@ -649,6 +650,32 @@ func extractImports(node *sitter.Node, source []byte, ntype, language, filePath,
 			})
 		}
 
+	case language == "php" && ntype == "namespace_use_declaration":
+		// use App\Models\User or use App\Models\User as Admin
+		rest := strings.TrimPrefix(content, "use ")
+		rest = strings.TrimSpace(rest)
+		// Remove leading \ if present
+		rest = strings.TrimPrefix(rest, "\\")
+		// Handle `use function` and `use const`
+		rest = strings.TrimPrefix(rest, "function ")
+		rest = strings.TrimPrefix(rest, "const ")
+		if rest != "" {
+			path := rest
+			// Strip alias: `use X as Y` → keep `X`
+			if idx := strings.Index(strings.ToLower(rest), " as "); idx > 0 {
+				path = strings.TrimSpace(rest[:idx])
+			}
+			if path != "" {
+				id := symbolID(fileHash, relPath, startLine, path)
+				symbols = append(symbols, Symbol{
+					ID: id, Name: path, Kind: SymbolImport,
+					FilePath: filePath, RelPath: relPath,
+					StartLine: startLine, EndLine: endLine,
+					Signature: content, Exported: false,
+				})
+			}
+		}
+
 	case (language == "typescript" || language == "javascript" || language == "tsx") && ntype == "import_statement":
 		// import { X } from "module"
 		if strings.Contains(content, "from ") {
@@ -673,7 +700,7 @@ func extractImports(node *sitter.Node, source []byte, ntype, language, filePath,
 
 // extractImportRefs extracts import references for each imported identifier so that
 // --symbol-info finds them as usages. Supported languages: TS/JS/TSX (import_statement),
-// Python (import_statement, import_from_statement).
+// Python (import_statement, import_from_statement), PHP (namespace_use_declaration).
 func extractImportRefs(content, ntype, language, filePath, relPath, fileHash string, startLine int) []Reference {
 	switch {
 	case (language == "typescript" || language == "javascript" || language == "tsx") && ntype == "import_statement":
@@ -684,6 +711,9 @@ func extractImportRefs(content, ntype, language, filePath, relPath, fileHash str
 
 	case language == "python" && ntype == "import_statement":
 		return extractPythonImportRefs(content, filePath, relPath, fileHash, startLine)
+
+	case language == "php" && ntype == "namespace_use_declaration":
+		return extractPHPImportRefs(content, filePath, relPath, fileHash, startLine)
 	}
 	return nil
 }
@@ -793,6 +823,57 @@ func makeImportRef(fileHash, relPath string, startLine int, name, filePath strin
 		Line:       startLine,
 		Confidence: 1.0,
 	}
+}
+
+// extractPHPImportRefs extracts import references from PHP `use` statements.
+// e.g. "use App\Models\User" → ref for "User"
+// e.g. "use App\Models\User as Admin" → ref for "User" (original name, not alias)
+// e.g. "use function App\Helpers\formatDate" → ref for "formatDate"
+func extractPHPImportRefs(content, filePath, relPath, fileHash string, startLine int) []Reference {
+	rest := strings.TrimPrefix(content, "use ")
+	rest = strings.TrimSpace(rest)
+	rest = strings.TrimPrefix(rest, "\\")
+	rest = strings.TrimPrefix(rest, "function ")
+	rest = strings.TrimPrefix(rest, "const ")
+	if rest == "" {
+		return nil
+	}
+
+	// Handle grouped use: use App\Models\{User, Post}
+	if idx := strings.Index(rest, "{"); idx > 0 {
+		closeIdx := strings.Index(rest, "}")
+		if closeIdx <= idx {
+			return nil
+		}
+		inner := rest[idx+1 : closeIdx]
+		var refs []Reference
+		for _, item := range strings.Split(inner, ",") {
+			item = strings.TrimSpace(item)
+			if item != "" {
+				// Strip alias: `X as Y` → keep `X`
+				name := item
+				if asIdx := strings.Index(strings.ToLower(item), " as "); asIdx > 0 {
+					name = strings.TrimSpace(item[:asIdx])
+				}
+				refs = append(refs, makeImportRef(fileHash, relPath, startLine, name, filePath))
+			}
+		}
+		return refs
+	}
+
+	// Single use: use App\Models\User or use App\Models\User as Admin
+	name := rest
+	if asIdx := strings.Index(strings.ToLower(rest), " as "); asIdx > 0 {
+		name = strings.TrimSpace(rest[:asIdx])
+	}
+	// Extract the short name (last segment after \)
+	if idx := strings.LastIndex(name, "\\"); idx >= 0 {
+		name = name[idx+1:]
+	}
+	if name == "" {
+		return nil
+	}
+	return []Reference{makeImportRef(fileHash, relPath, startLine, name, filePath)}
 }
 
 // extractZigImportRef extracts import references from Zig @import builtin calls.

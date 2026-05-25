@@ -316,6 +316,16 @@ func walkAST(node *sitter.Node, source []byte, language, filePath, relPath, file
 		}
 	}
 
+	// Extract JSX component references from TSX/JSX self-closing and opening elements.
+	// For `<BlogPostPage />`, creates a RefCalls reference for the component name
+	// so --symbol-info finds it as a caller.
+	if (ntype == "jsx_self_closing_element" || ntype == "jsx_element") &&
+		(language == "typescript" || language == "javascript" || language == "tsx") {
+		if ref := extractJSXRef(node, source, filePath, relPath, fileHash, startLine); ref != nil {
+			*refs = append(*refs, ref...)
+		}
+	}
+
 	// Extract type references: any type_identifier that is not the name in a type_spec
 	// (i.e., not a type definition) is a usage of that type.
 	if ntype == "type_identifier" {
@@ -639,7 +649,7 @@ func extractImports(node *sitter.Node, source []byte, ntype, language, filePath,
 			})
 		}
 
-	case (language == "typescript" || language == "javascript") && ntype == "import_statement":
+	case (language == "typescript" || language == "javascript" || language == "tsx") && ntype == "import_statement":
 		// import { X } from "module"
 		if strings.Contains(content, "from ") {
 			parts := strings.Split(content, "from ")
@@ -662,11 +672,11 @@ func extractImports(node *sitter.Node, source []byte, ntype, language, filePath,
 }
 
 // extractImportRefs extracts import references for each imported identifier so that
-// --symbol-info finds them as usages. Supported languages: TS/JS (import_statement),
+// --symbol-info finds them as usages. Supported languages: TS/JS/TSX (import_statement),
 // Python (import_statement, import_from_statement).
 func extractImportRefs(content, ntype, language, filePath, relPath, fileHash string, startLine int) []Reference {
 	switch {
-	case (language == "typescript" || language == "javascript") && ntype == "import_statement":
+	case (language == "typescript" || language == "javascript" || language == "tsx") && ntype == "import_statement":
 		return extractJSImportRefs(content, filePath, relPath, fileHash, startLine)
 
 	case language == "python" && ntype == "import_from_statement":
@@ -836,6 +846,46 @@ func extractGoImportPath(line string) string {
 	}
 	if strings.HasPrefix(line, `"`) && strings.HasSuffix(line, `"`) {
 		return strings.Trim(line, `"`)
+	}
+	return ""
+}
+
+// extractJSXRef extracts a call reference from a JSX element.
+// For `<BlogPostPage />` or `<BlogPostPage>...</BlogPostPage>`, finds the
+// name field child with the component name and creates a RefCalls reference.
+// In tree-sitter-javascript v0.23+, JSX element names without hyphens use
+// a regular `identifier` node (not `jsx_identifier`), so we rely on the
+// `name` field rather than scanning by child type.
+func extractJSXRef(node *sitter.Node, source []byte, filePath, relPath, fileHash string, startLine int) []Reference {
+	name := findJSXComponentName(node, source)
+	if name == "" {
+		return nil
+	}
+	id := symbolID(fileHash, relPath, startLine, "jsx:"+name)
+	return []Reference{{
+		ID:         refID(id, name, RefCalls, startLine),
+		SourceID:   id,
+		TargetName: name,
+		Kind:       RefCalls,
+		FilePath:   filePath,
+		Line:       startLine,
+		Confidence: 1.0,
+	}}
+}
+
+// findJSXComponentName extracts the component name from a JSX element node.
+// jsx_self_closing_element: uses the top-level `name` field.
+// jsx_element: the `name` field is nested inside the `open_tag` field.
+func findJSXComponentName(node *sitter.Node, source []byte) string {
+	// For <Component /> — name is a direct field
+	if nameNode := node.ChildByFieldName("name"); nameNode != nil {
+		return nameNode.Content(source)
+	}
+	// For <Component>...</Component> — name is nested in jsx_opening_element
+	if openTag := node.ChildByFieldName("open_tag"); openTag != nil {
+		if nameNode := openTag.ChildByFieldName("name"); nameNode != nil {
+			return nameNode.Content(source)
+		}
 	}
 	return ""
 }

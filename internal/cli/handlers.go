@@ -1065,7 +1065,8 @@ func RunFindImports(pattern, rootDir string) int {
 func RunSymbolInfo(name, pathFilter, rootDir string) int {
 	return runGraphQuery("symbol-info", func(g *graph.GraphQuery) {
 		info := g.GetSymbolInfo(name, pathFilter)
-		data, _ := json.MarshalIndent(info, "", "  ")
+		formatted := graph.FormatSymbolInfo(info)
+		data, _ := json.MarshalIndent(formatted, "", "  ")
 		fmt.Println(string(data))
 	}, rootDir)
 }

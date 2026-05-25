@@ -293,6 +293,14 @@ func walkAST(node *sitter.Node, source []byte, language, filePath, relPath, file
 	if importNodeTypes[ntype] {
 		imports := extractImports(node, source, ntype, language, filePath, relPath, fileHash, startLine)
 		*symbols = append(*symbols, imports...)
+
+		// For TS/JS import statements, also extract references for each imported
+		// identifier (default, named, namespace) so --symbol-info finds them as usages.
+		if ntype == "import_statement" && (language == "typescript" || language == "javascript") {
+			content := node.Content(source)
+			importRefs := extractJSImportRefs(content, filePath, relPath, fileHash, startLine)
+			*refs = append(*refs, importRefs...)
+		}
 	}
 
 	// Extract calls
@@ -644,6 +652,94 @@ func extractImports(node *sitter.Node, source []byte, ntype, language, filePath,
 	}
 
 	return symbols
+}
+
+// extractJSImportRefs extracts import references from TS/JS import statements.
+// For `import BlogPostPage from './file'` or `import { X, Y } from 'module'`,
+// creates Reference entries for each imported identifier so that --symbol-info
+// can find them as usages.
+func extractJSImportRefs(content, filePath, relPath, fileHash string, startLine int) []Reference {
+	importPart := content
+	if idx := strings.Index(content, " from "); idx > 0 {
+		importPart = content[len("import "):idx]
+	} else {
+		importPart = strings.TrimPrefix(content, "import ")
+	}
+	importPart = strings.TrimSpace(importPart)
+	if importPart == "" {
+		return nil
+	}
+
+	// Side-effect import: import './styles.css'
+	if strings.HasPrefix(importPart, "'") || strings.HasPrefix(importPart, "\"") {
+		return nil
+	}
+
+	// Namespace import: import * as X from 'module'
+	if strings.HasPrefix(importPart, "* as ") {
+		name := strings.TrimSpace(strings.TrimPrefix(importPart, "* as "))
+		if name != "" {
+			id := symbolID(fileHash, relPath, startLine, "import:"+name)
+			return []Reference{{
+				ID: refID(id, name, RefImports, startLine),
+				SourceID:   id,
+				TargetName: name,
+				Kind:       RefImports,
+				FilePath:   filePath,
+				Line:       startLine,
+				Confidence: 1.0,
+			}}
+		}
+		return nil
+	}
+
+	var refs []Reference
+
+	// Named import: import { X, Y as Z } from 'module'
+	if strings.HasPrefix(importPart, "{") {
+		inner := strings.TrimSpace(importPart[1 : len(importPart)-1])
+		for _, item := range strings.Split(inner, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			name := item
+			if idx := strings.Index(strings.ToLower(item), " as "); idx > 0 {
+				name = strings.TrimSpace(item[:idx])
+			}
+			if name != "" {
+				id := symbolID(fileHash, relPath, startLine, "import:"+name)
+				refs = append(refs, Reference{
+					ID: refID(id, name, RefImports, startLine),
+					SourceID:   id,
+					TargetName: name,
+					Kind:       RefImports,
+					FilePath:   filePath,
+					Line:       startLine,
+					Confidence: 1.0,
+				})
+			}
+		}
+		return refs
+	}
+
+	// Default import: import X from 'module'
+	name := strings.TrimSpace(importPart)
+	if name == "" {
+		return nil
+	}
+	id := symbolID(fileHash, relPath, startLine, "import:"+name)
+	refs = append(refs, Reference{
+		ID: refID(id, name, RefImports, startLine),
+		SourceID:   id,
+		TargetName: name,
+		Kind:       RefImports,
+		FilePath:   filePath,
+		Line:       startLine,
+		Confidence: 1.0,
+	})
+
+	return refs
 }
 
 // extractGoImportPath extracts the quoted path from a Go import line.

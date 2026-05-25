@@ -665,15 +665,27 @@ func (m *MCPServer) registerTools() {
 }
 
 // ensureLlama checks if llama-server is running and starts it if not.
+// After starting, it updates the embedder's BaseURL to match the actual server port.
 func (m *MCPServer) ensureLlama() error {
 	if m.mgr == nil {
 		return nil
 	}
 	if m.mgr.IsRunning() {
+		// Sync embedder URL in case it was constructed before Start() set the port.
+		if m.indexer != nil && m.indexer.Embedder != nil {
+			m.indexer.Embedder.BaseURL = m.mgr.BaseURL()
+		}
 		return nil
 	}
 	slog.Info("llama-server not running, starting it")
-	return m.mgr.Start()
+	if err := m.mgr.Start(); err != nil {
+		return err
+	}
+	// Update embedder with the actual URL after successful start.
+	if m.indexer != nil && m.indexer.Embedder != nil {
+		m.indexer.Embedder.BaseURL = m.mgr.BaseURL()
+	}
+	return nil
 }
 
 // watchChecker runs periodically (watchInterval) and:

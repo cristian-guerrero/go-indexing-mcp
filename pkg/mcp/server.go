@@ -25,7 +25,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// MCPServer wraps the MCP protocol server with indexer, llama manager, idle timeout,
+// MCPServer wraps the MCP protocol server with indexer, llama manager,
 // watch checker for auto-reindexing, and branch-isolated index switching.
 type MCPServer struct {
 	server          *server.MCPServer
@@ -33,23 +33,19 @@ type MCPServer struct {
 	mgr             *llama.Manager
 	currentBranch   string
 	currentWorktree string
-	lastActivity    atomic.Int64
-	idleTimeout     time.Duration
 	watchInterval   time.Duration
 	stopped         atomic.Bool
 }
 
 // New creates an MCPServer, registers MCP tools, and starts background goroutines
-// for idle timeout, periodic watch (if enabled), and startup index check.
-func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int, watchEnabled bool, watchIntervalSecs int) *MCPServer {
+// for periodic watch (if enabled) and startup index check. llama-server manages its
+// own idle sleep via --sleep-idle-seconds, so no Go-level idle checker is needed.
+func New(idx *indexer.Indexer, mgr *llama.Manager, watchEnabled bool, watchIntervalSecs int) *MCPServer {
 	s := server.NewMCPServer(
 		"go-indexing-mcp",
 		"1.0.0",
 	)
 
-	if idleTimeoutSecs <= 0 {
-		idleTimeoutSecs = 300
-	}
 	if watchIntervalSecs <= 0 {
 		watchIntervalSecs = 0
 	}
@@ -58,13 +54,10 @@ func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int, watchEna
 		server:        s,
 		indexer:       idx,
 		mgr:           mgr,
-		idleTimeout:   time.Duration(idleTimeoutSecs) * time.Second,
 		watchInterval: time.Duration(watchIntervalSecs) * time.Second,
 	}
-	m.lastActivity.Store(time.Now().UnixNano())
 
 	m.registerTools()
-	go m.idleChecker()
 	if watchEnabled && watchIntervalSecs > 0 {
 		go m.watchChecker()
 	}
@@ -671,14 +664,8 @@ func (m *MCPServer) registerTools() {
 	m.registerGraphTools()
 }
 
-// touchActivity updates the last-activity timestamp to prevent idle timeout.
-func (m *MCPServer) touchActivity() {
-	m.lastActivity.Store(time.Now().UnixNano())
-}
-
 // ensureLlama checks if llama-server is running and starts it if not.
 func (m *MCPServer) ensureLlama() error {
-	m.touchActivity()
 	if m.mgr == nil {
 		return nil
 	}
@@ -687,29 +674,6 @@ func (m *MCPServer) ensureLlama() error {
 	}
 	slog.Info("llama-server not running, starting it")
 	return m.mgr.Start()
-}
-
-// idleChecker runs every 10s and stops llama-server after idleTimeout of inactivity,
-// freeing GPU memory. llama-server wakes on the next MCP tool call via ensureLlama.
-func (m *MCPServer) idleChecker() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		if m.stopped.Load() {
-			return
-		}
-
-		last := time.Unix(0, m.lastActivity.Load())
-		if time.Since(last) < m.idleTimeout {
-			continue
-		}
-
-		if m.mgr != nil && m.mgr.IsRunning() && m.mgr.StartedProcess() {
-			slog.Info("idle timeout reached, stopping llama-server to free memory", "idle", m.idleTimeout)
-			m.mgr.Stop()
-		}
-	}
 }
 
 // watchChecker runs periodically (watchInterval) and:
@@ -762,8 +726,6 @@ func (m *MCPServer) watchChecker() {
 			}
 			continue
 		}
-
-		m.touchActivity()
 
 		if branch != m.currentBranch || worktree != m.currentWorktree {
 			slog.Info("watch: branch/worktree changed", "from", m.currentBranch+"/"+m.currentWorktree, "to", branch+"/"+worktree)
@@ -1127,9 +1089,6 @@ func (m *MCPServer) Serve() error {
 		slog.Info("MCP server stopped (client disconnected)")
 	}
 	m.stopped.Store(true)
-	if m.mgr != nil {
-		slog.Info("releasing llama-server on MCP server shutdown")
-		m.mgr.Stop()
-	}
+	slog.Info("MCP server shut down, llama-server left running for reuse")
 	return err
 }

@@ -508,6 +508,9 @@ func (m *Manager) Start() error {
 	if m.Cfg.Llama.Pooling != "" {
 		args = append(args, "--pooling", m.Cfg.Llama.Pooling)
 	}
+	if m.Cfg.Indexing.IdleTimeoutSecs > 0 {
+		args = append(args, "--sleep-idle-seconds", strconv.Itoa(m.Cfg.Indexing.IdleTimeoutSecs))
+	}
 	args = append(args, m.Cfg.Llama.ExtraArgs...)
 
 	m.setupJob()

@@ -37,8 +37,8 @@ type LlamaConfig struct {
 	ExtraArgs  []string `json:"extra_args"`
 }
 
-// IndexingConfig controls file walking, chunking, git integration, idle timeout,
-// watch intervals, and periodic memory freeing during indexing.
+// IndexingConfig controls file walking, chunking, git integration, model sleep timeout
+// (--sleep-idle-seconds), watch intervals, and periodic memory freeing during indexing.
 type IndexingConfig struct {
 	RootPath           string   `json:"root_path"`
 	IgnorePatterns     []string `json:"ignore_patterns"`
@@ -383,7 +383,7 @@ func fillMissing(cfg *Config) {
 		cfg.Indexing.ChunkOverlap = cfg.Indexing.ChunkSize / 5
 	}
 	if cfg.Indexing.IdleTimeoutSecs == 0 {
-		cfg.Indexing.IdleTimeoutSecs = 300
+		cfg.Indexing.IdleTimeoutSecs = def.Indexing.IdleTimeoutSecs
 	}
 	if cfg.Indexing.WatchIntervalSecs == 0 {
 		cfg.Indexing.WatchIntervalSecs = 60

@@ -49,7 +49,6 @@ func (m *MCPServer) handleFindImports(ctx context.Context, req mcp.CallToolReque
 		return mcp.NewToolResultError("pattern is required"), nil
 	}
 
-	m.touchActivity()
 	m.pruneGraph()
 
 	g := m.indexer.Graph
@@ -92,7 +91,6 @@ func (m *MCPServer) handleSymbolInfo(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError("name is required"), nil
 	}
 
-	m.touchActivity()
 	m.pruneGraph()
 
 	g := m.indexer.Graph

@@ -128,7 +128,9 @@ En la primera ejecución (sin flags), `selfsetup.Run()`:
 - `IsRunning()` verifica health endpoint HTTP
 - `StartedProcess()` indica si el manager local inició el proceso (vs reutilizar uno existente)
 - `--free` mata el proceso por puerto usando `netstat -ano`
-- En `--generate` y `--query`: si el server ya estaba corriendo se reusa, si no se inicia y se detiene al terminar
+- En MCP mode: llama-server se inicia **lazy** (al primer tool call vía `ensureLlama()`) y nunca se detiene — el proceso queda vivo para la próxima sesión
+- En `--generate` y `--query`: igual — se inicia si no corre, pero ya no se detiene al terminar
+- `--sleep-idle-seconds N`: llama-server descarga el modelo de VRAM tras N segundos inactivo; el proceso sigue vivo y recarga automáticamente en el próximo request (configurable vía `idle_timeout_secs`)
 
 ## Dependencias Externas
 

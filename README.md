@@ -174,11 +174,11 @@ The configuration file at `~/.go-mcp/indexing/config.json` supports these option
 | `llama.extra_args` | `[]` | Additional llama-server CLI arguments |
 | `watch_enabled` | `true` | Enable periodic background indexing |
 | `watch_interval_secs` | `60` | Interval between background index checks |
-| `idle_timeout_secs` | `300` | Seconds of inactivity before stopping llama.cpp (0 = disable) |
+| `idle_timeout_secs` | `300` | Seconds of inactivity before llama-server unloads the model (passed as `--sleep-idle-seconds`, 0 = disable) |
 
-### Idle timeout
+### Model sleep
 
-After the configured `idle_timeout_secs` of inactivity (default: 5 min), the server stops llama.cpp to free VRAM. The next search restarts it automatically. The periodic watcher keeps the server active and prevents idle timeout.
+After the configured `idle_timeout_secs` of inactivity (default: 5 min), llama-server automatically puts the model to sleep — the process stays alive but frees VRAM. On the next tool call, the model reloads automatically. No process kill/restart needed. Configurable via `idle_timeout_secs`.
 
 ## Architecture
 

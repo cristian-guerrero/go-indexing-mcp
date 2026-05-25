@@ -336,34 +336,11 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 
 	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB, cfg.Indexing.IgnorePatterns)
 
-	var gq *graph.GraphQuery
-	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
-	if gq2, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
-		ext := graph.NewExtractor()
-		idx.WithGraph(gq2, ext)
-		gq = gq2
-		if err := gq2.SwitchBranch(branch, worktree); err != nil {
-			slog.Warn("graph: branch switch", "error", err)
-		}
-	}
-	defer func() {
-		if gq != nil {
-			gq.Close()
-		}
-	}()
-
 	// Check for format version mismatch — clear and reindex if needed
 	if st.NeedsReindex() {
 		slog.Warn("storage format version changed, clearing for reindex")
 		if err := st.ClearAll(); err != nil {
 			slog.Error("clear storage", "error", err)
-			return 1
-		}
-	}
-	if gq != nil && gq.NeedsReindex() {
-		slog.Warn("graph format version changed, clearing for reindex")
-		if err := gq.DB.Clear(); err != nil {
-			slog.Error("clear graph", "error", err)
 			return 1
 		}
 	}
@@ -381,7 +358,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 
 		// Try seeding if empty or incomplete (interrupted mid-index)
 		if stats.TotalChunks == 0 || st.GetCommitSHA() == "" {
-			if mcp.SeedBranchFrom(st, gq, w, branch, worktree) {
+			if mcp.SeedBranchFrom(st, nil, w, branch, worktree) {
 				stats = idx.GetStats()
 				slog.Info("branch seeded from another branch")
 			}
@@ -522,22 +499,6 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	}
 
 	idx := indexer.New(w, ch, nil, st, nil, 0, 0, cfg.Indexing.IgnorePatterns)
-
-	var gq *graph.GraphQuery
-	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
-	if gq2, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
-		ext := graph.NewExtractor()
-		idx.WithGraph(gq2, ext)
-		gq = gq2
-		if err := gq2.SwitchBranch(branch, worktree); err != nil {
-			slog.Warn("graph: branch switch", "error", err)
-		}
-	}
-	defer func() {
-		if gq != nil {
-			gq.Close()
-		}
-	}()
 
 	// Check for format version mismatch — grep mode can't reindex, so warn and exit
 	if st.NeedsReindex() {

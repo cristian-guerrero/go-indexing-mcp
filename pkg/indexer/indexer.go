@@ -456,41 +456,28 @@ func (idx *Indexer) IndexChanged() error {
 		return nil
 	}
 
-	slog.Info("incremental index", "files", len(files), "since", sinceSHA)
-
 	// Skip AST (tree-sitter) during chunking — regex structural is fast enough
 	// and avoids CPU pauses that stall llama-server between embedding batches.
 	idx.Chunker.SkipAST = true
 
-	chunksMap, err := idx.Chunker.ChunkFiles(files)
-	if err != nil {
-		return fmt.Errorf("chunk changed files: %w", err)
-	}
-
+	// First pass: filter out already-indexed files before the expensive chunking phase
 	var pendingGraph []walker.FileInfo
+	var needsIndex []walker.FileInfo
 	processedFiles := 0
+	var indexedCount int
+	var deletedCount int
 
 	for _, fi := range files {
-		processedFiles++
-
-		// Check for cancellation on every file (atomic, cheap)
-		if idx.cancelReq.Load() {
-			idx.cancelReq.Store(false)
-			slog.Info("incremental index cancelled by request")
-			idx.Storage.Save()
-			return ErrBranchChanged
-		}
-
 		if fi.Deleted {
 			idx.Storage.DeleteChunksByPath(fi.Path)
 			if idx.Graph != nil {
 				idx.Graph.RemoveFile(fi.RelPath)
 			}
 			slog.Info("removed deleted file from index", "file", fi.RelPath)
+			deletedCount++
 			continue
 		}
 
-		// Skip if file hash hasn't changed and graph already has it
 		alreadyIndexed := idx.Storage.IsFileIndexed(fi.Path, fi.Hash)
 		alreadyExtracted := idx.Graph != nil && idx.Graph.HasFile(fi.RelPath)
 
@@ -499,61 +486,93 @@ func (idx *Indexer) IndexChanged() error {
 			continue
 		}
 
-		// Defer graph extraction — collect for the second pass
 		if !alreadyExtracted {
 			pendingGraph = append(pendingGraph, fi)
 		}
 
-		if alreadyIndexed {
-			continue
+		if !alreadyIndexed {
+			needsIndex = append(needsIndex, fi)
 		}
-
-		// Branch check only for files that will actually be indexed (git is expensive)
-		if processedFiles%20 == 0 {
-			v := idx.expected.Load()
-			if v != nil {
-				info := v.(*expectedBranchInfo)
-				if info.branch != "" {
-					branch := idx.Walker.GetBranch()
-					worktree := idx.Walker.GetWorktreeName()
-					if branch != info.branch || worktree != info.worktree {
-						slog.Info("incremental index cancelled: branch changed", "expected", info.branch, "got", branch)
-						idx.Storage.Save()
-						return ErrBranchChanged
-					}
-				}
-			}
-		}
-
-		chunks, ok := chunksMap[fi.Path]
-		if !ok || len(chunks) == 0 {
-			continue
-		}
-
-		embeddings, err := idx.Embedder.EmbedChunks(chunks)
-		if err != nil {
-			return fmt.Errorf("embed changed %s: %w", fi.RelPath, err)
-		}
-
-		idx.Storage.DeleteChunksByPath(fi.Path)
-		if err := idx.Storage.UpsertChunks(chunks, embeddings); err != nil {
-			return fmt.Errorf("store changed %s: %w", fi.RelPath, err)
-		}
-
-		slog.Info("re-indexed changed file", "file", fi.RelPath, "chunks", len(chunks))
 	}
 
 	idx.PendingGraph = pendingGraph
+
+	if len(needsIndex) == 0 && deletedCount == 0 {
+		slog.Debug("incremental index: no changes to persist", "files_checked", len(files))
+		return nil
+	}
+
+	if len(needsIndex) > 0 {
+		slog.Info("incremental index", "files", len(needsIndex), "deleted", deletedCount, "since", sinceSHA)
+
+		chunksMap, err := idx.Chunker.ChunkFiles(needsIndex)
+		if err != nil {
+			return fmt.Errorf("chunk changed files: %w", err)
+		}
+
+		for _, fi := range needsIndex {
+			processedFiles++
+
+			// Check for cancellation on every file (atomic, cheap)
+			if idx.cancelReq.Load() {
+				idx.cancelReq.Store(false)
+				slog.Info("incremental index cancelled by request")
+				if indexedCount > 0 || deletedCount > 0 {
+					idx.Storage.SavePeriodic()
+				}
+				return ErrBranchChanged
+			}
+
+			// Branch check only for files that will actually be indexed (git is expensive)
+			if processedFiles%20 == 0 {
+				v := idx.expected.Load()
+				if v != nil {
+					info := v.(*expectedBranchInfo)
+					if info.branch != "" {
+						branch := idx.Walker.GetBranch()
+						worktree := idx.Walker.GetWorktreeName()
+						if branch != info.branch || worktree != info.worktree {
+							slog.Info("incremental index cancelled: branch changed", "expected", info.branch, "got", branch)
+							if indexedCount > 0 || deletedCount > 0 {
+								idx.Storage.SavePeriodic()
+							}
+							return ErrBranchChanged
+						}
+					}
+				}
+			}
+
+			chunks, ok := chunksMap[fi.Path]
+			if !ok || len(chunks) == 0 {
+				continue
+			}
+
+			embeddings, err := idx.Embedder.EmbedChunks(chunks)
+			if err != nil {
+				return fmt.Errorf("embed changed %s: %w", fi.RelPath, err)
+			}
+
+			idx.Storage.DeleteChunksByPath(fi.Path)
+			if err := idx.Storage.UpsertChunks(chunks, embeddings); err != nil {
+				return fmt.Errorf("store changed %s: %w", fi.RelPath, err)
+			}
+
+			slog.Info("re-indexed changed file", "file", fi.RelPath, "chunks", len(chunks))
+			indexedCount++
+		}
+	}
 
 	headSHA := idx.Walker.GetHeadSHA()
 	if headSHA != "" {
 		idx.Storage.SetCommitSHA(headSHA)
 	}
 
-	if err := idx.Storage.Save(); err != nil {
+	// SavePeriodic skips trigram persistence — trigrams are expensive and only
+	// needed by grep queries, which build them lazily via ensureTrigrams().
+	if err := idx.Storage.SavePeriodic(); err != nil {
 		slog.Warn("index changed save", "error", err)
 	} else {
-		slog.Info("incremental index complete", "files", len(files), "sha", headSHA)
+		slog.Info("incremental index complete", "files", len(files), "indexed", indexedCount, "deleted", deletedCount, "sha", headSHA)
 	}
 
 	return nil

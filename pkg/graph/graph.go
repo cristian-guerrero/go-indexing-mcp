@@ -216,6 +216,69 @@ func (g *KnowledgeGraph) GetFileSymbols(relPath string) []*Symbol {
 	return results
 }
 
+// GetFileRefs returns all references belonging to a file.
+func (g *KnowledgeGraph) GetFileRefs(relPath string) []Reference {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	var out []Reference
+	for _, ref := range g.Refs {
+		if refMatchesPath(ref.FilePath, relPath) {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+// ResolveRefs attempts to resolve all unresolved references (empty TargetID)
+// by matching TargetName against known symbol definitions. When exactly one
+// symbol matches the name, TargetID is set to that symbol's ID. Ambiguous
+// names (multiple matches) are skipped to avoid false positives.
+// Returns the count of resolved references and the list of modified file paths.
+func (g *KnowledgeGraph) ResolveRefs() (resolved int, modifiedRelPaths []string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	seenFiles := make(map[string]bool)
+
+	for i := range g.Refs {
+		if g.Refs[i].TargetID != "" {
+			continue
+		}
+		name := strings.ToLower(g.Refs[i].TargetName)
+		ids := g.ByName[name]
+		if len(ids) != 1 {
+			continue
+		}
+
+		// Exactly one candidate — resolve
+		g.Refs[i].TargetID = ids[0]
+
+		// Update ByTarget index copy too
+		targetRefs := g.ByTarget[name]
+		for j := range targetRefs {
+			if targetRefs[j].ID == g.Refs[i].ID {
+				targetRefs[j].TargetID = ids[0]
+				break
+			}
+		}
+		g.ByTarget[name] = targetRefs
+		resolved++
+
+		// Track which source file changed
+		for rel := range g.ByFile {
+			if refMatchesPath(g.Refs[i].FilePath, rel) {
+				if !seenFiles[rel] {
+					seenFiles[rel] = true
+					modifiedRelPaths = append(modifiedRelPaths, rel)
+				}
+				break
+			}
+		}
+	}
+	return
+}
+
 // Stats returns graph statistics.
 func (g *KnowledgeGraph) Stats() (symbols, refs int) {
 	g.mu.RLock()

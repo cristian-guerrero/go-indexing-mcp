@@ -22,6 +22,7 @@ type FormatSymbolDef struct {
 // FormatRefResult is a clean representation of a reference (usage/caller/callee).
 type FormatRefResult struct {
 	TargetName string  `json:"target_name"`
+	TargetID   string  `json:"target_id,omitempty"`
 	Kind       string  `json:"kind"`
 	FilePath   string  `json:"file_path"`
 	Line       int     `json:"line"`
@@ -53,6 +54,7 @@ func FormatSymbolInfo(info *SymbolInfo) *FormatSymbolInfoResult {
 	for _, u := range info.Usages {
 		result.Usages = append(result.Usages, FormatRefResult{
 			TargetName: u.TargetName,
+			TargetID:   u.TargetID,
 			Kind:       u.Kind.String(),
 			FilePath:   u.FilePath,
 			Line:       u.Line,
@@ -62,6 +64,7 @@ func FormatSymbolInfo(info *SymbolInfo) *FormatSymbolInfoResult {
 	for _, c := range info.Callers {
 		result.Callers = append(result.Callers, FormatRefResult{
 			TargetName: c.TargetName,
+			TargetID:   c.TargetID,
 			Kind:       c.Kind.String(),
 			FilePath:   c.FilePath,
 			Line:       c.Line,
@@ -70,6 +73,7 @@ func FormatSymbolInfo(info *SymbolInfo) *FormatSymbolInfoResult {
 	for _, c := range info.Callees {
 		result.Callees = append(result.Callees, FormatRefResult{
 			TargetName: c.TargetName,
+			TargetID:   c.TargetID,
 			Kind:       c.Kind.String(),
 			FilePath:   c.FilePath,
 			Line:       c.Line,

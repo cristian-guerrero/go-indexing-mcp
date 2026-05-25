@@ -807,6 +807,13 @@ func (idx *Indexer) RunGraphExtraction() {
 		}
 	}
 	slog.Info("graph: extraction complete", "files", len(pendingGraph))
+
+	// Cross-file reference resolution: match refs to definitions by name.
+	// When exactly one symbol matches a ref's TargetName, populate TargetID
+	// with the symbol's ID. Ambiguous names are skipped.
+	if idx.Graph != nil {
+		idx.Graph.ResolveRefs()
+	}
 }
 
 // restartLlama attempts to force-restart llama-server to free its memory.

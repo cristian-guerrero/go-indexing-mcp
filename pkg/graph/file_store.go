@@ -134,6 +134,41 @@ func (g *GraphDB) StoreFile(relPath string, symbols []Symbol, refs []Reference) 
 	return nil
 }
 
+// SaveFileRefs reads the existing FileData for a file, replaces only the refs,
+// and atomically writes it back. Used by ResolveRefs to persist resolved TargetID
+// values without re-extracting symbols.
+func (g *GraphDB) SaveFileRefs(relPath string, refs []Reference) error {
+	path := g.filePath(relPath)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read file for refs update: %w", err)
+	}
+
+	var data FileData
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return fmt.Errorf("decode filedata for refs update: %w", err)
+	}
+
+	data.Refs = refs
+	blob, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal updated refs: %w", err)
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, blob, 0644); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("write tmp refs file: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("rename tmp refs file: %w", err)
+	}
+
+	return nil
+}
+
 // LoadAll reads all stored files into the given KnowledgeGraph.
 // Called on startup to rebuild in-memory indexes. Skips version.json.
 func (g *GraphDB) LoadAll(knowledge *KnowledgeGraph) error {

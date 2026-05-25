@@ -25,7 +25,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// MCPServer wraps the MCP protocol server with indexer, llama manager, idle timeout,
+// MCPServer wraps the MCP protocol server with indexer, llama manager,
 // watch checker for auto-reindexing, and branch-isolated index switching.
 type MCPServer struct {
 	server          *server.MCPServer
@@ -33,23 +33,19 @@ type MCPServer struct {
 	mgr             *llama.Manager
 	currentBranch   string
 	currentWorktree string
-	lastActivity    atomic.Int64
-	idleTimeout     time.Duration
 	watchInterval   time.Duration
 	stopped         atomic.Bool
 }
 
 // New creates an MCPServer, registers MCP tools, and starts background goroutines
-// for idle timeout, periodic watch (if enabled), and startup index check.
-func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int, watchEnabled bool, watchIntervalSecs int) *MCPServer {
+// for periodic watch (if enabled) and startup index check. llama-server manages its
+// own idle sleep via --sleep-idle-seconds, so no Go-level idle checker is needed.
+func New(idx *indexer.Indexer, mgr *llama.Manager, watchEnabled bool, watchIntervalSecs int) *MCPServer {
 	s := server.NewMCPServer(
 		"go-indexing-mcp",
 		"1.0.0",
 	)
 
-	if idleTimeoutSecs <= 0 {
-		idleTimeoutSecs = 300
-	}
 	if watchIntervalSecs <= 0 {
 		watchIntervalSecs = 0
 	}
@@ -58,13 +54,10 @@ func New(idx *indexer.Indexer, mgr *llama.Manager, idleTimeoutSecs int, watchEna
 		server:        s,
 		indexer:       idx,
 		mgr:           mgr,
-		idleTimeout:   time.Duration(idleTimeoutSecs) * time.Second,
 		watchInterval: time.Duration(watchIntervalSecs) * time.Second,
 	}
-	m.lastActivity.Store(time.Now().UnixNano())
 
 	m.registerTools()
-	go m.idleChecker()
 	if watchEnabled && watchIntervalSecs > 0 {
 		go m.watchChecker()
 	}
@@ -155,6 +148,7 @@ func (m *MCPServer) indexOnStartup() {
 				if indexErr != nil {
 					slog.Warn("startup graph population aborted", "error", indexErr)
 				}
+				m.indexer.RunGraphExtraction()
 				return
 			}
 		}
@@ -171,9 +165,10 @@ func (m *MCPServer) indexOnStartup() {
 				continue
 			}
 			if indexErr != nil {
-				slog.Warn("startup full index failed", "error", indexErr)
-			}
-			return
+					slog.Warn("startup full index failed", "error", indexErr)
+				}
+				m.indexer.RunGraphExtraction()
+				return
 		}
 
 		lastSHA := m.indexer.Storage.GetCommitSHA()
@@ -190,9 +185,10 @@ func (m *MCPServer) indexOnStartup() {
 				continue
 			}
 			if indexErr != nil {
-				slog.Warn("startup interrupted index failed", "error", indexErr)
-			}
-			return
+					slog.Warn("startup interrupted index failed", "error", indexErr)
+				}
+				m.indexer.RunGraphExtraction()
+				return
 		}
 
 		headSHA := m.indexer.Walker.GetHeadSHA()
@@ -239,10 +235,11 @@ func (m *MCPServer) indexOnStartup() {
 				continue
 			}
 			if indexErr != nil {
-				slog.Warn("startup reindex after ignore change failed", "error", indexErr)
-			}
+					slog.Warn("startup reindex after ignore change failed", "error", indexErr)
+				}
 		}
 
+		m.indexer.RunGraphExtraction()
 		return
 	}
 
@@ -576,8 +573,8 @@ func (m *MCPServer) runIndexAll() error {
 	return fmt.Errorf("full index failed after 3 attempts")
 }
 
-// runReindexAll clears both vector and graph databases, then runs a full index.
-// Used when a format version mismatch is detected.
+// runReindexAll clears both vector and graph databases, then runs a full index
+// with graph extraction. Used when a format version mismatch is detected.
 func (m *MCPServer) runReindexAll() {
 	if err := m.indexer.Storage.ClearAll(); err != nil {
 		slog.Error("clear storage for reindex", "error", err)
@@ -592,6 +589,7 @@ func (m *MCPServer) runReindexAll() {
 	if err := m.runIndexAll(); err != nil {
 		slog.Warn("reindex aborted", "error", err)
 	}
+	m.indexer.RunGraphExtraction()
 }
 
 // runIndexChanged calls IndexChanged with up to 3 retries on failure.
@@ -666,45 +664,28 @@ func (m *MCPServer) registerTools() {
 	m.registerGraphTools()
 }
 
-// touchActivity updates the last-activity timestamp to prevent idle timeout.
-func (m *MCPServer) touchActivity() {
-	m.lastActivity.Store(time.Now().UnixNano())
-}
-
 // ensureLlama checks if llama-server is running and starts it if not.
+// After starting, it updates the embedder's BaseURL to match the actual server port.
 func (m *MCPServer) ensureLlama() error {
-	m.touchActivity()
 	if m.mgr == nil {
 		return nil
 	}
 	if m.mgr.IsRunning() {
+		// Sync embedder URL in case it was constructed before Start() set the port.
+		if m.indexer != nil && m.indexer.Embedder != nil {
+			m.indexer.Embedder.BaseURL = m.mgr.BaseURL()
+		}
 		return nil
 	}
 	slog.Info("llama-server not running, starting it")
-	return m.mgr.Start()
-}
-
-// idleChecker runs every 10s and stops llama-server after idleTimeout of inactivity,
-// freeing GPU memory. llama-server wakes on the next MCP tool call via ensureLlama.
-func (m *MCPServer) idleChecker() {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		if m.stopped.Load() {
-			return
-		}
-
-		last := time.Unix(0, m.lastActivity.Load())
-		if time.Since(last) < m.idleTimeout {
-			continue
-		}
-
-		if m.mgr != nil && m.mgr.IsRunning() && m.mgr.StartedProcess() {
-			slog.Info("idle timeout reached, stopping llama-server to free memory", "idle", m.idleTimeout)
-			m.mgr.Stop()
-		}
+	if err := m.mgr.Start(); err != nil {
+		return err
 	}
+	// Update embedder with the actual URL after successful start.
+	if m.indexer != nil && m.indexer.Embedder != nil {
+		m.indexer.Embedder.BaseURL = m.mgr.BaseURL()
+	}
+	return nil
 }
 
 // watchChecker runs periodically (watchInterval) and:
@@ -757,8 +738,6 @@ func (m *MCPServer) watchChecker() {
 			}
 			continue
 		}
-
-		m.touchActivity()
 
 		if branch != m.currentBranch || worktree != m.currentWorktree {
 			slog.Info("watch: branch/worktree changed", "from", m.currentBranch+"/"+m.currentWorktree, "to", branch+"/"+worktree)
@@ -813,6 +792,7 @@ func (m *MCPServer) watchChecker() {
 			if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
 				slog.Warn("watch: full index aborted", "error", err)
 			}
+			m.indexer.RunGraphExtraction()
 			continue
 		}
 
@@ -829,6 +809,7 @@ func (m *MCPServer) watchChecker() {
 				if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
 					slog.Warn("watch: graph population index aborted", "error", err)
 				}
+				m.indexer.RunGraphExtraction()
 				continue
 			}
 		}
@@ -842,6 +823,7 @@ func (m *MCPServer) watchChecker() {
 			if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
 				slog.Warn("watch: full index aborted", "error", err)
 			}
+			m.indexer.RunGraphExtraction()
 			continue
 		}
 
@@ -857,6 +839,7 @@ func (m *MCPServer) watchChecker() {
 			if err := m.retryOnBranchChange(m.runIndexAll); err != nil {
 				slog.Warn("watch: full index aborted", "error", err)
 			}
+			m.indexer.RunGraphExtraction()
 		} else if headSHA != "" && headSHA != lastSHA {
 			slog.Info("watch: new commits detected, indexing changes", "last", lastSHA, "head", headSHA)
 			if err := m.ensureLlama(); err != nil {
@@ -866,6 +849,7 @@ func (m *MCPServer) watchChecker() {
 			if err := m.retryOnBranchChange(m.runIndexChanged); err != nil {
 				slog.Warn("watch: incremental index aborted", "error", err)
 			}
+			m.indexer.RunGraphExtraction()
 		} else {
 			slog.Debug("watch: checking for uncommitted changes")
 			if err := m.ensureLlama(); err != nil {
@@ -876,6 +860,7 @@ func (m *MCPServer) watchChecker() {
 				if err := m.retryOnBranchChange(m.runIndexChanged); err != nil {
 					slog.Warn("watch: background index aborted", "error", err)
 				}
+				m.indexer.RunGraphExtraction()
 			}()
 		}
 	}
@@ -1116,9 +1101,6 @@ func (m *MCPServer) Serve() error {
 		slog.Info("MCP server stopped (client disconnected)")
 	}
 	m.stopped.Store(true)
-	if m.mgr != nil {
-		slog.Info("releasing llama-server on MCP server shutdown")
-		m.mgr.Stop()
-	}
+	slog.Info("MCP server shut down, llama-server left running for reuse")
 	return err
 }

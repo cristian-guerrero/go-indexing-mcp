@@ -70,6 +70,10 @@ func NewGraphQuery(graphDir string) (*GraphQuery, error) {
 	symCount, refCount := cache.Stats()
 	if symCount > 0 {
 		slog.Info("graph: loaded existing index", "symbols", symCount, "refs", refCount)
+		// Resolve cross-file references in memory (persistence happens on next extraction).
+		if resolved, _ := cache.ResolveRefs(); resolved > 0 {
+			slog.Info("graph: cross-file references resolved on load", "count", resolved)
+		}
 	}
 
 	return &GraphQuery{
@@ -127,6 +131,13 @@ func (g *GraphQuery) SwitchBranch(branch, worktree string) error {
 	symCount, refCount := g.Cache.Stats()
 	slog.Info("graph: switched branch", "branch", branch, "worktree", worktree, "symbols", symCount, "refs", refCount)
 
+	// Resolve cross-file references in memory after loading the branch
+	if symCount > 0 {
+		if resolved, _ := g.Cache.ResolveRefs(); resolved > 0 {
+			slog.Info("graph: cross-file references resolved after branch switch", "count", resolved)
+		}
+	}
+
 	return nil
 }
 
@@ -174,6 +185,30 @@ func (g *GraphQuery) HasFile(relPath string) bool {
 	defer g.Cache.mu.RUnlock()
 	_, ok := g.Cache.ByFile[relPath]
 	return ok
+}
+
+// ResolveRefs resolves all unresolved references (empty TargetID) in the cache
+// and persists the resolved refs to disk. Returns the number of resolved refs.
+// Should be called after RunGraphExtraction() completes.
+func (g *GraphQuery) ResolveRefs() int {
+	if g.Cache == nil {
+		return 0
+	}
+	resolved, modifiedPaths := g.Cache.ResolveRefs()
+	if resolved == 0 {
+		return 0
+	}
+	for _, relPath := range modifiedPaths {
+		refs := g.Cache.GetFileRefs(relPath)
+		if g.DB != nil {
+			if err := g.DB.SaveFileRefs(relPath, refs); err != nil {
+				slog.Warn("graph: save resolved refs", "file", relPath, "error", err)
+			}
+		}
+	}
+	slog.Info("graph: cross-file references resolved",
+		"count", resolved, "files_updated", len(modifiedPaths))
+	return resolved
 }
 
 // RemoveFile removes all symbols and references for a file.

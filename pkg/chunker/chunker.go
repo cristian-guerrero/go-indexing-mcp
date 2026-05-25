@@ -37,10 +37,11 @@ type Stats struct {
 
 // Chunker splits source files into chunks using structural blocks or sliding windows.
 type Chunker struct {
-	ChunkSize      int
-	ChunkOverlap   int
+	ChunkSize      int             // max lines per chunk (sliding window)
+	ChunkOverlap   int             // overlap between sliding windows
 	MinASTLines    int             // files below this skip AST (0 = always use AST)
 	MaxASTLines    int             // files above this skip AST (0 = no limit); tree-sitter is slow for large files
+	SkipAST        bool            // when true, skip AST (tree-sitter) parsing entirely; uses regex structural + sliding window
 	structSplitter *structural.Splitter
 	Parser         parser.Parser   // optional AST parser (tree-sitter); nil = regex only
 	stats          Stats
@@ -92,6 +93,13 @@ func (c *Chunker) ChunkFile(fi walker.FileInfo) ([]Chunk, error) {
 
 	if totalLines <= c.ChunkSize {
 		return c.slidingWindow(lines, 0, totalLines, fi), nil
+	}
+
+	// Fast mode: skip AST (tree-sitter) entirely — use regex structural + sliding window.
+	// This avoids CPU-bound tree-sitter parsing that creates idle gaps for llama-server
+	// during indexing. Option A in the performance fix.
+	if c.SkipAST {
+		return c.doStructuralSplit(lines, fi)
 	}
 
 	// Skip AST for small files where regex structural is fast enough
@@ -171,6 +179,13 @@ func (c *Chunker) ChunkFiles(files []walker.FileInfo) (map[string][]Chunk, error
 			results[fi.Path] = chunks
 			c.stats.SlidingWinFiles++
 			c.stats.SlidingWinChunks += len(chunks)
+			continue
+		}
+
+		// Fast mode: skip AST (tree-sitter) entirely
+		if c.SkipAST {
+			chunks, _ := c.doStructuralSplit(lines, fi)
+			results[fi.Path] = chunks
 			continue
 		}
 

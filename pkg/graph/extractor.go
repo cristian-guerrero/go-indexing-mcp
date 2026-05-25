@@ -293,12 +293,37 @@ func walkAST(node *sitter.Node, source []byte, language, filePath, relPath, file
 	if importNodeTypes[ntype] {
 		imports := extractImports(node, source, ntype, language, filePath, relPath, fileHash, startLine)
 		*symbols = append(*symbols, imports...)
+
+		// Also extract import references for each imported identifier so that
+		// --symbol-info finds them as usages.
+		content := node.Content(source)
+		importRefs := extractImportRefs(content, ntype, language, filePath, relPath, fileHash, startLine)
+		*refs = append(*refs, importRefs...)
 	}
 
 	// Extract calls
 	if callNodeTypes[ntype] {
 		calls := extractCalls(node, source, ntype, language, filePath, relPath, fileHash, startLine)
 		*refs = append(*refs, calls...)
+	}
+
+	// Extract Zig @import references from builtin_function nodes.
+	// For `const x = @import("module")`, creates a RefImports reference
+	// for the variable name x so --symbol-info finds it as a usage.
+	if ntype == "builtin_function" && language == "zig" {
+		if ref := extractZigImportRef(node, source, filePath, relPath, fileHash, startLine); ref != nil {
+			*refs = append(*refs, ref...)
+		}
+	}
+
+	// Extract JSX component references from TSX/JSX self-closing and opening elements.
+	// For `<BlogPostPage />`, creates a RefCalls reference for the component name
+	// so --symbol-info finds it as a caller.
+	if (ntype == "jsx_self_closing_element" || ntype == "jsx_element") &&
+		(language == "typescript" || language == "javascript" || language == "tsx") {
+		if ref := extractJSXRef(node, source, filePath, relPath, fileHash, startLine); ref != nil {
+			*refs = append(*refs, ref...)
+		}
 	}
 
 	// Extract type references: any type_identifier that is not the name in a type_spec
@@ -624,7 +649,7 @@ func extractImports(node *sitter.Node, source []byte, ntype, language, filePath,
 			})
 		}
 
-	case (language == "typescript" || language == "javascript") && ntype == "import_statement":
+	case (language == "typescript" || language == "javascript" || language == "tsx") && ntype == "import_statement":
 		// import { X } from "module"
 		if strings.Contains(content, "from ") {
 			parts := strings.Split(content, "from ")
@@ -646,6 +671,172 @@ func extractImports(node *sitter.Node, source []byte, ntype, language, filePath,
 	return symbols
 }
 
+// extractImportRefs extracts import references for each imported identifier so that
+// --symbol-info finds them as usages. Supported languages: TS/JS/TSX (import_statement),
+// Python (import_statement, import_from_statement).
+func extractImportRefs(content, ntype, language, filePath, relPath, fileHash string, startLine int) []Reference {
+	switch {
+	case (language == "typescript" || language == "javascript" || language == "tsx") && ntype == "import_statement":
+		return extractJSImportRefs(content, filePath, relPath, fileHash, startLine)
+
+	case language == "python" && ntype == "import_from_statement":
+		return extractPythonFromImportRefs(content, filePath, relPath, fileHash, startLine)
+
+	case language == "python" && ntype == "import_statement":
+		return extractPythonImportRefs(content, filePath, relPath, fileHash, startLine)
+	}
+	return nil
+}
+
+// extractJSImportRefs extracts import references from TS/JS import statements.
+func extractJSImportRefs(content, filePath, relPath, fileHash string, startLine int) []Reference {
+	importPart := content
+	if idx := strings.Index(content, " from "); idx > 0 {
+		importPart = content[len("import "):idx]
+	} else {
+		importPart = strings.TrimPrefix(content, "import ")
+	}
+	importPart = strings.TrimSpace(importPart)
+	if importPart == "" {
+		return nil
+	}
+
+	// Side-effect import: import './styles.css'
+	if strings.HasPrefix(importPart, "'") || strings.HasPrefix(importPart, "\"") {
+		return nil
+	}
+
+	// Namespace import: import * as X from 'module'
+	if strings.HasPrefix(importPart, "* as ") {
+		name := strings.TrimSpace(strings.TrimPrefix(importPart, "* as "))
+		if name != "" {
+			return []Reference{makeImportRef(fileHash, relPath, startLine, name, filePath)}
+		}
+		return nil
+	}
+
+	var refs []Reference
+
+	// Named import: import { X, Y as Z } from 'module'
+	if strings.HasPrefix(importPart, "{") {
+		inner := strings.TrimSpace(importPart[1 : len(importPart)-1])
+		for _, item := range strings.Split(inner, ",") {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			name := item
+			if idx := strings.Index(strings.ToLower(item), " as "); idx > 0 {
+				name = strings.TrimSpace(item[:idx])
+			}
+			if name != "" {
+				refs = append(refs, makeImportRef(fileHash, relPath, startLine, name, filePath))
+			}
+		}
+		return refs
+	}
+
+	// Default import: import X from 'module'
+	name := strings.TrimSpace(importPart)
+	if name == "" {
+		return nil
+	}
+	return []Reference{makeImportRef(fileHash, relPath, startLine, name, filePath)}
+}
+
+// extractPythonFromImportRefs extracts imported names from Python "from module import X" statements.
+// e.g. "from file import X, Y" → refs for X and Y.
+func extractPythonFromImportRefs(content, filePath, relPath, fileHash string, startLine int) []Reference {
+	rest := strings.TrimPrefix(content, "from ")
+	if idx := strings.Index(rest, " import "); idx > 0 {
+		namesPart := rest[idx+len(" import "):]
+		var refs []Reference
+		for _, name := range strings.Split(namesPart, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				refs = append(refs, makeImportRef(fileHash, relPath, startLine, name, filePath))
+			}
+		}
+		return refs
+	}
+	return nil
+}
+
+// extractPythonImportRefs extracts imported names from Python "import X" statements.
+// e.g. "import foo, bar" → refs for foo and bar.
+// e.g. "import foo.bar" → ref for foo (top-level module).
+func extractPythonImportRefs(content, filePath, relPath, fileHash string, startLine int) []Reference {
+	rest := strings.TrimPrefix(content, "import ")
+	var refs []Reference
+	for _, name := range strings.Split(rest, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			// For "import foo.bar", use just "foo" as the imported name
+			if idx := strings.Index(name, "."); idx > 0 {
+				name = name[:idx]
+			}
+			refs = append(refs, makeImportRef(fileHash, relPath, startLine, name, filePath))
+		}
+	}
+	return refs
+}
+
+// makeImportRef creates a single RefImports reference for a given imported name.
+func makeImportRef(fileHash, relPath string, startLine int, name, filePath string) Reference {
+	id := symbolID(fileHash, relPath, startLine, "import:"+name)
+	return Reference{
+		ID:         refID(id, name, RefImports, startLine),
+		SourceID:   id,
+		TargetName: name,
+		Kind:       RefImports,
+		FilePath:   filePath,
+		Line:       startLine,
+		Confidence: 1.0,
+	}
+}
+
+// extractZigImportRef extracts import references from Zig @import builtin calls.
+// For `const x = @import("module")`, walks up the AST to find the variable name
+// and creates a RefImports reference for it.
+func extractZigImportRef(node *sitter.Node, source []byte, filePath, relPath, fileHash string, startLine int) []Reference {
+	builtinID := node.Child(0)
+	if builtinID == nil {
+		return nil
+	}
+	if builtinID.Content(source) != "@import" && builtinID.Content(source) != "@cImport" {
+		return nil
+	}
+
+	// Walk up to find the enclosing variable name
+	name := findZigImportName(node, source)
+	if name == "" {
+		return nil
+	}
+
+	return []Reference{makeImportRef(fileHash, relPath, startLine, name, filePath)}
+}
+
+// findZigImportName walks up from a @import node to find the enclosing variable name.
+// Handles: const x = @import("module")
+func findZigImportName(node *sitter.Node, source []byte) string {
+	for n := node.Parent(); n != nil; n = n.Parent() {
+		if n.Type() == "variable_declaration" {
+			for i := 0; i < int(n.ChildCount()); i++ {
+				child := n.Child(i)
+				if child != nil && child.Type() == "_variable_declaration_header" {
+					for j := 0; j < int(child.ChildCount()); j++ {
+						gc := child.Child(j)
+						if gc != nil && gc.Type() == "identifier" {
+							return gc.Content(source)
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
 // extractGoImportPath extracts the quoted path from a Go import line.
 func extractGoImportPath(line string) string {
 	line = strings.TrimSpace(line)
@@ -655,6 +846,46 @@ func extractGoImportPath(line string) string {
 	}
 	if strings.HasPrefix(line, `"`) && strings.HasSuffix(line, `"`) {
 		return strings.Trim(line, `"`)
+	}
+	return ""
+}
+
+// extractJSXRef extracts a call reference from a JSX element.
+// For `<BlogPostPage />` or `<BlogPostPage>...</BlogPostPage>`, finds the
+// name field child with the component name and creates a RefCalls reference.
+// In tree-sitter-javascript v0.23+, JSX element names without hyphens use
+// a regular `identifier` node (not `jsx_identifier`), so we rely on the
+// `name` field rather than scanning by child type.
+func extractJSXRef(node *sitter.Node, source []byte, filePath, relPath, fileHash string, startLine int) []Reference {
+	name := findJSXComponentName(node, source)
+	if name == "" {
+		return nil
+	}
+	id := symbolID(fileHash, relPath, startLine, "jsx:"+name)
+	return []Reference{{
+		ID:         refID(id, name, RefCalls, startLine),
+		SourceID:   id,
+		TargetName: name,
+		Kind:       RefCalls,
+		FilePath:   filePath,
+		Line:       startLine,
+		Confidence: 1.0,
+	}}
+}
+
+// findJSXComponentName extracts the component name from a JSX element node.
+// jsx_self_closing_element: uses the top-level `name` field.
+// jsx_element: the `name` field is nested inside the `open_tag` field.
+func findJSXComponentName(node *sitter.Node, source []byte) string {
+	// For <Component /> — name is a direct field
+	if nameNode := node.ChildByFieldName("name"); nameNode != nil {
+		return nameNode.Content(source)
+	}
+	// For <Component>...</Component> — name is nested in jsx_opening_element
+	if openTag := node.ChildByFieldName("open_tag"); openTag != nil {
+		if nameNode := openTag.ChildByFieldName("name"); nameNode != nil {
+			return nameNode.Content(source)
+		}
 	}
 	return ""
 }

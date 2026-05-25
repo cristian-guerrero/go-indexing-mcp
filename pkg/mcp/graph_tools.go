@@ -49,7 +49,6 @@ func (m *MCPServer) handleFindImports(ctx context.Context, req mcp.CallToolReque
 		return mcp.NewToolResultError("pattern is required"), nil
 	}
 
-	m.touchActivity()
 	m.pruneGraph()
 
 	g := m.indexer.Graph
@@ -92,7 +91,6 @@ func (m *MCPServer) handleSymbolInfo(ctx context.Context, req mcp.CallToolReques
 		return mcp.NewToolResultError("name is required"), nil
 	}
 
-	m.touchActivity()
 	m.pruneGraph()
 
 	g := m.indexer.Graph
@@ -101,89 +99,8 @@ func (m *MCPServer) handleSymbolInfo(ctx context.Context, req mcp.CallToolReques
 	}
 
 	info := g.GetSymbolInfo(name, pathFilter)
-
-	type symbolInfoResult struct {
-		Definition  []struct {
-			Name      string `json:"name"`
-			Kind      string `json:"kind"`
-			FilePath  string `json:"file_path"`
-			StartLine int    `json:"start_line"`
-			EndLine   int    `json:"end_line"`
-			Signature string `json:"signature,omitempty"`
-		} `json:"definitions"`
-		Usages []struct {
-			TargetName string  `json:"target_name"`
-			Kind       string  `json:"kind"`
-			FilePath   string  `json:"file_path"`
-			Line       int     `json:"line"`
-			Confidence float64 `json:"confidence"`
-		} `json:"usages"`
-		Callers []struct {
-			TargetName string  `json:"target_name"`
-			Kind       string  `json:"kind"`
-			FilePath   string  `json:"file_path"`
-			Line       int     `json:"line"`
-		} `json:"callers"`
-		Callees []struct {
-			TargetName string  `json:"target_name"`
-			Kind       string  `json:"kind"`
-			FilePath   string  `json:"file_path"`
-			Line       int     `json:"line"`
-		} `json:"callees"`
-	}
-
-	var result symbolInfoResult
-
-	for _, d := range info.Definitions {
-		result.Definition = append(result.Definition, struct {
-			Name      string `json:"name"`
-			Kind      string `json:"kind"`
-			FilePath  string `json:"file_path"`
-			StartLine int    `json:"start_line"`
-			EndLine   int    `json:"end_line"`
-			Signature string `json:"signature,omitempty"`
-		}{
-			Name: d.Name, Kind: d.Kind.String(),
-			FilePath: d.FilePath, StartLine: d.StartLine, EndLine: d.EndLine,
-			Signature: d.Signature,
-		})
-	}
-	for _, u := range info.Usages {
-		result.Usages = append(result.Usages, struct {
-			TargetName string  `json:"target_name"`
-			Kind       string  `json:"kind"`
-			FilePath   string  `json:"file_path"`
-			Line       int     `json:"line"`
-			Confidence float64 `json:"confidence"`
-		}{
-			TargetName: u.TargetName, Kind: u.Kind.String(),
-			FilePath: u.FilePath, Line: u.Line, Confidence: u.Confidence,
-		})
-	}
-	for _, c := range info.Callers {
-		result.Callers = append(result.Callers, struct {
-			TargetName string  `json:"target_name"`
-			Kind       string  `json:"kind"`
-			FilePath   string  `json:"file_path"`
-			Line       int     `json:"line"`
-		}{
-			TargetName: c.TargetName, Kind: c.Kind.String(),
-			FilePath: c.FilePath, Line: c.Line,
-		})
-	}
-	for _, c := range info.Callees {
-		result.Callees = append(result.Callees, struct {
-			TargetName string  `json:"target_name"`
-			Kind       string  `json:"kind"`
-			FilePath   string  `json:"file_path"`
-			Line       int     `json:"line"`
-		}{
-			TargetName: c.TargetName, Kind: c.Kind.String(),
-			FilePath: c.FilePath, Line: c.Line,
-		})
-	}
-
-	data, _ := json.MarshalIndent(result, "", "  ")
+	formatted := graph.FormatSymbolInfo(info)
+	data, _ := json.MarshalIndent(formatted, "", "  ")
 	return mcp.NewToolResultText(string(data)), nil
 }
 

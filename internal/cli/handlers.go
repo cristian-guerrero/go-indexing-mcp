@@ -50,27 +50,15 @@ func RunGenerate(rootDir string) int {
 		return 1
 	}
 
-	wasRunning := mgr.IsRunning()
 	if err := mgr.Start(); err != nil {
 		slog.Error("start llama", "error", err)
 		return 1
 	}
-	startedByUs := mgr.StartedProcess()
-	if !wasRunning {
-		if startedByUs {
-			fmt.Fprintln(pw, "✓ llama-server started")
-		} else {
-			fmt.Fprintln(pw, "✓ llama-server already running, reusing")
-		}
+	if mgr.StartedProcess() {
+		fmt.Fprintln(pw, "✓ llama-server started")
 	} else {
 		fmt.Fprintln(pw, "✓ llama-server already running, reusing")
 	}
-	defer func() {
-		if startedByUs {
-			fmt.Fprintln(pw, "Stopping llama-server...")
-			mgr.Stop()
-		}
-	}()
 
 	rootPath := resolveRootDir(rootDir, cfg.Indexing.RootPath)
 	if rootPath == "" {
@@ -94,6 +82,11 @@ func RunGenerate(rootDir string) int {
 			ch.Parser = p
 		}
 	}
+
+	// Skip tree-sitter AST for chunking during indexing (Option A).
+	// Regex structural + sliding window is fast enough for chunk quality,
+	// while tree-sitter chunking creates CPU-bound gaps where llama-server sits idle.
+	ch.SkipAST = true
 
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize, cfg.Embedding.QueryPrefix)
 	dbDir := config.StoragePath(rootPath)
@@ -295,23 +288,15 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 			slog.Error("model setup", "error", err)
 			return 1
 		}
-		wasRunning := mgr.IsRunning()
 		if err := mgr.Start(); err != nil {
 			slog.Error("start llama", "error", err)
 			return 1
 		}
-		startedByUs := mgr.StartedProcess()
-		if !wasRunning && startedByUs {
+		if mgr.StartedProcess() {
 			fmt.Fprintln(pw, "✓ llama-server started")
 		} else {
 			fmt.Fprintln(pw, "✓ llama-server already running, reusing")
 		}
-		defer func() {
-			if startedByUs {
-				fmt.Fprintln(pw, "Stopping llama-server...")
-				mgr.Stop()
-			}
-		}()
 	}
 
 	rootPath := resolveRootDir(rootDir, cfg.Indexing.RootPath)
@@ -351,34 +336,11 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 
 	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB, cfg.Indexing.IgnorePatterns)
 
-	var gq *graph.GraphQuery
-	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
-	if gq2, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
-		ext := graph.NewExtractor()
-		idx.WithGraph(gq2, ext)
-		gq = gq2
-		if err := gq2.SwitchBranch(branch, worktree); err != nil {
-			slog.Warn("graph: branch switch", "error", err)
-		}
-	}
-	defer func() {
-		if gq != nil {
-			gq.Close()
-		}
-	}()
-
 	// Check for format version mismatch — clear and reindex if needed
 	if st.NeedsReindex() {
 		slog.Warn("storage format version changed, clearing for reindex")
 		if err := st.ClearAll(); err != nil {
 			slog.Error("clear storage", "error", err)
-			return 1
-		}
-	}
-	if gq != nil && gq.NeedsReindex() {
-		slog.Warn("graph format version changed, clearing for reindex")
-		if err := gq.DB.Clear(); err != nil {
-			slog.Error("clear graph", "error", err)
 			return 1
 		}
 	}
@@ -396,7 +358,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 
 		// Try seeding if empty or incomplete (interrupted mid-index)
 		if stats.TotalChunks == 0 || st.GetCommitSHA() == "" {
-			if mcp.SeedBranchFrom(st, gq, w, branch, worktree) {
+			if mcp.SeedBranchFrom(st, nil, w, branch, worktree) {
 				stats = idx.GetStats()
 				slog.Info("branch seeded from another branch")
 			}
@@ -449,22 +411,6 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 				}
 				slog.Error("reindex after ignore change", "error", err)
 				return 1
-			}
-		}
-
-		// Check if graph is empty but index has data — populate it
-		if idx.Extractor != nil && idx.Graph != nil {
-			symCount, _ := idx.Graph.Cache.Stats()
-			if symCount == 0 && stats.TotalChunks > 0 {
-				fmt.Fprintln(pw, "Knowledge graph is empty, indexing to populate graph...")
-				if err := idx.IndexAll(); err != nil {
-					if errors.Is(err, indexer.ErrBranchChanged) {
-						fmt.Fprintln(pw, "Branch changed during indexing, restarting on new branch...")
-						continue
-					}
-					slog.Error("full index for graph population", "error", err)
-					return 1
-				}
 			}
 		}
 
@@ -553,22 +499,6 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	}
 
 	idx := indexer.New(w, ch, nil, st, nil, 0, 0, cfg.Indexing.IgnorePatterns)
-
-	var gq *graph.GraphQuery
-	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
-	if gq2, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
-		ext := graph.NewExtractor()
-		idx.WithGraph(gq2, ext)
-		gq = gq2
-		if err := gq2.SwitchBranch(branch, worktree); err != nil {
-			slog.Warn("graph: branch switch", "error", err)
-		}
-	}
-	defer func() {
-		if gq != nil {
-			gq.Close()
-		}
-	}()
 
 	// Check for format version mismatch — grep mode can't reindex, so warn and exit
 	if st.NeedsReindex() {
@@ -1135,7 +1065,8 @@ func RunFindImports(pattern, rootDir string) int {
 func RunSymbolInfo(name, pathFilter, rootDir string) int {
 	return runGraphQuery("symbol-info", func(g *graph.GraphQuery) {
 		info := g.GetSymbolInfo(name, pathFilter)
-		data, _ := json.MarshalIndent(info, "", "  ")
+		formatted := graph.FormatSymbolInfo(info)
+		data, _ := json.MarshalIndent(formatted, "", "  ")
 		fmt.Println(string(data))
 	}, rootDir)
 }

@@ -148,10 +148,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := mgr.Start(); err != nil {
-		slog.Error("start llama", "error", err)
-		os.Exit(1)
-	}
+	// llama-server starts lazily on first tool call via ensureLlama().
+	// It uses --sleep-idle-seconds to manage its own idle state.
 
 	w := walker.New(cfg.Indexing.RootPath, cfg.Indexing.IgnorePatterns)
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
@@ -198,15 +196,14 @@ func main() {
 		slog.Warn("knowledge graph not available", "error", err)
 	}
 
-	srv := mcp.New(idx, mgr, cfg.Indexing.IdleTimeoutSecs, cfg.Indexing.WatchEnabled, cfg.Indexing.WatchIntervalSecs)
+	srv := mcp.New(idx, mgr, cfg.Indexing.WatchEnabled, cfg.Indexing.WatchIntervalSecs)
 	slog.Info("starting MCP server")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		slog.Info("shutting down, releasing llama-server")
-		mgr.Stop()
+		slog.Info("shutting down, llama-server stays running for reuse")
 		os.Exit(0)
 	}()
 

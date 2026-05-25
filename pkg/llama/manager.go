@@ -508,6 +508,9 @@ func (m *Manager) Start() error {
 	if m.Cfg.Llama.Pooling != "" {
 		args = append(args, "--pooling", m.Cfg.Llama.Pooling)
 	}
+	if m.Cfg.Indexing.IdleTimeoutSecs > 0 {
+		args = append(args, "--sleep-idle-seconds", strconv.Itoa(m.Cfg.Indexing.IdleTimeoutSecs))
+	}
 	args = append(args, m.Cfg.Llama.ExtraArgs...)
 
 	m.setupJob()
@@ -554,9 +557,13 @@ func (m *Manager) StartedProcess() bool {
 	return m.cmd != nil && m.cmd.Process != nil
 }
 
-// IsRunning checks whether llama-server is responding on the configured port.
+// IsRunning checks whether llama-server is responding on the active port.
+// Uses m.Port first (set by Start), then falls back to configured or default 56000.
 func (m *Manager) IsRunning() bool {
-	port := m.Cfg.Llama.Port
+	port := m.Port
+	if port == 0 {
+		port = m.Cfg.Llama.Port
+	}
 	if port == 0 {
 		port = 56000
 	}
@@ -798,8 +805,16 @@ func (m *Manager) ForceDownloadLlama() (string, error) {
 }
 
 // BaseURL returns the full base URL for the llama.cpp API (http://127.0.0.1:{port}).
+// Falls back to the configured port, then to 56000 if not set.
 func (m *Manager) BaseURL() string {
-	return fmt.Sprintf("http://127.0.0.1:%d", m.Port)
+	port := m.Port
+	if port == 0 {
+		port = m.Cfg.Llama.Port
+	}
+	if port == 0 {
+		port = 56000
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", port)
 }
 
 // findFreePort finds the first available TCP port in [min, max] range.

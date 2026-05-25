@@ -75,6 +75,40 @@ var languages = map[string]languageDef{
 		},
 		FindEnd: findBraceEnd,
 	},
+	"typescript": {
+		StartPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*(?:export\s+)?(?:async\s+)?function\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?(?:abstract\s+|default\s+)?class\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\(`),
+			regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*\w+\s*=>`),
+			regexp.MustCompile(`^\s*(?:export\s+)?interface\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?type\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?enum\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?namespace\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?declare\s`),
+		},
+		DecoratorPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*@`),
+		},
+		FindEnd: findBraceEnd,
+	},
+	"tsx": {
+		StartPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*(?:export\s+)?(?:async\s+)?function\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?(?:abstract\s+|default\s+)?class\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*(?:async\s*)?\(`),
+			regexp.MustCompile(`^\s*(?:export\s+)?(?:const|let|var)\s+\w+\s*=\s*\w+\s*=>`),
+			regexp.MustCompile(`^\s*(?:export\s+)?interface\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?type\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?enum\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?namespace\s`),
+			regexp.MustCompile(`^\s*(?:export\s+)?declare\s`),
+		},
+		DecoratorPatterns: []*regexp.Regexp{
+			regexp.MustCompile(`^\s*@`),
+		},
+		FindEnd: findBraceEnd,
+	},
 	"rust": {
 		StartPatterns: []*regexp.Regexp{
 			regexp.MustCompile(`^\s*(?:pub\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s`),
@@ -107,14 +141,14 @@ var languages = map[string]languageDef{
 	},
 	"c": {
 		StartPatterns: []*regexp.Regexp{
-			regexp.MustCompile(`^\s*(?:static\s+)?(?:inline\s+)?(?:\w+\s+)+\w+\s*\(`),
+			regexp.MustCompile(`^\s*(?:(?:static|inline|const|unsigned|signed|extern)\s+)*(?:[\w:*&<>~\[\]]+\s+)+\w+\s*\(`),
 			regexp.MustCompile(`^\s*(?:typedef\s+)?(?:struct|union|enum)\s`),
 		},
 		FindEnd: findBraceEnd,
 	},
 	"cpp": {
 		StartPatterns: []*regexp.Regexp{
-			regexp.MustCompile(`^\s*(?:virtual\s+)?(?:static\s+)?(?:inline\s+)?(?:\w+\s+)+\w+\s*\(`),
+			regexp.MustCompile(`^\s*(?:(?:virtual|static|inline|const|constexpr|unsigned|signed|extern)\s+)*(?:[\w:*&<>~\[\]]+\s+)+\w+\s*\(`),
 			regexp.MustCompile(`^\s*(?:class|struct|union|namespace|enum)\s`),
 			regexp.MustCompile(`^\s*template\s*<`),
 		},
@@ -293,6 +327,14 @@ func findBlocks(lines []string, def languageDef) []Block {
 		startLine := i
 		endLine := def.FindEnd(lines, def.StartPatterns, i)
 
+		// If the construct was detected as single-line (no { on start line),
+		// check if { is on a later line (e.g. C# class Foo : Bar \n {).
+		if endLine == startLine && !strings.Contains(line, "{") {
+			if newEnd := findBlocksLookahead(lines, def, startLine); newEnd > endLine {
+				endLine = newEnd
+			}
+		}
+
 		origStart := startLine
 		startLine = collectDecorators(lines, startLine, def.DecoratorPatterns)
 
@@ -306,24 +348,68 @@ func findBlocks(lines []string, def languageDef) []Block {
 	return blocks
 }
 
+// findBlocksLookahead looks ahead from start for a { that belongs to the
+// current construct (not a new one). Returns the end line found by brace
+// tracking from the { line, or start if no { is found for this construct.
+func findBlocksLookahead(lines []string, def languageDef, start int) int {
+	for la := start + 1; la < len(lines); la++ {
+		laLine := lines[la]
+		if strings.Contains(laLine, "{") {
+			if !matchesAny(laLine, def.StartPatterns) {
+				// { belongs to this construct — track braces from here
+				return findBraceEndImpl(lines, la, false)
+			}
+			break
+		}
+		if matchesAny(laLine, def.StartPatterns) {
+			break
+		}
+		if strings.TrimSpace(laLine) == "" {
+			continue
+		}
+	}
+	return start
+}
+
 // collectDecorators scans backward from start to find decorator/annotation lines
 // (e.g., @Decorator, [Attribute], #[Attribute]). Blank lines between decorators
 // are skipped. Non-decorator lines stop the backward scan to avoid false positives.
+// Multi-line decorators (e.g. Python decorators with parenthesized arguments
+// spanning multiple lines) are tracked via paren/brace depth so continuation
+// lines between the decorator pattern and the target are included.
 func collectDecorators(lines []string, start int, patterns []*regexp.Regexp) int {
 	if len(patterns) == 0 || start <= 0 {
 		return start
 	}
 
+	depth := 0
 	for i := start - 1; i >= 0; i-- {
 		line := lines[i]
 		trimmed := strings.TrimSpace(line)
 
-		if trimmed == "" {
+		if trimmed == "" && depth == 0 {
 			continue
+		}
+
+		// Track paren/brace depth for multi-line decorators.
+		// When scanning backward, closing brackets increase depth (they
+		// were opened somewhere to the left), and opening brackets decrease
+		// depth (they match a bracket we already counted from the right).
+		for _, ch := range trimmed {
+			switch ch {
+			case ')', ']', '}':
+				depth++
+			case '(', '[', '{':
+				depth--
+			}
 		}
 
 		if matchesAny(line, patterns) {
 			start = i
+			continue
+		}
+
+		if depth > 0 {
 			continue
 		}
 
@@ -423,6 +509,13 @@ func findBraceEndImpl(lines []string, start int, countBrackets bool) int {
 				}
 			}
 		}
+
+		// If depth never increased past 0 on the start line, the construct
+		// has no brace-delimited body (e.g. Go type alias, JS arrow expr).
+		// Return immediately instead of scanning to EOF.
+		if depth == 0 && i == start {
+			return start
+		}
 	}
 
 	return len(lines) - 1
@@ -430,6 +523,8 @@ func findBraceEndImpl(lines []string, start int, countBrackets bool) int {
 
 // findIndentEnd finds the end of an indentation-based block (Python, Ruby, YAML).
 // Returns the last line whose indentation is greater than the block's start line.
+// When the terminating line is a closing keyword (end, }, ], )), it is included
+// in the block so constructs like Ruby's def...end are not truncated.
 func findIndentEnd(lines []string, _ []*regexp.Regexp, start int) int {
 	indent := countIndent(lines[start])
 	for i := start + 1; i < len(lines); i++ {
@@ -438,10 +533,25 @@ func findIndentEnd(lines []string, _ []*regexp.Regexp, start int) int {
 			continue
 		}
 		if countIndent(line) <= indent {
+			// Include closing keywords in the block (Ruby end, braces, brackets)
+			if isClosingKeyword(line) {
+				return i
+			}
 			return i - 1
 		}
 	}
 	return len(lines) - 1
+}
+
+// isClosingKeyword checks if a trimmed line is a closing keyword for
+// indentation-based blocks. This prevents truncation of Ruby's def...end blocks.
+func isClosingKeyword(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	switch trimmed {
+	case "end", "}", "]", ")":
+		return true
+	}
+	return false
 }
 
 // findSectionEnd finds the end of a section-based block (TOML, Markdown).

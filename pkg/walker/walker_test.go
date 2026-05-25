@@ -16,7 +16,7 @@ func TestDetectLanguage(t *testing.T) {
 		{"main.go", "go"},
 		{"lib.py", "python"},
 		{"app.js", "javascript"},
-		{"component.tsx", "javascript"},
+		{"component.tsx", "tsx"},
 		{"main.rs", "rust"},
 		{"Main.java", "java"},
 		{"file.c", "c"},
@@ -375,8 +375,8 @@ func TestDetectLanguage_AdditionalCases(t *testing.T) {
 		lang string
 	}{
 		{"file.jsx", "javascript"},
-		{"file.tsx", "javascript"},
-		{"file.ts", "javascript"},
+		{"file.tsx", "tsx"},
+		{"file.ts", "typescript"},
 		{"file.cc", "cpp"},
 		{"file.cxx", "cpp"},
 		{"file.hpp", "cpp"},

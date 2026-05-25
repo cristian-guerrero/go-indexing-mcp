@@ -294,13 +294,11 @@ func walkAST(node *sitter.Node, source []byte, language, filePath, relPath, file
 		imports := extractImports(node, source, ntype, language, filePath, relPath, fileHash, startLine)
 		*symbols = append(*symbols, imports...)
 
-		// For TS/JS import statements, also extract references for each imported
-		// identifier (default, named, namespace) so --symbol-info finds them as usages.
-		if ntype == "import_statement" && (language == "typescript" || language == "javascript") {
-			content := node.Content(source)
-			importRefs := extractJSImportRefs(content, filePath, relPath, fileHash, startLine)
-			*refs = append(*refs, importRefs...)
-		}
+		// Also extract import references for each imported identifier so that
+		// --symbol-info finds them as usages.
+		content := node.Content(source)
+		importRefs := extractImportRefs(content, ntype, language, filePath, relPath, fileHash, startLine)
+		*refs = append(*refs, importRefs...)
 	}
 
 	// Extract calls
@@ -654,10 +652,24 @@ func extractImports(node *sitter.Node, source []byte, ntype, language, filePath,
 	return symbols
 }
 
+// extractImportRefs extracts import references for each imported identifier so that
+// --symbol-info finds them as usages. Supported languages: TS/JS (import_statement),
+// Python (import_statement, import_from_statement).
+func extractImportRefs(content, ntype, language, filePath, relPath, fileHash string, startLine int) []Reference {
+	switch {
+	case (language == "typescript" || language == "javascript") && ntype == "import_statement":
+		return extractJSImportRefs(content, filePath, relPath, fileHash, startLine)
+
+	case language == "python" && ntype == "import_from_statement":
+		return extractPythonFromImportRefs(content, filePath, relPath, fileHash, startLine)
+
+	case language == "python" && ntype == "import_statement":
+		return extractPythonImportRefs(content, filePath, relPath, fileHash, startLine)
+	}
+	return nil
+}
+
 // extractJSImportRefs extracts import references from TS/JS import statements.
-// For `import BlogPostPage from './file'` or `import { X, Y } from 'module'`,
-// creates Reference entries for each imported identifier so that --symbol-info
-// can find them as usages.
 func extractJSImportRefs(content, filePath, relPath, fileHash string, startLine int) []Reference {
 	importPart := content
 	if idx := strings.Index(content, " from "); idx > 0 {
@@ -679,16 +691,7 @@ func extractJSImportRefs(content, filePath, relPath, fileHash string, startLine 
 	if strings.HasPrefix(importPart, "* as ") {
 		name := strings.TrimSpace(strings.TrimPrefix(importPart, "* as "))
 		if name != "" {
-			id := symbolID(fileHash, relPath, startLine, "import:"+name)
-			return []Reference{{
-				ID: refID(id, name, RefImports, startLine),
-				SourceID:   id,
-				TargetName: name,
-				Kind:       RefImports,
-				FilePath:   filePath,
-				Line:       startLine,
-				Confidence: 1.0,
-			}}
+			return []Reference{makeImportRef(fileHash, relPath, startLine, name, filePath)}
 		}
 		return nil
 	}
@@ -708,16 +711,7 @@ func extractJSImportRefs(content, filePath, relPath, fileHash string, startLine 
 				name = strings.TrimSpace(item[:idx])
 			}
 			if name != "" {
-				id := symbolID(fileHash, relPath, startLine, "import:"+name)
-				refs = append(refs, Reference{
-					ID: refID(id, name, RefImports, startLine),
-					SourceID:   id,
-					TargetName: name,
-					Kind:       RefImports,
-					FilePath:   filePath,
-					Line:       startLine,
-					Confidence: 1.0,
-				})
+				refs = append(refs, makeImportRef(fileHash, relPath, startLine, name, filePath))
 			}
 		}
 		return refs
@@ -728,18 +722,58 @@ func extractJSImportRefs(content, filePath, relPath, fileHash string, startLine 
 	if name == "" {
 		return nil
 	}
+	return []Reference{makeImportRef(fileHash, relPath, startLine, name, filePath)}
+}
+
+// extractPythonFromImportRefs extracts imported names from Python "from module import X" statements.
+// e.g. "from file import X, Y" → refs for X and Y.
+func extractPythonFromImportRefs(content, filePath, relPath, fileHash string, startLine int) []Reference {
+	rest := strings.TrimPrefix(content, "from ")
+	if idx := strings.Index(rest, " import "); idx > 0 {
+		namesPart := rest[idx+len(" import "):]
+		var refs []Reference
+		for _, name := range strings.Split(namesPart, ",") {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				refs = append(refs, makeImportRef(fileHash, relPath, startLine, name, filePath))
+			}
+		}
+		return refs
+	}
+	return nil
+}
+
+// extractPythonImportRefs extracts imported names from Python "import X" statements.
+// e.g. "import foo, bar" → refs for foo and bar.
+// e.g. "import foo.bar" → ref for foo (top-level module).
+func extractPythonImportRefs(content, filePath, relPath, fileHash string, startLine int) []Reference {
+	rest := strings.TrimPrefix(content, "import ")
+	var refs []Reference
+	for _, name := range strings.Split(rest, ",") {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			// For "import foo.bar", use just "foo" as the imported name
+			if idx := strings.Index(name, "."); idx > 0 {
+				name = name[:idx]
+			}
+			refs = append(refs, makeImportRef(fileHash, relPath, startLine, name, filePath))
+		}
+	}
+	return refs
+}
+
+// makeImportRef creates a single RefImports reference for a given imported name.
+func makeImportRef(fileHash, relPath string, startLine int, name, filePath string) Reference {
 	id := symbolID(fileHash, relPath, startLine, "import:"+name)
-	refs = append(refs, Reference{
-		ID: refID(id, name, RefImports, startLine),
+	return Reference{
+		ID:         refID(id, name, RefImports, startLine),
 		SourceID:   id,
 		TargetName: name,
 		Kind:       RefImports,
 		FilePath:   filePath,
 		Line:       startLine,
 		Confidence: 1.0,
-	})
-
-	return refs
+	}
 }
 
 // extractGoImportPath extracts the quoted path from a Go import line.

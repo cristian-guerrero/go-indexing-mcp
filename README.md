@@ -98,7 +98,7 @@ go-indexing-mcp --free
 ### Flags
 
 | Flag | Description |
-|---|---|---|
+|------|-------------|
 | `--mcp` | Start MCP server (stdio) |
 | `--generate` | One-shot index with report |
 | `--query <text>` | Search the index (BM25 + vector similarity via RRF) |

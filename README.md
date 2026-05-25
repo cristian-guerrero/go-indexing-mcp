@@ -87,9 +87,9 @@ go-indexing-mcp --query "authentication flow"
 go-indexing-mcp --grep "func validate"
 go-indexing-mcp --query "db pool config" --limit 10
 
-# Graph queries (no llama needed)
-go-indexing-mcp --symbol-info "Config"
-go-indexing-mcp --find-imports "github.com/user/project"
+# Graph queries — tree-sitter knowledge graph (no llama needed)
+go-indexing-mcp --symbol-info "Config"           # Definition + usages + callers + callees
+go-indexing-mcp --find-imports "github.com/proj" # Find imports by partial module path
 
 # Free llama-server memory
 go-indexing-mcp --free
@@ -136,8 +136,8 @@ Or via the run script (created during auto-setup):
 |---|---|---|
 | `search_code` | BM25 + vector similarity via RRF. Best for intent-based queries ("authentication flow"). Auto-indexes if needed | `query` (req), `path_filter`, `limit` |
 | `grep_code` | Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) are boosted 2x. Supports glob path filters. Auto-indexes if empty | `query` (req), `path_filter`, `lang`, `case_sensitive`, `word_boundary`, `limit` |
-| `symbol_info` | Complete view of a symbol: definition, usages, callers, and callees | `name` (req), `path_filter` |
-| `find_imports` | Find all files importing a module/package. Supports partial matching | `pattern` (req) |
+| `symbol_info` | Complete view of a symbol: definition, usages (imports + calls), callers, and callees. References are resolved to their target definition via `target_id` | `name` (req), `path_filter` |
+| `find_imports` | Find all files importing a module/package. Partial substring match on module paths | `pattern` (req) |
 
 ### Search modes
 
@@ -145,7 +145,8 @@ Or via the run script (created during auto-setup):
 |---|---|---|
 | `hybrid` (default) | BM25 + vector similarity fused with RRF (k=60). Best for intent and keywords | Yes |
 | `grep` | Case-insensitive substring on cached chunks | No |
-| `graph` | Knowledge graph queries (find_definition, find_usages, find_imports, symbol_info) | No |
+
+Graph queries (`--symbol-info`, `--find-imports`) use the knowledge graph (tree-sitter AST extraction) and do not need llama.cpp. Cross-file reference resolution resolves imports and calls to their target definitions (`target_id`). Supported languages: `go`, `python`, `typescript`, `javascript`, `tsx`, `c`, `cpp`, `php`, `rust`, `zig`.
 
 ### Intelligent indexing
 
@@ -182,16 +183,28 @@ After the configured `idle_timeout_secs` of inactivity (default: 5 min), llama-s
 
 ## Architecture
 
+### Vector index (semantic search)
+
 ```
 [FS] → [walker] → [ignore filter] → [chunker] ─→ [llama.cpp embeddings] → [storage]
-                                       │               ↑
-                                       ├─ small files ─┘
-                                       └─ large files → [structural splitter]
+                                        │               ↑
+                                        ├─ small files ─┘
+                                        └─ large files → [structural splitter]
 ```
 
 - **Small files**: sliding window chunking
 - **Large files**: structural splitter detects functions/classes/sections via regex + brace/indent counting per language
 - **Storage**: gob-serialized vectors with BM25 inverted index, isolated per git branch. Stored under `~/.go-mcp/indexing/` with Pi-format encoded project paths.
+
+### Knowledge graph (structural queries)
+
+Separate from the vector index. Uses tree-sitter AST extraction for precise symbol-level queries:
+
+1. **Extraction** (per-file): tree-sitter parses source → extracts symbols (functions, classes, imports) and references (calls, imports, JSX usage). Deferred to `RunGraphExtraction()` so it never blocks semantic search.
+2. **Cross-file resolution** (global pass): after extraction, matches unresolved references against all known symbols by name. When exactly one symbol matches, populates `target_id` — ambiguous names are skipped.
+3. **Persistence**: individual JSON files per source file (atomic tmp+rename), branch-isolated indexes.
+
+Supported languages: `go`, `python`, `typescript`, `javascript`, `tsx`, `c`, `cpp`, `php`, `rust`, `zig`.
 
 ### Building from source
 

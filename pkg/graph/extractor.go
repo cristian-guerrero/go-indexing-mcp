@@ -307,6 +307,15 @@ func walkAST(node *sitter.Node, source []byte, language, filePath, relPath, file
 		*refs = append(*refs, calls...)
 	}
 
+	// Extract Zig @import references from builtin_function nodes.
+	// For `const x = @import("module")`, creates a RefImports reference
+	// for the variable name x so --symbol-info finds it as a usage.
+	if ntype == "builtin_function" && language == "zig" {
+		if ref := extractZigImportRef(node, source, filePath, relPath, fileHash, startLine); ref != nil {
+			*refs = append(*refs, ref...)
+		}
+	}
+
 	// Extract type references: any type_identifier that is not the name in a type_spec
 	// (i.e., not a type definition) is a usage of that type.
 	if ntype == "type_identifier" {
@@ -774,6 +783,48 @@ func makeImportRef(fileHash, relPath string, startLine int, name, filePath strin
 		Line:       startLine,
 		Confidence: 1.0,
 	}
+}
+
+// extractZigImportRef extracts import references from Zig @import builtin calls.
+// For `const x = @import("module")`, walks up the AST to find the variable name
+// and creates a RefImports reference for it.
+func extractZigImportRef(node *sitter.Node, source []byte, filePath, relPath, fileHash string, startLine int) []Reference {
+	builtinID := node.Child(0)
+	if builtinID == nil {
+		return nil
+	}
+	if builtinID.Content(source) != "@import" && builtinID.Content(source) != "@cImport" {
+		return nil
+	}
+
+	// Walk up to find the enclosing variable name
+	name := findZigImportName(node, source)
+	if name == "" {
+		return nil
+	}
+
+	return []Reference{makeImportRef(fileHash, relPath, startLine, name, filePath)}
+}
+
+// findZigImportName walks up from a @import node to find the enclosing variable name.
+// Handles: const x = @import("module")
+func findZigImportName(node *sitter.Node, source []byte) string {
+	for n := node.Parent(); n != nil; n = n.Parent() {
+		if n.Type() == "variable_declaration" {
+			for i := 0; i < int(n.ChildCount()); i++ {
+				child := n.Child(i)
+				if child != nil && child.Type() == "_variable_declaration_header" {
+					for j := 0; j < int(child.ChildCount()); j++ {
+						gc := child.Child(j)
+						if gc != nil && gc.Type() == "identifier" {
+							return gc.Content(source)
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // extractGoImportPath extracts the quoted path from a Go import line.

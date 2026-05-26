@@ -22,6 +22,8 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/mcp"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/parser"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/updater"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/version"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
@@ -1167,6 +1169,69 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 	slog.Debug("graph loaded", "symbols", symCount, "refs", refCount, "branch", branch)
 
 	fn(gq)
+	return 0
+}
+
+// RunVersion prints the current build version and whether a pending update
+// has been downloaded and is ready to apply on next restart.
+func RunVersion() int {
+	fmt.Println("go-indexing-mcp version", version.Version)
+
+	// Check for pending downloaded update
+	up := updater.New(config.McpDir(), updater.DefaultOwner, updater.DefaultRepo)
+	if pv := up.PendingVersion(); pv != "" {
+		fmt.Printf("Update pending: %s (restart to apply)\n", pv)
+		return 0
+	}
+
+	// Also check the version marker file (persisted across restarts)
+	tmpDir := filepath.Join(config.McpDir(), "updates")
+	versionPath := filepath.Join(tmpDir, "go-indexing-mcp-version")
+	data, err := os.ReadFile(versionPath)
+	if err == nil && len(data) > 0 {
+		pv := strings.TrimSpace(string(data))
+		if pv != version.Version {
+			fmt.Printf("Update pending: %s (restart to apply)\n", pv)
+		}
+	}
+
+	return 0
+}
+
+// RunUpdateNow performs an immediate update check and applies any pending update.
+// Returns an OS exit code (0 = up-to-date, 1 = error).
+func RunUpdateNow() int {
+	up := updater.New(config.McpDir(), updater.DefaultOwner, updater.DefaultRepo)
+
+	// Step 1: Apply any pending update
+	if err := up.ApplyUpdate(); err != nil {
+		slog.Debug("no pending update to apply", "error", err)
+	} else {
+		fmt.Println("Update applied successfully! Please restart the binary.")
+		return 0
+	}
+
+	// Step 2: Check for new updates (dev builds skip)
+	if version.Version == "dev" {
+		fmt.Println("Dev build — update checks are disabled.")
+		return 0
+	}
+
+	info := up.CheckForUpdate()
+	if info == nil || !info.Available {
+		fmt.Println("Already up to date. Current version:", version.Version)
+		return 0
+	}
+
+	fmt.Printf("Update available: %s (current: %s)\n", info.Version, version.Version)
+	fmt.Println("Downloading...")
+
+	if err := up.DownloadUpdate(info); err != nil {
+		slog.Error("download failed", "error", err)
+		return 1
+	}
+
+	fmt.Println("Download complete. Apply on next restart.")
 	return 0
 }
 

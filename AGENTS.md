@@ -2,7 +2,7 @@
 
 ## Commands
 
-- Build: `go build -o bin/go-indexing-mcp.exe .`
+- Build: `go build -ldflags="-X github.com/cristian-guerrero/go-indexing-mcp/pkg/version.Version=dev" -o bin/go-indexing-mcp.exe .`
 - Test: `go test -count=1 ./...` (avoids cache)
 - Lint: `go vet ./...`
 - CI: `.github/workflows/ci.yml` — multi-platform test + build + release on tags and main
@@ -23,6 +23,8 @@
 - `main.go` — flag parsing + routing to handlers
 - `internal/cli/handlers.go` — `RunGenerate()`, `RunQuery()`, `RunConfigure()` + `configurePi()`, `configureOpenCode()`, `configureKiloCode()`, `configureClaude()`
 - `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`. `McpDir()`, `ModelsDir()`, `LlamaCppDir()`, `McpBinDir()`, `EncodeProjectPath()`, `StorageDir()`, `StoragePath()` (deprecated), `EncodeFilePath()`
+- `pkg/version/` — `Version` var injected via ldflags at build time (default: "dev"). Dev builds skip update checks
+- `pkg/updater/` — auto-update via GitHub Releases: `CheckForUpdate`, `DownloadUpdate`, `ApplyUpdate` (replace running binary), `WasJustUpdated`. Windows: rename .exe → .old, copy new, hide .old if in-use. Config: `indexing.auto_update` (default: true). Triggered on MCP startup in background goroutine
 - `pkg/selfsetup/` — auto-setup on first run
 - `pkg/llama/` — manager: download (auto-detects GPU → CUDA/Vulkan/CPU), llama-server subprocess, health check, `IsRunning()`, `StartedProcess()`. llama-server uses `--sleep-idle-seconds` (configurable via `idle_timeout_secs`) to unload model from GPU after inactivity instead of killing the process. Memory monitoring: `MemoryUsageMB()` with `meminfo_windows.go` (psapi.dll + `golang.org/x/sys/windows`) and `meminfo_unix.go` (`/proc/<pid>/status` + `ps` fallback)
 - `pkg/ignore/` — .gitignore filter + default patterns (nested levels)
@@ -166,3 +168,4 @@ Do not modify README.md unless the public interface changes (flags, tools, confi
 - `--symbol-info <name>` — get detailed info about a symbol: definition, usages, callers, callees (graph, no llama needed)
 - `--find-imports <pattern>` — find imports matching module pattern (graph, no llama needed)
 - `--configure <pi|opencode|kilocode|claude>` — configure integration with Pi, OpenCode, KiloCode, or Claude Code (writes MCP config + global AGENTS.md)
+- `--update` — check and apply update immediately (interactive CLI mode)

@@ -38,7 +38,8 @@ type LlamaConfig struct {
 }
 
 // IndexingConfig controls file walking, chunking, git integration, model sleep timeout
-// (--sleep-idle-seconds), watch intervals, and periodic memory freeing during indexing.
+// (--sleep-idle-seconds), watch intervals, periodic memory freeing during indexing,
+// and automatic updates.
 type IndexingConfig struct {
 	RootPath           string   `json:"root_path"`
 	IgnorePatterns     []string `json:"ignore_patterns"`
@@ -49,7 +50,8 @@ type IndexingConfig struct {
 	WatchEnabled       bool     `json:"watch_enabled"`
 	WatchIntervalSecs  int      `json:"watch_interval_secs"`
 	MemoryFreeInterval int      `json:"memory_free_interval"`
-	MaxMemoryMB        int      `json:"max_memory_mb"` // 0 = disabled; llama-server memory threshold in MB
+	MaxMemoryMB        int      `json:"max_memory_mb"`  // 0 = disabled; llama-server memory threshold in MB
+	AutoUpdate         bool     `json:"auto_update"`    // check and download updates on startup
 }
 
 // StorageConfig is reserved for future storage settings.
@@ -204,6 +206,7 @@ func DefaultConfigForVariant(variant string) *Config {
 			WatchIntervalSecs:  60,
 			MemoryFreeInterval: 10000, // effectively disabled; -cram 0 handles memory
 			MaxMemoryMB:        0,
+			AutoUpdate:         true,
 		},
 		Embedding: EmbeddingConfig{
 			Model:       modelName,

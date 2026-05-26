@@ -24,6 +24,8 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/parser"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/selfsetup"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/storage"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/updater"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/version"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
@@ -43,8 +45,20 @@ func main() {
 	symbolInfo := flag.String("symbol-info", "", "Get detailed info about a symbol: definition, usages, callers, callees (knowledge graph)")
 	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp (skip PATH, test GPU detection)")
 	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', 'kilocode', or 'claude'")
+	updateNow := flag.Bool("update", false, "Check and apply update immediately (interactive)")
+	showVersion := flag.Bool("version", false, "Show current version and pending update status")
 	rootDir := flag.String("dir", "", "Project root directory (overrides config root_path)")
 	flag.Parse()
+
+	if *showVersion {
+		setupConsoleLogger()
+		os.Exit(cli.RunVersion())
+	}
+
+	if *updateNow {
+		setupConsoleLogger()
+		os.Exit(cli.RunUpdateNow())
+	}
 
 	if *downloadLlama {
 		setupConsoleLogger()
@@ -198,6 +212,29 @@ func main() {
 
 	srv := mcp.New(idx, mgr, cfg.Indexing.WatchEnabled, cfg.Indexing.WatchIntervalSecs)
 	slog.Info("starting MCP server")
+
+	// Auto-update: apply pending update on startup, then check+download in background
+	if cfg.Indexing.AutoUpdate && version.Version != "dev" {
+		go func() {
+			up := updater.New(config.McpDir(), updater.DefaultOwner, updater.DefaultRepo)
+			if up.WasJustUpdated() {
+				slog.Info("binary updated successfully", "version", version.Version)
+			}
+			if err := up.ApplyUpdate(); err != nil {
+				slog.Debug("no pending update to apply", "error", err)
+			} else {
+				slog.Info("update applied, please restart")
+			}
+			if info := up.CheckForUpdate(); info != nil && info.Available {
+				slog.Info("update available", "version", info.Version)
+				if err := up.DownloadUpdate(info); err != nil {
+					slog.Warn("update download failed", "error", err)
+				} else {
+					slog.Info("update downloaded, will apply on next restart")
+				}
+			}
+		}()
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

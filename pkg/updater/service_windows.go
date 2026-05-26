@@ -11,7 +11,8 @@ import (
 // Windows allows renaming a running executable, so the strategy is:
 //  1. Rename current exe → exe.old
 //  2. Copy new binary to exe path
-//  3. Remove the updates staging directory
+//  3. Remove the downloaded binary (not the version file — ApplyUpdate's
+//     version guard will clean stale files on the next startup)
 //  4. Write .updated-marker
 //
 // If removing .old fails (because the process still holds a handle), the file
@@ -25,12 +26,14 @@ func (s *Service) applyUpdateWindows(exe, newBinary, tmpDir string) error {
 	}
 
 	if err := copyFile(newBinary, exe); err != nil {
-		// Rollback: restore old binary
 		os.Rename(oldBinary, exe)
 		return err
 	}
 
-	os.RemoveAll(tmpDir)
+	// Remove the binary file; the version marker stays for the guard check
+	// on next startup. Don't RemoveAll — that may fail on Windows when files
+	// are transiently locked.
+	os.Remove(newBinary)
 
 	// Try to remove .old; if it fails (in-use), hide it
 	if err := os.Remove(oldBinary); err != nil {

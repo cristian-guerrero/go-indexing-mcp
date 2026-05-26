@@ -210,31 +210,34 @@ func main() {
 		slog.Warn("knowledge graph not available", "error", err)
 	}
 
-	srv := mcp.New(idx, mgr, cfg.Indexing.WatchEnabled, cfg.Indexing.WatchIntervalSecs)
-	slog.Info("starting MCP server")
-
 	// Auto-update: apply pending update on startup, then check+download in background
 	if cfg.Indexing.AutoUpdate && version.Version != "dev" {
-		go func() {
-			up := updater.New(config.McpDir(), updater.DefaultOwner, updater.DefaultRepo)
-			if up.WasJustUpdated() {
-				slog.Info("binary updated successfully", "version", version.Version)
-			}
-			if err := up.ApplyUpdate(); err != nil {
-				slog.Debug("no pending update to apply", "error", err)
-			} else {
-				slog.Info("update applied, please restart")
-			}
+		up := updater.New(config.McpDir(), updater.DefaultOwner, updater.DefaultRepo)
+
+		if up.WasJustUpdated() {
+			slog.Info("update successful", "version", version.Version)
+		}
+
+		// Apply a previously downloaded update (replaces binary on disk,
+		// current process continues with old code).
+		justApplied := up.ApplyUpdate() == nil
+
+		// Only check+download if we didn't just consume a pending update,
+		// otherwise we'd re-download the same version immediately.
+		if !justApplied {
 			if info := up.CheckForUpdate(); info != nil && info.Available {
 				slog.Info("update available", "version", info.Version)
 				if err := up.DownloadUpdate(info); err != nil {
 					slog.Warn("update download failed", "error", err)
 				} else {
-					slog.Info("update downloaded, will apply on next restart")
+					slog.Info("update downloaded, apply on next restart")
 				}
 			}
-		}()
+		}
 	}
+
+	srv := mcp.New(idx, mgr, cfg.Indexing.WatchEnabled, cfg.Indexing.WatchIntervalSecs)
+	slog.Info("starting MCP server")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

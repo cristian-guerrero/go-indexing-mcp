@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/version"
@@ -88,15 +89,13 @@ func (s *Service) DownloadUpdate(info *UpdateInfo) error {
 		return fmt.Errorf("create updates dir: %w", err)
 	}
 
-	// Fetch the asset using the API's findAsset logic
-	release, err := s.api.getLatestRelease()
-	if err != nil {
-		return fmt.Errorf("get release for download: %w", err)
+	// Download directly from the info URL (already resolved by CheckForUpdate)
+	asset := &Asset{
+		Name:        "go-indexing-mcp-updated",
+		DownloadURL: info.URL,
 	}
-
-	asset := s.api.findAsset(release)
-	if asset == nil {
-		return fmt.Errorf("no platform asset found for download")
+	if runtime.GOOS == "windows" {
+		asset.Name += ".exe"
 	}
 
 	downloaded, err := s.api.DownloadAsset(asset, tmpDir)
@@ -110,12 +109,13 @@ func (s *Service) DownloadUpdate(info *UpdateInfo) error {
 		updatedName += ".exe"
 	}
 	updatedPath := filepath.Join(tmpDir, updatedName)
-	if err := os.Rename(downloaded, updatedPath); err != nil {
-		// If rename fails (e.g. cross-device), copy and delete
-		if err := copyFile(downloaded, updatedPath); err != nil {
-			return fmt.Errorf("rename downloaded file: %w", err)
+	if downloaded != updatedPath {
+		if err := os.Rename(downloaded, updatedPath); err != nil {
+			if err := copyFile(downloaded, updatedPath); err != nil {
+				return fmt.Errorf("rename downloaded file: %w", err)
+			}
+			os.Remove(downloaded)
 		}
-		os.Remove(downloaded)
 	}
 
 	// Write version marker for ApplyUpdate
@@ -131,24 +131,28 @@ func (s *Service) DownloadUpdate(info *UpdateInfo) error {
 // ApplyUpdate replaces the running binary with a previously downloaded update.
 // It renames the current executable to .old, writes the new binary in its place,
 // and writes a .updated-marker so WasJustUpdated can detect success.
-// If no pending update exists, it returns an error (which is expected on normal startup).
+// If no pending update exists, or the pending version is not newer than the
+// current version, it cleans up stale files and returns an error (expected on
+// normal startup with no pending update).
 func (s *Service) ApplyUpdate() error {
 	tmpDir := filepath.Join(s.dataDir, "updates")
 
-	// Check if we already know a pending version from a download this session
 	if s.pending == "" {
 		versionPath := filepath.Join(tmpDir, "go-indexing-mcp-version")
 		data, err := os.ReadFile(versionPath)
 		if err != nil {
 			return fmt.Errorf("no pending update")
 		}
-		s.pending = string(data)
+		s.pending = strings.TrimSpace(string(data))
 	}
 
-	// Sanity check: only apply if the pending version is actually newer
+	// Guard: if the pending version is not newer, clean up and bail.
+	// This prevents re-applying the same update when cleanup failed previously.
 	if !isNewer(version.Version, s.pending) {
 		os.RemoveAll(tmpDir)
-		return fmt.Errorf("pending version %s is not newer than current %s", s.pending, version.Version)
+		exe, _ := os.Executable()
+		os.Remove(exe + ".old")
+		return fmt.Errorf("pending %s is not newer than current %s", s.pending, version.Version)
 	}
 
 	exe, err := os.Executable()
@@ -156,12 +160,11 @@ func (s *Service) ApplyUpdate() error {
 		return fmt.Errorf("get executable path: %w", err)
 	}
 
-	var newBinary string
+	updatedName := "go-indexing-mcp-updated"
 	if runtime.GOOS == "windows" {
-		newBinary = filepath.Join(tmpDir, "go-indexing-mcp-updated.exe")
-	} else {
-		newBinary = filepath.Join(tmpDir, "go-indexing-mcp-updated")
+		updatedName += ".exe"
 	}
+	newBinary := filepath.Join(tmpDir, updatedName)
 
 	if _, err := os.Stat(newBinary); os.IsNotExist(err) {
 		os.RemoveAll(tmpDir)
@@ -180,7 +183,6 @@ func (s *Service) ApplyUpdate() error {
 	}
 
 	if err := copyFile(newBinary, exe); err != nil {
-		// Rollback: restore old binary
 		os.Rename(oldBinary, exe)
 		return fmt.Errorf("copy updated binary: %w", err)
 	}
@@ -191,7 +193,6 @@ func (s *Service) ApplyUpdate() error {
 
 	os.RemoveAll(tmpDir)
 
-	// Write updated marker
 	markerPath := filepath.Join(s.dataDir, ".updated-marker")
 	if err := os.WriteFile(markerPath, []byte(s.pending), 0644); err != nil {
 		return fmt.Errorf("write updated marker: %w", err)

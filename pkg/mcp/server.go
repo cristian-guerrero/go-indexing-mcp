@@ -986,6 +986,19 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 		if len(results) == 0 {
 			return mcp.NewToolResultText("No results found. The index may not contain files from this path. Check that the path_filter matches indexed files, or that the project has been indexed."), nil
 		}
+		var maxScore float64
+		for _, r := range results {
+			if r.Score > maxScore {
+				maxScore = r.Score
+			}
+		}
+		for i := range results {
+			if maxScore > 0 {
+				results[i].Score = (results[i].Score / maxScore) * 100
+			} else {
+				results[i].Score = 0
+			}
+		}
 		data, _ := json.MarshalIndent(results, "", "  ")
 		return mcp.NewToolResultText(string(data)), nil
 	}
@@ -1081,6 +1094,9 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 
 		if len(results) == 0 {
 			return mcp.NewToolResultText("No matches found."), nil
+		}
+		for i := range results {
+			results[i].Score *= 100
 		}
 		data, _ := json.MarshalIndent(results, "", "  ")
 		return mcp.NewToolResultText(string(data)), nil

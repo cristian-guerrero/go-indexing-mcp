@@ -428,7 +428,7 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 		fmt.Fprintln(pw)
 		fmt.Fprintln(pw, "=== Search Results ===")
 		fmt.Fprintf(pw, " Query: %s\n", query)
-		fmt.Fprintf(pw, " Mode: %s\n", mode)
+		// fmt.Fprintf(pw, " Mode: %s\n", mode)
 		fmt.Fprintf(pw, " Results: %d\n", len(results))
 		fmt.Fprintln(pw)
 
@@ -1078,8 +1078,15 @@ func RunSymbolInfo(name, pathFilter, rootDir string) int {
 	return runGraphQuery("symbol-info", func(g *graph.GraphQuery) {
 		info := g.GetSymbolInfo(name, pathFilter)
 		formatted := graph.FormatSymbolInfo(info)
-		data, _ := json.MarshalIndent(formatted, "", "  ")
-		fmt.Println(string(data))
+		fmt.Println()
+		fmt.Println("=== Symbol Info ===")
+		fmt.Printf(" Symbol: %s\n", name)
+		fmt.Println()
+		if formatted != nil {
+			data, _ := json.MarshalIndent(formatted, "", "  ")
+			fmt.Println(string(data))
+		}
+		fmt.Println("====================")
 	}, rootDir)
 }
 

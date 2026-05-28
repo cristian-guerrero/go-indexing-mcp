@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -581,8 +582,8 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	return 0
 }
 
-// RunConfigure sets up the MCP server integration for Pi, OpenCode, or KiloCode.
-// Writes the appropriate config file (opencode.json, kilo.json(c)) and a global AGENTS.md.
+// RunConfigure sets up the MCP server integration for Pi, OpenCode, KiloCode, Claude, or Zed.
+// Writes the appropriate config file (settings.json, opencode.json(c), mcp.json, etc.) and a global AGENTS.md/CLAUDE.md.
 func RunConfigure(target string) int {
 	exe, err := os.Executable()
 	if err != nil {
@@ -599,8 +600,10 @@ func RunConfigure(target string) int {
 		return configureKiloCode(exe)
 	case "claude":
 		return configureClaude(exe)
+	case "zed":
+		return configureZed(exe)
 	default:
-		fmt.Fprintf(os.Stderr, "Unknown target: %s. Use 'pi', 'opencode', 'kilocode', or 'claude'.\n", target)
+		fmt.Fprintf(os.Stderr, "Unknown target: %s. Use 'pi', 'opencode', 'kilocode', 'claude', or 'zed'.\n", target)
 		return 1
 	}
 }
@@ -911,6 +914,78 @@ func configureClaude(exe string) int {
 		fmt.Fprintln(pw, "✓ ~/.claude/CLAUDE.md already up to date")
 	}
 	fmt.Fprintln(pw, "Done. Restart Claude Code for changes to take effect.")
+	return 0
+}
+
+// zedConfigDir returns the Zed configuration directory for the current platform.
+// macOS/Linux: ~/.config/zed, Windows: %APPDATA%\Zed
+func zedConfigDir() string {
+	if runtime.GOOS == "windows" {
+		appData := os.Getenv("APPDATA")
+		if appData != "" {
+			return filepath.Join(appData, "Zed")
+		}
+	}
+	return filepath.Join(userHomeDir(), ".config", "zed")
+}
+
+// configureZed adds the MCP server entry to Zed's settings.json
+// and writes a global AGENTS.md with search instructions.
+func configureZed(exe string) int {
+	pw := progressWriter{}
+	configDir := zedConfigDir()
+	configPath := filepath.Join(configDir, "settings.json")
+
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		slog.Error("create zed config dir", "error", err)
+		return 1
+	}
+
+	cfg, err := loadJSONConfig(configPath)
+	if err != nil {
+		slog.Error("load zed settings", "error", err)
+		return 1
+	}
+
+	ctxServers, _ := cfg["context_servers"].(map[string]any)
+	if ctxServers == nil {
+		ctxServers = make(map[string]any)
+	}
+	ctxServers["go-indexing-mcp"] = map[string]any{
+		"command": exe,
+		"args":    []string{"--mcp"},
+		"env":     map[string]any{},
+	}
+	cfg["context_servers"] = ctxServers
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		slog.Error("marshal zed settings", "error", err)
+		return 1
+	}
+	if err := os.WriteFile(configPath, data, 0644); err != nil {
+		slog.Error("write zed settings.json", "error", err)
+		return 1
+	}
+	fmt.Fprintln(pw, "✓ Zed MCP server configured")
+
+	// Global instructions: AGENTS.md in the Zed config dir
+	agentsPath := filepath.Join(configDir, "AGENTS.md")
+	agentsContent := strings.NewReplacer(
+		"{BT}", "`",
+	).Replace("# Code Search Tool (REQUIRED)\n\nYou MUST use the {BT}go-indexing-mcp_search_code{BT}, {BT}go-indexing-mcp_grep_code{BT}, {BT}go-indexing-mcp_symbol_info{BT}, or {BT}go-indexing-mcp_find_imports{BT} MCP tools for ALL code searches.\nAlways try them FIRST, before falling back to built-in grep/glob tools.\n\n## Available tools\n\n- {BT}go-indexing-mcp_search_code(query, path_filter?, limit?){BT} — BM25 + vector similarity via RRF. Best for intent-based queries (\"authentication flow\", \"database connection pool\"). Auto-indexes if needed. Requires llama.cpp.\n- {BT}go-indexing-mcp_grep_code(query, path_filter?, lang?, case_sensitive?, word_boundary?, limit?){BT} — Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) boosted 2x. Supports glob path filters ({BT}*.go{BT}, {BT}**/*_test.go{BT}). Auto-indexes if empty.\n- {BT}go-indexing-mcp_symbol_info(name, path_filter?){BT} — Get a complete 360-degree view of a **specific symbol by its exact name**: definition, usages, callers, and callees. Requires the exact exported name (function, type, struct, const). Does NOT do keyword search — use {BT}search_code{BT} or {BT}grep_code{BT} first to discover symbol names. No llama needed.\n- {BT}go-indexing-mcp_find_imports(pattern){BT} — Find all files that import a given module or package. Supports partial matching. No llama needed.\n\n## How to use the tools\n\n- {BT}go-indexing-mcp_search_code(query=\"authentication flow\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"database connection pool\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func validate\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"type.*Downloader\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"func\", lang=\"go\"){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"get\", word_boundary=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"Error\", case_sensitive=true){BT}\n- {BT}go-indexing-mcp_grep_code(query=\"DB\", path_filter=\"*.go\"){BT}\n- {BT}go-indexing-mcp_search_code(query=\"module\", limit=50){BT}\n- {BT}go-indexing-mcp_symbol_info(name=\"ValidateUser\"){BT}\n- {BT}go-indexing-mcp_find_imports(pattern=\"fmt\"){BT}\n\nUse the {BT}limit{BT} parameter to control result count (default: 25, max: 50). Use {BT}path_filter{BT} to narrow by prefix, exact file, or glob ({BT}*.go{BT}, {BT}**/*_test.go{BT}).\n\n## When to use each tool\n\n- **search_code**: you want to FIND code by what it DOES. Works for both intent and keywords.\n- **grep_code**: you know the EXACT name of a function, variable, or string. Fastest option.\n- **symbol_info**: you have the EXACT name of a symbol (found via grep_code/search_code) and need its definition, usages, callers, callees.\n- **find_imports**: you need to find which files depend on a specific package.\n\n## Search workflow (MANDATORY)\n\n1. **ALWAYS start** with {BT}go-indexing-mcp_search_code(query=\"<description>\"){BT} — describe what the code DOES, not literal strings. If you need an exact symbol/identifier, use {BT}go-indexing-mcp_grep_code{BT} instead.\n2. Use the returned chunks to understand the code. Only read full files when the chunk is insufficient.\n3. Once you have the exact exported name of a symbol (from grep_code/search_code results), you can use {BT}go-indexing-mcp_symbol_info(name=\"ExactName\"){BT} for definition + usages + callers + callees.\n4. Only fall back to grep/find/ls/read when the search tools return nothing useful AND you have confirmed with the user.")
+
+	merged, err := mergeAgentsSection(agentsPath, agentsContent)
+	if err != nil {
+		slog.Error("write zed AGENTS.md", "error", err)
+		return 1
+	}
+	if merged {
+		fmt.Fprintln(pw, "✓ Global AGENTS.md updated with search instructions")
+	} else {
+		fmt.Fprintln(pw, "✓ AGENTS.md already up to date")
+	}
+	fmt.Fprintln(pw, "Done. Restart Zed for changes to take effect.")
 	return 0
 }
 

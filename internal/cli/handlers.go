@@ -428,10 +428,16 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 		fmt.Fprintln(pw)
 		fmt.Fprintln(pw, "=== Search Results ===")
 		fmt.Fprintf(pw, " Query: %s\n", query)
-		fmt.Fprintf(pw, " Mode: %s\n", mode)
+		// fmt.Fprintf(pw, " Mode: %s\n", mode)
 		fmt.Fprintf(pw, " Results: %d\n", len(results))
 		fmt.Fprintln(pw)
 
+		var maxScore float64
+		for _, r := range results {
+			if r.Score > maxScore {
+				maxScore = r.Score
+			}
+		}
 		for i, r := range results {
 			preview := r.Content
 			if len(preview) > 120 {
@@ -441,7 +447,11 @@ func RunQuery(query string, mode string, limit int, pathFilter string, rootDir s
 			if rel == "" {
 				rel = r.FilePath
 			}
-			fmt.Fprintf(pw, " %d. %s:%d-%d (%.2f)\n", i+1, rel, r.StartLine, r.EndLine, r.Score)
+			pct := 0.0
+			if maxScore > 0 {
+				pct = (r.Score / maxScore) * 100
+			}
+			fmt.Fprintf(pw, " %d. %s:%d-%d (%.1f%%)\n", i+1, rel, r.StartLine, r.EndLine, pct)
 			fmt.Fprintf(pw, "  %s\n", preview)
 			fmt.Fprintln(pw)
 		}
@@ -552,7 +562,7 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 		if rel == "" {
 			rel = r.FilePath
 		}
-		fmt.Fprintf(pw, " %d. %s:%d-%d (%.2f)\n", i+1, rel, r.StartLine, r.EndLine, r.Score)
+		fmt.Fprintf(pw, " %d. %s:%d-%d (%.1f%%)\n", i+1, rel, r.StartLine, r.EndLine, r.Score*100)
 		for _, m := range r.Matches {
 			preview := m.Content
 			if len(preview) > 120 {
@@ -1068,8 +1078,15 @@ func RunSymbolInfo(name, pathFilter, rootDir string) int {
 	return runGraphQuery("symbol-info", func(g *graph.GraphQuery) {
 		info := g.GetSymbolInfo(name, pathFilter)
 		formatted := graph.FormatSymbolInfo(info)
-		data, _ := json.MarshalIndent(formatted, "", "  ")
-		fmt.Println(string(data))
+		fmt.Println()
+		fmt.Println("=== Symbol Info ===")
+		fmt.Printf(" Symbol: %s\n", name)
+		fmt.Println()
+		if formatted != nil {
+			data, _ := json.MarshalIndent(formatted, "", "  ")
+			fmt.Println(string(data))
+		}
+		fmt.Println("====================")
 	}, rootDir)
 }
 

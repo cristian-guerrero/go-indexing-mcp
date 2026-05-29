@@ -99,7 +99,7 @@ var VariantProfiles = map[string]LlamaProfile{
 		NGLLayers:      99,
 		CtxSize:        4096,
 		BatchSize:      512,
-		UBatchSize:     512,
+		UBatchSize:     2048,
 		Pooling:        "mean",
 		ExtraArgs:      []string{"--no-webui", "-fa", "on", "-cram", "0"},
 		EmbedBatchSize: 48,
@@ -108,7 +108,7 @@ var VariantProfiles = map[string]LlamaProfile{
 		NGLLayers:      0,
 		CtxSize:        2048,
 		BatchSize:      256,
-		UBatchSize:     256,
+		UBatchSize:     1024,
 		Pooling:        "mean",
 		ExtraArgs:      []string{"--no-webui", "--mlock", "-cram", "0"},
 		EmbedBatchSize: 16,
@@ -331,6 +331,27 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// cleanExtraArgs validates and deduplicates ExtraArgs for the given variant.
+// If the variant has a known profile, returns the profile's args (authoritative).
+// Otherwise returns args with consecutive duplicate values deduplicated.
+func cleanExtraArgs(args []string, variant string, def *Config) []string {
+	if profile, ok := VariantProfiles[variant]; ok {
+		return profile.ExtraArgs
+	}
+	if len(args) < 3 {
+		return args
+	}
+	// Deduplicate consecutive duplicate values (e.g. "-cram", "0", "0" → "-cram", "0")
+	result := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if i > 0 && i < len(args)-1 && args[i] == args[i+1] && !strings.HasPrefix(args[i], "-") {
+			continue
+		}
+		result = append(result, args[i])
+	}
+	return result
+}
+
 // fillMissing merges default values into any zero/empty config fields.
 // This ensures forward compatibility when new fields are added.
 func fillMissing(cfg *Config) {
@@ -373,7 +394,19 @@ func fillMissing(cfg *Config) {
 		cfg.Llama.UBatchSize = def.Llama.UBatchSize
 	}
 	if cfg.Llama.ExtraArgs == nil {
-		cfg.Llama.ExtraArgs = []string{}
+		cfg.Llama.ExtraArgs = def.Llama.ExtraArgs
+	} else {
+		cfg.Llama.ExtraArgs = cleanExtraArgs(cfg.Llama.ExtraArgs, cfg.Llama.Variant, def)
+	}
+
+	// Sync profile values for known variants on every load. This ensures auto-updates
+	// propagate tuning changes (UBatchSize, BatchSize, etc.) to existing configs.
+	if profile, ok := VariantProfiles[cfg.Llama.Variant]; ok {
+		cfg.Llama.NGLLayers = profile.NGLLayers
+		cfg.Llama.CtxSize = profile.CtxSize
+		cfg.Llama.BatchSize = profile.BatchSize
+		cfg.Llama.UBatchSize = profile.UBatchSize
+		cfg.Embedding.BatchSize = profile.EmbedBatchSize
 	}
 
 	if cfg.Indexing.RootPath == "" {

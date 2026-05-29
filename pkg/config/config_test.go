@@ -235,8 +235,8 @@ func TestDefaultConfigForVariant_Vulkan(t *testing.T) {
 	if cfg.Llama.BatchSize != 512 {
 		t.Errorf("vulkan BatchSize = %d, want 512", cfg.Llama.BatchSize)
 	}
-	if cfg.Llama.UBatchSize != 512 {
-		t.Errorf("vulkan UBatchSize = %d, want 512", cfg.Llama.UBatchSize)
+	if cfg.Llama.UBatchSize != 2048 {
+		t.Errorf("vulkan UBatchSize = %d, want 2048", cfg.Llama.UBatchSize)
 	}
 	if cfg.Llama.CtxSize != 4096 {
 		t.Errorf("vulkan CtxSize = %d, want 4096", cfg.Llama.CtxSize)
@@ -254,8 +254,8 @@ func TestDefaultConfigForVariant_Avx2(t *testing.T) {
 	if cfg.Llama.BatchSize != 256 {
 		t.Errorf("avx2 BatchSize = %d, want 256", cfg.Llama.BatchSize)
 	}
-	if cfg.Llama.UBatchSize != 256 {
-		t.Errorf("avx2 UBatchSize = %d, want 256", cfg.Llama.UBatchSize)
+	if cfg.Llama.UBatchSize != 1024 {
+		t.Errorf("avx2 UBatchSize = %d, want 1024", cfg.Llama.UBatchSize)
 	}
 	if cfg.Llama.CtxSize != 2048 {
 		t.Errorf("avx2 CtxSize = %d, want 2048", cfg.Llama.CtxSize)
@@ -442,8 +442,8 @@ func TestFillMissing_AllEmpty(t *testing.T) {
 	if cfg.Llama.ExtraArgs == nil {
 		t.Error("ExtraArgs should not be nil after fillMissing")
 	}
-	// NGLLayers is intentionally NOT filled by fillMissing (users configure via config.json).
-	// CtxSize, BatchSize, UBatchSize, Embedding.BatchSize are filled from the variant-specific default profile.
+	// CtxSize, BatchSize, UBatchSize, NGLLayers, Embedding.BatchSize are
+	// synced from the variant-specific profile on every config load.
 	profile, ok := VariantProfiles[cfg.Llama.Variant]
 	if !ok {
 		t.Fatalf("unknown variant %q after fillMissing", cfg.Llama.Variant)

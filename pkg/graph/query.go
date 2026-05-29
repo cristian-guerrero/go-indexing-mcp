@@ -22,16 +22,27 @@ type GraphQuery struct {
 // branchSuffix builds a filename suffix for non-default branches.
 func branchSuffix(branch, worktree string) string {
 	var parts []string
-	if worktree != "" {
-		parts = append(parts, worktree)
+	w := sanitizeName(worktree)
+	b := sanitizeName(branch)
+	if w != "" {
+		parts = append(parts, w)
 	}
-	if branch != "" && branch != "main" {
-		parts = append(parts, branch)
+	if b != "" && b != "main" {
+		parts = append(parts, b)
 	}
 	if len(parts) == 0 {
 		return ""
 	}
 	return "-" + strings.Join(parts, "-")
+}
+
+// sanitizeName replaces filesystem-unsafe characters in branch/worktree names
+// with hyphens, preventing unintended subdirectory creation.
+func sanitizeName(s string) string {
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, "\\", "-")
+	s = strings.ReplaceAll(s, ":", "-")
+	return s
 }
 
 // NewGraphQuery opens or creates a graph database at the given directory.

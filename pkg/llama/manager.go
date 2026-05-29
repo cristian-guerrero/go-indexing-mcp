@@ -317,7 +317,9 @@ var modelFallbacks = []struct {
 }
 
 // FindOrDownloadModel searches for a GGUF embedding model in:
-// 1. Configured model_path, 2. ~/.go-mcp/models/embeddings/, 3. Download from HuggingFace.
+// 1. Configured model_path, 2. Download configured model if missing, 3. Existing fallbacks in dir, 4. Download fallbacks.
+// Priority order ensures the configured model (set by DetectVariant / DefaultConfigForVariant) is always used,
+// so CPU systems get bge-small (384d) and GPU systems get jina-embeddings-v2-base-code (768d).
 func (m *Manager) FindOrDownloadModel() (string, error) {
 	modelPath := m.Cfg.Llama.ModelPath
 	if modelPath != "" {
@@ -332,6 +334,30 @@ func (m *Manager) FindOrDownloadModel() (string, error) {
 	modelsDir := config.ModelsDir()
 	if err := os.MkdirAll(modelsDir, 0755); err != nil {
 		return "", fmt.Errorf("create models dir: %w", err)
+	}
+
+	// If model_path is configured but the file doesn't exist,
+	// try to download the configured model first before falling back
+	// to whatever happens to already be in the models directory.
+	if modelPath != "" {
+		configuredName := filepath.Base(expandPath(modelPath))
+		configuredLocal := filepath.Join(modelsDir, configuredName)
+		var configuredURL string
+		for _, fb := range modelFallbacks {
+			if fb.Name == configuredName {
+				configuredURL = fb.URL
+				break
+			}
+		}
+		if configuredURL != "" {
+			slog.Info("downloading configured embedding model", "name", configuredName)
+			if err := downloadFile(configuredLocal, configuredURL); err != nil {
+				slog.Warn("download of configured model failed, trying fallbacks", "name", configuredName, "error", err)
+			} else {
+				m.ModelPath = configuredLocal
+				return configuredLocal, nil
+			}
+		}
 	}
 
 	for _, fb := range modelFallbacks {

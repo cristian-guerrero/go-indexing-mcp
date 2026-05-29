@@ -118,7 +118,7 @@ func relaunchInTerminal() {
 	cmd.Run()
 }
 
-// copySelf copies the running binary to ~/.go-mcp/indexing/bin/.
+// copySelf copies the running binary to ~/.go-mcp/indexing/bin/ with a canonical name.
 func copySelf() error {
 	self, err := os.Executable()
 	if err != nil {
@@ -130,12 +130,24 @@ func copySelf() error {
 		return err
 	}
 
-	name := filepath.Base(self)
+	name := "go-indexing-mcp"
+	if runtime.GOOS == "windows" {
+		name = "go-indexing-mcp.exe"
+	}
 	dest := filepath.Join(binDir, name)
 
 	same, _ := filepath.EvalSymlinks(self)
 	if same == dest {
 		return nil
+	}
+
+	// Clean up old binary names if this is a re-run
+	oldName := filepath.Base(self)
+	if oldName != name {
+		oldDest := filepath.Join(binDir, oldName)
+		if _, err := os.Stat(oldDest); err == nil {
+			os.Remove(oldDest)
+		}
 	}
 
 	data, err := os.ReadFile(self)

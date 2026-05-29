@@ -582,14 +582,33 @@ func RunQueryGrep(query string, limit int, lang string, caseSensitive bool, whol
 	return 0
 }
 
+// canonicalExe returns the path to the MCP binary to use in agent configurations.
+// Prefers the canonical location ~/.go-mcp/indexing/bin/go-indexing-mcp when it exists,
+// falling back to the current executable path. This ensures all configurations point
+// to the persistent installed binary rather than a temporary download location.
+func canonicalExe() string {
+	// Prefer the canonical bin dir path
+	binDir := config.McpBinDir()
+	name := "go-indexing-mcp"
+	if runtime.GOOS == "windows" {
+		name = "go-indexing-mcp.exe"
+	}
+	canonical := filepath.Join(binDir, name)
+	if _, err := os.Stat(canonical); err == nil {
+		return canonical
+	}
+	// Fall back to the current executable
+	exe, err := os.Executable()
+	if err != nil {
+		return name
+	}
+	return exe
+}
+
 // RunConfigure sets up the MCP server integration for Pi, OpenCode, KiloCode, Claude, or Zed.
 // Writes the appropriate config file (settings.json, opencode.json(c), mcp.json, etc.) and a global AGENTS.md/CLAUDE.md.
 func RunConfigure(target string) int {
-	exe, err := os.Executable()
-	if err != nil {
-		slog.Error("get executable path", "error", err)
-		return 1
-	}
+	exe := canonicalExe()
 
 	switch target {
 	case "pi":
@@ -838,27 +857,25 @@ func configureKiloCode(exe string) int {
 	return 0
 }
 
-// configureClaude adds the MCP server to ~\.config\claude\mcp.json
-// and writes CLAUDE.md with search instructions at ~\.claude\CLAUDE.md
+// configureClaude adds the MCP server to ~/.claude.json (user scope)
+// and writes CLAUDE.md with search instructions at ~/.claude/CLAUDE.md
 // (user-level global instructions for Claude Code).
 func configureClaude(exe string) int {
 	pw := progressWriter{}
 
-	// MCP config: ~/.config/claude/mcp.json
-	configDir := filepath.Join(userHomeDir(), ".config", "claude")
-	configPath := filepath.Join(configDir, "mcp.json")
-
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		slog.Error("create claude config dir", "error", err)
-		return 1
-	}
+	// MCP config (user scope): ~/.claude.json
+	// Claude Code stores user-scoped MCP servers in ~/.claude.json.
+	// Project-scoped goes in .mcp.json at the repo root.
+	// The file may contain OAuth sessions, per-project state, and caches
+	// alongside mcpServers — we merge into the existing JSON.
+	configPath := filepath.Join(userHomeDir(), ".claude.json")
 
 	var cfg map[string]any
 	if data, err := os.ReadFile(configPath); err == nil {
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			cleaned := trailingCommaRe.ReplaceAllString(stripJSONComments(string(data)), "$1")
 			if err := json.Unmarshal([]byte(cleaned), &cfg); err != nil {
-				slog.Error("parse claude mcp.json", "error", err)
+				slog.Error("parse ~/.claude.json", "error", err)
 				return 1
 			}
 		}
@@ -874,21 +891,19 @@ func configureClaude(exe string) int {
 	mcpServers["go-indexing-mcp"] = map[string]any{
 		"command": exe,
 		"args":    []string{"--mcp"},
-		"type":    "local",
-		"timeout": 60000,
 	}
 	cfg["mcpServers"] = mcpServers
 
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		slog.Error("marshal claude mcp.json", "error", err)
+		slog.Error("marshal ~/.claude.json", "error", err)
 		return 1
 	}
 	if err := os.WriteFile(configPath, data, 0644); err != nil {
-		slog.Error("write claude mcp.json", "error", err)
+		slog.Error("write ~/.claude.json", "error", err)
 		return 1
 	}
-	fmt.Fprintln(pw, "✓ Claude Code MCP server configured")
+	fmt.Fprintln(pw, "✓ Claude Code MCP server configured (user scope, ~/.claude.json)")
 
 	// Global instructions: ~/.claude/CLAUDE.md
 	claudeDir := filepath.Join(userHomeDir(), ".claude")

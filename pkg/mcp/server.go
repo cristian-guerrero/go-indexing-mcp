@@ -295,6 +295,28 @@ func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		}
 		dbPath := st.GobPath(branch, worktree)
 		if _, err := os.Stat(dbPath); err != nil {
+			// Also try without worktree (in case the source was created
+			// by CLI without worktree while we have one, or vice versa)
+			if worktree != "" {
+				altPath := st.GobPath(branch, "")
+				if altPath != dbPath {
+					if _, err := os.Stat(altPath); err == nil {
+						dbPath = altPath
+					}
+				}
+			} else {
+				// Source was likely created by MCP with a worktree name
+				// Try to find it by scanning the index directory
+				dir := filepath.Dir(st.GobPath(branch, ""))
+				glob := filepath.Join(dir, "index-*-"+branch+".sqlite")
+				matches, _ := filepath.Glob(glob)
+				for _, m := range matches {
+					dbPath = m
+					break
+				}
+			}
+		}
+		if _, err := os.Stat(dbPath); err != nil {
 			return
 		}
 		if !w.BranchExists(branch) {
@@ -304,6 +326,9 @@ func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		if data == nil {
 			return
 		}
+		slog.Info("branch seeding: found candidate",
+			"branch", branch, "worktree", worktree, "path", dbPath,
+			"records", data.Records, "has_commit_sha", data.CommitSHA != "")
 		candidates = append(candidates, branchSource{
 			branch: branch, worktree: worktree,
 			gobPath:      dbPath,
@@ -314,15 +339,13 @@ func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 
 	// 1. Try main (preferred)
 	tryBranch(walker.DefaultBranch, "")
-	// 2. If target is not main, try any other branch via git branch list
-	if targetBranch != walker.DefaultBranch {
-		branches := listLocalBranches(w.Root)
-		for _, b := range branches {
-			if b == targetBranch || b == walker.DefaultBranch {
-				continue
-			}
-			tryBranch(b, "")
+	// 2. Try all local branches (including worktree variants)
+	branches := listLocalBranches(w.Root)
+	for _, b := range branches {
+		if b == targetBranch && targetWorktree == "" {
+			continue
 		}
+		tryBranch(b, "")
 	}
 
 	if len(candidates) == 0 {

@@ -295,6 +295,28 @@ func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		}
 		dbPath := st.GobPath(branch, worktree)
 		if _, err := os.Stat(dbPath); err != nil {
+			// Also try without worktree (in case the source was created
+			// by CLI without worktree while we have one, or vice versa)
+			if worktree != "" {
+				altPath := st.GobPath(branch, "")
+				if altPath != dbPath {
+					if _, err := os.Stat(altPath); err == nil {
+						dbPath = altPath
+					}
+				}
+			} else {
+				// Source was likely created by MCP with a worktree name
+				// Try to find it by scanning the index directory
+				dir := filepath.Dir(st.GobPath(branch, ""))
+				glob := filepath.Join(dir, "index-*-"+branch+".sqlite")
+				matches, _ := filepath.Glob(glob)
+				for _, m := range matches {
+					dbPath = m
+					break
+				}
+			}
+		}
+		if _, err := os.Stat(dbPath); err != nil {
 			return
 		}
 		if !w.BranchExists(branch) {
@@ -304,6 +326,9 @@ func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		if data == nil {
 			return
 		}
+		slog.Info("branch seeding: found candidate",
+			"branch", branch, "worktree", worktree, "path", dbPath,
+			"records", data.Records, "has_commit_sha", data.CommitSHA != "")
 		candidates = append(candidates, branchSource{
 			branch: branch, worktree: worktree,
 			gobPath:      dbPath,
@@ -314,15 +339,13 @@ func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 
 	// 1. Try main (preferred)
 	tryBranch(walker.DefaultBranch, "")
-	// 2. If target is not main, try any other branch via git branch list
-	if targetBranch != walker.DefaultBranch {
-		branches := listLocalBranches(w.Root)
-		for _, b := range branches {
-			if b == targetBranch || b == walker.DefaultBranch {
-				continue
-			}
-			tryBranch(b, "")
+	// 2. Try all local branches (including worktree variants)
+	branches := listLocalBranches(w.Root)
+	for _, b := range branches {
+		if b == targetBranch && targetWorktree == "" {
+			continue
 		}
+		tryBranch(b, "")
 	}
 
 	if len(candidates) == 0 {
@@ -527,24 +550,17 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 	}
 
 	if source.hasCommitSHA {
-		// Use the source branch HEAD as the baseline for git diff. This ensures
-		// IndexChanged will diff sourceBranch..HEAD and pick up all files that
-		// differ between source and target (including files like query.go that
-		// exist in both branches but have different content).
-		sourceHead, revErr := execGit(w.Root, "rev-parse", source.branch)
-		if revErr == nil {
-			sourceHead = strings.TrimSpace(sourceHead)
-			st.SetCommitSHA(sourceHead)
-			slog.Info("branch seeding: complete (complete source)",
-				"source", source.branch,
-				"stale_files_removed", len(changedFilesSet),
-				"baseline", sourceHead[:8]+"...")
-		} else {
-			st.SetCommitSHA(mergeBase)
-			slog.Info("branch seeding: complete (source, merge-base fallback)",
-				"source", source.branch,
-				"stale_files_removed", len(changedFilesSet))
-		}
+		// After seeding, set commitSHA to "" so the indexing logic in
+		// watchChecker or CLI handler detects it and triggers IndexAll().
+		// IndexAll() walks all files and skips already-indexed ones via
+		// IsFileIndexed (fast SQL query) — only files that differ between
+		// source and target (the ones removed above) are re-chunked/embedded.
+		// Setting to sourceHead causes issues when source and target have
+		// the same HEAD (force-aligned branches): IndexChanged sees no diff.
+		st.SetCommitSHA("")
+		slog.Info("branch seeding: complete (complete source)",
+			"source", source.branch,
+			"stale_files_removed", len(changedFilesSet))
 	} else {
 		st.SetCommitSHA("")
 		slog.Info("branch seeding: complete (partial source, gaps will be filled)",
@@ -782,6 +798,8 @@ func (m *MCPServer) watchChecker() {
 					stats = m.indexer.GetStats()
 				}
 			}
+			// If stats are still 0, the next checks (line 862+) will handle indexing.
+			// If stats > 0, the lastSHA/headSHA checks below handle incremental index.
 		}
 
 		// Check for on-disk format version mismatch

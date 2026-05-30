@@ -106,8 +106,11 @@ func (s *Storage) SwitchBranch(branch string, worktree string) error {
 	return s.store.SwitchBranch(branch, worktree)
 }
 
-// Close persists any dirty state and closes the database.
+// Close closes the database connection.
 func (s *Storage) Close() error {
+	if s.store == nil {
+		return nil
+	}
 	return s.store.Close()
 }
 

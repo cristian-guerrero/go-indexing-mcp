@@ -124,6 +124,7 @@ func RunGenerate(rootDir string) int {
 	// Wire knowledge graph (same shared store)
 	gq := graph.NewGraphQueryFromStore(store)
 	ext := graph.NewExtractor()
+	defer ext.Close()
 	idx.WithGraph(gq, ext)
 
 	defer func() {
@@ -1266,6 +1267,7 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 	if len(files) > 0 {
 		ext := graph.NewExtractor()
 		if ext != nil {
+			defer ext.Close()
 			extracted := 0
 			for _, fi := range files {
 				if fi.Deleted {

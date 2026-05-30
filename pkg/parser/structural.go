@@ -26,3 +26,6 @@ func (p *StructuralParser) Parse(content, language string) ([]Block, error) {
 func (p *StructuralParser) SupportedLanguages() []string {
 	return structural.SupportedLanguages()
 }
+
+// Close is a no-op for StructuralParser (no CGo resources).
+func (p *StructuralParser) Close() {}

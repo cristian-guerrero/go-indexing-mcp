@@ -122,7 +122,7 @@ func (s *Store) ResolveRefs() (int, error) {
 	stmt, _ := tx.Prepare("UPDATE refs SET target_id = ? WHERE id = ?")
 	for _, p := range pending {
 		var targetID string
-		err := s.db.QueryRow(
+		err := tx.QueryRow(
 			"SELECT id FROM symbols WHERE name = ? LIMIT 1", p.targetName).Scan(&targetID)
 		if err != nil || targetID == "" {
 			continue

@@ -550,24 +550,17 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 	}
 
 	if source.hasCommitSHA {
-		// Use the source branch HEAD as the baseline for git diff. This ensures
-		// IndexChanged will diff sourceBranch..HEAD and pick up all files that
-		// differ between source and target (including files like query.go that
-		// exist in both branches but have different content).
-		sourceHead, revErr := execGit(w.Root, "rev-parse", source.branch)
-		if revErr == nil {
-			sourceHead = strings.TrimSpace(sourceHead)
-			st.SetCommitSHA(sourceHead)
-			slog.Info("branch seeding: complete (complete source)",
-				"source", source.branch,
-				"stale_files_removed", len(changedFilesSet),
-				"baseline", sourceHead[:8]+"...")
-		} else {
-			st.SetCommitSHA(mergeBase)
-			slog.Info("branch seeding: complete (source, merge-base fallback)",
-				"source", source.branch,
-				"stale_files_removed", len(changedFilesSet))
-		}
+		// After seeding, set commitSHA to "" so the indexing logic in
+		// watchChecker or CLI handler detects it and triggers IndexAll().
+		// IndexAll() walks all files and skips already-indexed ones via
+		// IsFileIndexed (fast SQL query) — only files that differ between
+		// source and target (the ones removed above) are re-chunked/embedded.
+		// Setting to sourceHead causes issues when source and target have
+		// the same HEAD (force-aligned branches): IndexChanged sees no diff.
+		st.SetCommitSHA("")
+		slog.Info("branch seeding: complete (complete source)",
+			"source", source.branch,
+			"stale_files_removed", len(changedFilesSet))
 	} else {
 		st.SetCommitSHA("")
 		slog.Info("branch seeding: complete (partial source, gaps will be filled)",
@@ -805,6 +798,8 @@ func (m *MCPServer) watchChecker() {
 					stats = m.indexer.GetStats()
 				}
 			}
+			// If stats are still 0, the next checks (line 862+) will handle indexing.
+			// If stats > 0, the lastSHA/headSHA checks below handle incremental index.
 		}
 
 		// Check for on-disk format version mismatch

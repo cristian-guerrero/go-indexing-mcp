@@ -49,7 +49,7 @@ func Open(dbPath string, dimensions int) (*Store, error) {
 		return nil, fmt.Errorf("create db dir: %w", err)
 	}
 
-	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000&_cache_size=-64000", dbPath)
+	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=30000&_cache_size=-64000", dbPath)
 
 	var (
 		clientDB   *sql.DB
@@ -98,6 +98,22 @@ func (s *Store) DB() *sql.DB { return s.db }
 
 // Path returns the current database file path.
 func (s *Store) Path() string { return s.path }
+
+// IsLocked returns true if the database is currently locked by another writer.
+// Used to avoid starting expensive work (embedding) when another process
+// is actively indexing. Non-blocking — returns immediately.
+func (s *Store) IsLocked() bool {
+	// A quick write attempt with an immediate timeout detects if another
+	// writer is active. If busy_timeout kicks in, we're not locked.
+	_, err := s.db.Exec("PRAGMA busy_timeout=100")
+	if err != nil {
+		return true
+	}
+	// Try a harmless write (meta insert is fast and idempotent)
+	_, err = s.db.Exec("INSERT OR REPLACE INTO meta(key, value) VALUES ('_lock_check', '1')")
+	_, _ = s.db.Exec("PRAGMA busy_timeout=30000")
+	return err != nil && strings.Contains(err.Error(), "database is locked")
+}
 
 // Close closes the database connection.
 func (s *Store) Close() error {
@@ -452,7 +468,7 @@ func (s *Store) reopen() error {
 		return fmt.Errorf("create branch dir: %w", err)
 	}
 
-	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=5000", s.path)
+	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_synchronous=NORMAL&_busy_timeout=30000", s.path)
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return fmt.Errorf("open branch db: %w", err)
@@ -494,6 +510,8 @@ func (s *Store) GetGraphCommitSHA() string {
 
 // UpsertChunks inserts or updates chunks and their embeddings.
 // Uses a single transaction for the batch. Vectors stored as raw float32 bytes.
+// If the database is locked by another process, returns an error immediately
+// (the caller should skip the batch and retry later — no corruption risk).
 func (s *Store) UpsertChunks(chunks []chunker.Chunk, embeddings map[string][]float32) error {
 	tx, err := s.db.Begin()
 	if err != nil {

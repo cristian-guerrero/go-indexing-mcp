@@ -153,6 +153,11 @@ func (s *Storage) GetIgnoredFilesHash() string {
 	return s.store.GetIgnoredFilesHash()
 }
 
+// IsLocked returns true if the database is currently locked by another writer.
+func (s *Storage) IsLocked() bool {
+	return s.store.IsLocked()
+}
+
 // Checkpoint forces a WAL checkpoint for safe file copy during branch seeding.
 func (s *Storage) Checkpoint() error {
 	return s.store.Checkpoint()

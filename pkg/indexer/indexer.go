@@ -132,6 +132,12 @@ func (idx *Indexer) IndexAll() error {
 		idx.mu.Unlock()
 		return fmt.Errorf("indexing already in progress")
 	}
+	// Skip if another process is actively writing to the database
+	if idx.Storage != nil && idx.Storage.IsLocked() {
+		idx.mu.Unlock()
+		slog.Warn("index: database locked by another process, skipping full index")
+		return nil
+	}
 	idx.Running = true
 	idx.Stats.IsIndexing = true
 	idx.mu.Unlock()
@@ -445,6 +451,12 @@ func (idx *Indexer) IndexPath(path string) error {
 // IndexChanged performs an incremental index by diffing the current working tree
 // against the last saved commit SHA. Handles added, modified, and deleted files.
 func (idx *Indexer) IndexChanged() error {
+	// Skip if another process is actively writing to the database
+	if idx.Storage != nil && idx.Storage.IsLocked() {
+		slog.Warn("index: database locked by another process, skipping incremental index")
+		return nil
+	}
+
 	sinceSHA := idx.Storage.GetCommitSHA()
 	files, err := idx.Walker.GetChangedFiles(sinceSHA)
 	if err != nil {

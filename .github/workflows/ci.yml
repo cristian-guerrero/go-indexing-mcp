@@ -19,8 +19,8 @@ jobs:
           go-version: stable
           go-version-file: go.mod
       - uses: mlugg/setup-zig@v2
-      - run: CGO_ENABLED=1 CC="zig cc" go vet ./...
-      - run: CGO_ENABLED=1 CC="zig cc" go test -v -count=1 ./...
+      - run: CGO_ENABLED=1 CC="zig cc" go vet -tags "onnx sqlite_fts5" ./...
+      - run: CGO_ENABLED=1 CC="zig cc" go test -v -count=1 -tags "onnx sqlite_fts5" ./...
 
   build:
     needs: test
@@ -67,7 +67,7 @@ jobs:
         run: |
           ext=""
           if [ "${{ matrix.goos }}" = "windows" ]; then ext=".exe"; fi
-          go build -tags onnx \
+          go build -tags "onnx sqlite_fts5" \
             -ldflags="-s -w -X github.com/cristian-guerrero/go-indexing-mcp/pkg/version.Version=${{ steps.version.outputs.name }}" \
             -o "go-indexing-mcp-${{ matrix.goos }}-${{ matrix.goarch }}${ext}" .
       - uses: actions/upload-artifact@v4

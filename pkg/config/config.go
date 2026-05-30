@@ -267,14 +267,20 @@ func StorageDir(rootPath string) string {
 	return filepath.Join(McpDir(), "vectors", encoded)
 }
 
-// StoragePath returns the full path to the GOB index file for the given project root.
+// StoragePath returns the full path to the SQLite index file for the given project root.
 func StoragePath(rootPath string) string {
+	return StorageDbPath(rootPath)
+}
+
+// StorageDbPath returns the full path to the SQLite index file for the given project root.
+// Uses a single .sqlite file per project (branch isolation done via filename suffix).
+func StorageDbPath(rootPath string) string {
 	absRoot, err := filepath.Abs(rootPath)
 	if err != nil {
 		absRoot = rootPath
 	}
 	encoded := EncodeProjectPath(absRoot)
-	return filepath.Join(McpDir(), "vectors", encoded, "vectors.gob")
+	return filepath.Join(McpDir(), "vectors", encoded, "index.sqlite")
 }
 
 // EncodeFilePath encodes a relative file path into a filesystem-safe filename.

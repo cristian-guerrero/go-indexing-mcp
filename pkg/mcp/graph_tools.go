@@ -110,7 +110,12 @@ func (m *MCPServer) pruneGraph() {
 		return
 	}
 	root := m.indexer.Walker.Root
-	for relPath := range m.indexer.Graph.Cache.ByFile {
+	files, err := m.indexer.Graph.Store.ListSymbolFiles()
+	if err != nil {
+		slog.Warn("prune graph: list symbol files", "error", err)
+		return
+	}
+	for _, relPath := range files {
 		fullPath := filepath.Join(root, relPath)
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			m.indexer.Graph.RemoveFile(relPath)

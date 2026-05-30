@@ -102,8 +102,8 @@ go-indexing-mcp --free
 | Flag | Description |
 |------|-------------|
 | `--mcp` | Start MCP server (stdio) |
-| `--generate` | One-shot index with report |
-| `--query <text>` | Search the index (BM25 + vector similarity via RRF) |
+| `--generate` | One-shot index with report (vectors + graph) |
+| `--query <text>` | Search the index (BM25 + vector similarity via RRF). Auto-indexes vectors only |
 | `--grep <text>` | Search using grep mode (literal/regex on chunks) |
 | `--limit <n>` | Max results (1-50, default 25) |
 | `--path-filter <glob>` | Path filter: prefix, exact file, or glob (e.g. `*.go`, `pkg/**`) |
@@ -137,15 +137,15 @@ Or via the run script (created during auto-setup):
 | Tool | Description | Parameters |
 |---|---|---|
 | `search_code` | BM25 + vector similarity via RRF. Best for intent-based queries ("authentication flow"). Auto-indexes if needed | `query` (req), `path_filter`, `limit` |
-| `grep_code` | Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) are boosted 2x. Supports glob path filters. Auto-indexes if empty | `query` (req), `path_filter`, `lang`, `case_sensitive`, `word_boundary`, `limit` |
-| `symbol_info` | Complete view of a symbol: definition, usages (imports + calls), callers, and callees. References are resolved to their target definition via `target_id` | `name` (req), `path_filter` |
+| `grep_code` | Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) are boosted 2x. Supports glob path filters | `query` (req), `path_filter`, `lang`, `case_sensitive`, `word_boundary`, `limit` |
+| `symbol_info` | Complete view of a symbol: definition, usages (imports + calls), callers, and callees | `name` (req), `path_filter` |
 | `find_imports` | Find all files importing a module/package. Partial substring match on module paths | `pattern` (req) |
 
 ### Search modes
 
 | Mode | How it works | Requires llama.cpp |
 |---|---|---|
-| `hybrid` (default) | BM25 + vector similarity fused with RRF (k=60). Best for intent and keywords | Yes |
+| `hybrid` (default) | BM25 (FTS5) + vector (sqlite-vec) fused with RRF (k=60). Best for intent and keywords | Yes |
 | `grep` | Case-insensitive substring on cached chunks | No |
 
 Graph queries (`--symbol-info`, `--find-imports`) use the knowledge graph (tree-sitter AST extraction) and do not need llama.cpp. Cross-file reference resolution resolves imports and calls to their target definitions (`target_id`). Supported languages: `go`, `python`, `typescript`, `javascript`, `tsx`, `c`, `cpp`, `php`, `rust`, `zig`.
@@ -158,7 +158,7 @@ On startup and every search, the index freshness is checked automatically:
 2. **No index** → synchronous full index of the project
 3. **New commits** → synchronous incremental index of changed files
 4. **Uncommitted changes + untracked files** → incremental index, picks up moved/renamed files in new directories
-5. **Branch switch** → saves current index, loads target branch's index from disk
+5. **Branch switch** → saves current index, loads target branch's index from disk (seeds from another branch if target is empty)
 6. **Periodic watch** → every 60s (configurable), checks for changes and re-indexes in background
 7. **Ignore pattern changes** → auto-detected, triggers full reindex to pick up newly unignored files
 
@@ -188,7 +188,7 @@ After the configured `idle_timeout_secs` of inactivity (default: 5 min), llama-s
 ### Vector index (semantic search)
 
 ```
-[FS] → [walker] → [ignore filter] → [chunker] ─→ [llama.cpp embeddings] → [storage]
+[FS] → [walker] → [ignore filter] → [chunker] ─→ [llama.cpp embeddings] → [SQLite (sqlite-vec + FTS5)]
                                         │               ↑
                                         ├─ small files ─┘
                                         └─ large files → [structural splitter]
@@ -196,25 +196,25 @@ After the configured `idle_timeout_secs` of inactivity (default: 5 min), llama-s
 
 - **Small files**: sliding window chunking
 - **Large files**: structural splitter detects functions/classes/sections via regex + brace/indent counting per language
-- **Storage**: gob-serialized vectors with BM25 inverted index, isolated per git branch. Stored under `~/.go-mcp/indexing/` with Pi-format encoded project paths.
+- **Storage**: single `.sqlite` file per git branch, using sqlite-vec for ANN vector search and FTS5 for BM25 full-text search. Stored under `~/.go-mcp/indexing/vectors/{encoded-project-path}/`
 
 ### Knowledge graph (structural queries)
 
-Separate from the vector index. Uses tree-sitter AST extraction for precise symbol-level queries:
+Stored in the same `.sqlite` file as the vector index. Uses tree-sitter AST extraction for precise symbol-level queries:
 
-1. **Extraction** (per-file): tree-sitter parses source → extracts symbols (functions, classes, imports) and references (calls, imports, JSX usage). Deferred to `RunGraphExtraction()` so it never blocks semantic search.
-2. **Cross-file resolution** (global pass): after extraction, matches unresolved references against all known symbols by name. When exactly one symbol matches, populates `target_id` — ambiguous names are skipped.
-3. **Persistence**: individual JSON files per source file (atomic tmp+rename), branch-isolated indexes.
+1. **Extraction** (per-file): tree-sitter parses source → extracts symbols (functions, classes, imports) and references (calls, imports). Deferred to `RunGraphExtraction()` so it never blocks semantic search.
+2. **Cross-file resolution** (global pass): after extraction, matches unresolved references against all known symbols by name in SQLite. When exactly one symbol matches, populates `target_id` — ambiguous names are skipped.
+3. **Incremental extraction**: tracks `graph_commit_sha` separately from vector `commit_sha`. Stale graph entries are re-extracted via `git diff` between the two SHAs.
 
 Supported languages: `go`, `python`, `typescript`, `javascript`, `tsx`, `c`, `cpp`, `php`, `rust`, `zig`.
 
 ### Building from source
 
 ```bash
-go build -o bin/go-indexing-mcp.exe .
+go build -tags "onnx sqlite_fts5" -o bin/go-indexing-mcp.exe .
 ```
 
-Requires Go 1.21+. CI builds multi-platform binaries on every tag and main branch push (see `.github/workflows/ci.yml`).
+Requires Go 1.21+ and CGo (for tree-sitter + sqlite-vec). The sqlite-vec extension (`vec0.dll`/`vec0.so`/`vec0.dylib`) is auto-downloaded from GitHub Releases on first use. CI builds multi-platform binaries on every tag and main branch push (see `.github/workflows/ci.yml`).
 
 ### Languages
 
@@ -228,7 +228,7 @@ Uses [jina-embeddings-v2-base-code](https://huggingface.co/jinaai/jina-embedding
 
 ### Branch-isolated indexes
 
-Each git branch has its own index file (e.g. `vectors-{worktree}-{branch}.gob`). Switching branches and searching loads the correct index instantly — no waiting.
+Each git branch has its own `.sqlite` file (e.g. `index-{worktree}-{branch}.sqlite`). Switching branches and searching loads the correct index instantly — no waiting. When the target branch has no index yet, the best source branch's index is copied and files differing between branches are re-indexed (branch seeding).
 
 Index files are stored under `~/.go-mcp/indexing/vectors/{encoded-project-path}/`, where `{encoded-project-path}` follows the Pi agent folder format:
 - Windows: `C:\project\apps\my-app` → `--C--project-apps-my-app--`

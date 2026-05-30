@@ -133,7 +133,7 @@ func (m *MCPServer) indexOnStartup() {
 
 		// If the knowledge graph is empty but index has data — populate it
 		if stats.TotalChunks > 0 && m.indexer.Graph != nil && m.indexer.Extractor != nil {
-			symCount, _ := m.indexer.Graph.Cache.Stats()
+			symCount, _ := m.indexer.Graph.Stats()
 			if symCount == 0 {
 				slog.Info("knowledge graph is empty, triggering full reindex to populate graph")
 				if err := m.ensureLlama(); err != nil {
@@ -282,16 +282,10 @@ type branchSource struct {
 	branch       string
 	worktree     string
 	gobPath      string
-	graphDir     string
 	records      int
-	hasCommitSHA bool // true if the source index was ever fully completed
+	hasCommitSHA bool
 }
 
-// findBestSource looks for the best branch to seed from when the target
-// branch has no existing index or its index is incomplete. Priority:
-// main → other complete branches → largest index. Skips the target branch
-// itself (seeding from the same branch is a no-op).
-// Returns nil if no suitable source is found.
 func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker, targetBranch, targetWorktree string) *branchSource {
 	var candidates []branchSource
 
@@ -299,25 +293,21 @@ func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		if branch == targetBranch && worktree == targetWorktree {
 			return
 		}
-		gobPath := st.GobPath(branch, worktree)
-		if _, err := os.Stat(gobPath); err != nil {
+		dbPath := st.GobPath(branch, worktree)
+		if _, err := os.Stat(dbPath); err != nil {
 			return
 		}
 		if !w.BranchExists(branch) {
 			return
 		}
-		data := storage.LoadGob(gobPath)
-		if data == nil || len(data.Records) == 0 {
+		data := storage.LoadGob(dbPath)
+		if data == nil {
 			return
-		}
-		var graphDir string
-		if gq != nil {
-			graphDir = gq.BranchDir(branch, worktree)
 		}
 		candidates = append(candidates, branchSource{
 			branch: branch, worktree: worktree,
-			gobPath: gobPath, graphDir: graphDir,
-			records: len(data.Records),
+			gobPath:      dbPath,
+			records:      data.Records,
 			hasCommitSHA: data.CommitSHA != "",
 		})
 	}
@@ -379,32 +369,28 @@ func execGit(dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-// SeedBranchFrom copies the index from the best available source branch
+	// SeedBranchFrom copies the SQLite index file from the best available source branch
 // to the target branch so that only files that differ between the two
-// branches need re-indexing. Returns true if seeding was performed and
-// the storage/graph have been switched to the target branch.
+// branches need re-indexing. Returns true if seeding was performed.
 //
 // Seeding applies in two cases:
-//  1. The target gob doesn't exist yet (first visit to this branch).
-//  2. The target gob exists but is incomplete (commitSHA == ""), and the
-//     source branch has more records — allowing the partial index to be
-//     upgraded instead of starting from scratch.
+//  1. The target .sqlite doesn't exist yet (first visit to this branch).
+//  2. The target exists but is incomplete (commitSHA == ""), and the
+//     source branch has more records.
 //
-// After seeding: target gob contains all source records minus files that
-// differ between merge-base and target HEAD, and commitSHA is set to the
+// After seeding: the target .sqlite contains all source records minus files
+// that differ between merge-base and target HEAD, and commitSHA is set to the
 // merge-base so IndexChanged correctly diffs only changed files.
-//
-// This is a standalone function usable from both MCPServer and CLI handlers.
 func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker, targetBranch, targetWorktree string) bool {
 	targetGob := st.GobPath(targetBranch, targetWorktree)
 
-	// Check target gob state
+	// Check target state
 	targetSize := 0
 	if data := storage.LoadGob(targetGob); data != nil {
 		if data.CommitSHA != "" {
 			return false // already complete
 		}
-		targetSize = len(data.Records) // incomplete — may still benefit from seeding
+		targetSize = data.Records
 	}
 
 	source := findBestSource(st, gq, w, targetBranch, targetWorktree)
@@ -412,14 +398,12 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		return false
 	}
 
-	// Don't seed from the same branch (would be a no-op)
 	if source.branch == targetBranch && source.worktree == targetWorktree {
 		slog.Debug("branch seeding: only available source is the target itself, skipping",
 			"branch", targetBranch)
 		return false
 	}
 
-	// If target has a partial index, only seed if source is strictly better
 	if targetSize > 0 && source.records <= targetSize {
 		slog.Info("branch seeding: source not better than partial target, skipping",
 			"source", source.branch, "source_records", source.records,
@@ -455,59 +439,118 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		"source", source.branch, "target", targetBranch,
 		"source_records", source.records, "changed_files", len(changedFiles))
 
-	input, err := os.ReadFile(source.gobPath)
+	// Copy the SQLite file (contains both vectors and graph data).
+	// On Windows, the source file may be locked by the open SQLite connection.
+	// Close the store, copy the file, then reopen at the target path.
+
+	// 1. Checkpoint WAL so main file has all data (before close)
+	if err := st.Checkpoint(); err != nil {
+		slog.Warn("branch seeding: checkpoint failed", "error", err)
+	}
+
+	// 2. Close the current connection to release the file lock,
+	//    then reload source stats with a fresh connection.
+	sourcePath := source.gobPath
+	if err := st.Close(); err != nil {
+		slog.Warn("branch seeding: close failed", "error", err)
+	}
+
+	// 3. Re-read source stats with the store closed (clean connection)
+	if reloaded := storage.LoadGob(sourcePath); reloaded != nil {
+		source.records = reloaded.Records
+		if reloaded.CommitSHA != "" {
+			source.hasCommitSHA = true
+		}
+		slog.Info("branch seeding: reloaded source stats",
+			"records", source.records, "commit_sha", reloaded.CommitSHA != "")
+	}
+
+	// 4. Copy source → target
+	input, err := os.ReadFile(sourcePath)
 	if err != nil {
-		slog.Warn("branch seeding: read source gob failed", "error", err)
+		slog.Warn("branch seeding: read source failed", "error", err)
 		return false
 	}
 	if err := os.WriteFile(targetGob, input, 0644); err != nil {
-		slog.Warn("branch seeding: write target gob failed", "error", err)
+		slog.Warn("branch seeding: write target failed", "error", err)
 		return false
 	}
 
-	if source.graphDir != "" && gq != nil {
-		tgtGraphDir := gq.BranchDir(targetBranch, targetWorktree)
-		if err := os.RemoveAll(tgtGraphDir); err != nil {
-			slog.Warn("branch seeding: remove target graph dir", "error", err)
-		}
-		if err := copyDir(source.graphDir, tgtGraphDir); err != nil {
-			slog.Warn("branch seeding: copy graph dir failed", "error", err)
-		}
-	}
-
+	// 5. Reopen the store at the target path (SwitchBranch handles closed DB)
 	if err := st.SwitchBranch(targetBranch, targetWorktree); err != nil {
 		slog.Warn("branch seeding: switch branch failed", "error", err)
 		return false
 	}
-	if gq != nil {
-		if err := gq.SwitchBranch(targetBranch, targetWorktree); err != nil {
-			slog.Warn("branch seeding: graph switch branch failed", "error", err)
+
+	// Graph shares the same Store — no separate SwitchBranch needed.
+	// Remove files that differ between source branch and target working tree.
+	changedFilesSet := make(map[string]bool)
+
+	// 1. Files that differ between merge-base and target (already computed above)
+	for _, relPath := range changedFiles {
+		changedFilesSet[relPath] = true
+	}
+
+	// 2. Files that differ between source branch and target branch (files
+	// added/modified in source that aren't in target). This catches files
+	// like pkg/graph/query.go that exist in both branches but have different
+	// content (e.g. ListSymbolFiles was added in dev-database).
+	sourceTargetDiff, err := execGit(w.Root, "diff", "--name-only", source.branch, targetBranch)
+	if err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(sourceTargetDiff), "\n") {
+			rel := strings.TrimSpace(line)
+			if rel != "" {
+				changedFilesSet[rel] = true
+			}
 		}
 	}
 
-	for _, relPath := range changedFiles {
+	// 3. Files in the copied index that don't exist on disk in target
+	for _, f := range st.ListFiles() {
+		if changedFilesSet[f] {
+			continue
+		}
+		fullPath := filepath.Join(w.Root, f)
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			changedFilesSet[f] = true
+		}
+	}
+
+	// Remove all changed files from the copied index
+	for relPath := range changedFilesSet {
 		fullPath := filepath.Join(w.Root, relPath)
 		st.DeleteChunksByPath(fullPath)
 		if gq != nil {
 			gq.RemoveFile(relPath)
 		}
+		slog.Info("branch seeding: removing file for re-index", "file", relPath)
 	}
 
 	if source.hasCommitSHA {
-		st.SetCommitSHA(mergeBase)
-		slog.Info("branch seeding: complete (complete source)",
-			"source", source.branch,
-			"stale_files_removed", len(changedFiles),
-			"commit_sha", mergeBase[:8]+"...")
+		// Use the source branch HEAD as the baseline for git diff. This ensures
+		// IndexChanged will diff sourceBranch..HEAD and pick up all files that
+		// differ between source and target (including files like query.go that
+		// exist in both branches but have different content).
+		sourceHead, revErr := execGit(w.Root, "rev-parse", source.branch)
+		if revErr == nil {
+			sourceHead = strings.TrimSpace(sourceHead)
+			st.SetCommitSHA(sourceHead)
+			slog.Info("branch seeding: complete (complete source)",
+				"source", source.branch,
+				"stale_files_removed", len(changedFilesSet),
+				"baseline", sourceHead[:8]+"...")
+		} else {
+			st.SetCommitSHA(mergeBase)
+			slog.Info("branch seeding: complete (source, merge-base fallback)",
+				"source", source.branch,
+				"stale_files_removed", len(changedFilesSet))
+		}
 	} else {
-		// Source was incomplete (interrupted index). Leave commitSHA empty
-		// so the caller fills remaining gaps via IndexAll.
 		st.SetCommitSHA("")
 		slog.Info("branch seeding: complete (partial source, gaps will be filled)",
 			"source", source.branch,
 			"stale_files_removed", len(changedFiles))
 	}
-	st.Save()
 	return true
 }
 
@@ -525,27 +568,6 @@ func (m *MCPServer) seedBranchFrom(targetBranch, targetWorktree string) bool {
 
 // copyDir recursively copies a directory from src to dst.
 // Used during branch seeding to copy graph data between branches.
-func copyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, fi os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if fi.IsDir() {
-			return os.MkdirAll(target, 0755)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0644)
-	})
-}
-
 // runIndexAll calls IndexAll with up to 3 retries on failure.
 // Returns ErrBranchChanged without retrying — the caller should adapt to the new branch.
 // Other errors are retried up to 3 times.
@@ -580,7 +602,7 @@ func (m *MCPServer) runReindexAll() {
 		slog.Error("clear storage for reindex", "error", err)
 	}
 	if m.indexer.Graph != nil {
-		if err := m.indexer.Graph.DB.Clear(); err != nil {
+		if err := m.indexer.Graph.Store.Clear(); err != nil {
 			slog.Error("clear graph for reindex", "error", err)
 		}
 	}
@@ -799,7 +821,7 @@ func (m *MCPServer) watchChecker() {
 		// If the graph is empty but index has data and extractor is available,
 		// do a full reindex to populate the graph (upgrade from non-onnx build).
 		if stats.TotalChunks > 0 && m.indexer.Graph != nil && m.indexer.Extractor != nil {
-			symCount, _ := m.indexer.Graph.Cache.Stats()
+			symCount, _ := m.indexer.Graph.Stats()
 			if symCount == 0 {
 				slog.Info("watch: knowledge graph is empty, triggering full reindex to populate graph")
 				if err := m.ensureLlama(); err != nil {

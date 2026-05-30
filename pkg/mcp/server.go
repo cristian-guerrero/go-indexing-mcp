@@ -527,11 +527,24 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 	}
 
 	if source.hasCommitSHA {
-		st.SetCommitSHA(mergeBase)
-		slog.Info("branch seeding: complete (complete source)",
-			"source", source.branch,
-			"stale_files_removed", len(changedFiles),
-			"commit_sha", mergeBase[:8]+"...")
+		// Use the source branch HEAD as the baseline for git diff. This ensures
+		// IndexChanged will diff sourceBranch..HEAD and pick up all files that
+		// differ between source and target (including files like query.go that
+		// exist in both branches but have different content).
+		sourceHead, revErr := execGit(w.Root, "rev-parse", source.branch)
+		if revErr == nil {
+			sourceHead = strings.TrimSpace(sourceHead)
+			st.SetCommitSHA(sourceHead)
+			slog.Info("branch seeding: complete (complete source)",
+				"source", source.branch,
+				"stale_files_removed", len(changedFilesSet),
+				"baseline", sourceHead[:8]+"...")
+		} else {
+			st.SetCommitSHA(mergeBase)
+			slog.Info("branch seeding: complete (source, merge-base fallback)",
+				"source", source.branch,
+				"stale_files_removed", len(changedFilesSet))
+		}
 	} else {
 		st.SetCommitSHA("")
 		slog.Info("branch seeding: complete (partial source, gaps will be filled)",

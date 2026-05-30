@@ -153,6 +153,14 @@ func (s *Storage) GetIgnoredFilesHash() string {
 	return s.store.GetIgnoredFilesHash()
 }
 
+func (s *Storage) SetGraphCommitSHA(sha string) {
+	s.store.SetGraphCommitSHA(sha)
+}
+
+func (s *Storage) GetGraphCommitSHA() string {
+	return s.store.GetGraphCommitSHA()
+}
+
 // LegacyGobData contains enough info for branch seeding.
 type LegacyGobData struct {
 	Records   int

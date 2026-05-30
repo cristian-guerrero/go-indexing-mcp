@@ -269,3 +269,11 @@ func filterRefsByPath(refs []Reference, pathFilter string) []Reference {
 	}
 	return out
 }
+
+// ListSymbolFiles returns distinct rel_path values from the symbols table.
+func (g *GraphQuery) ListSymbolFiles() ([]string, error) {
+	if g.Store == nil {
+		return nil, nil
+	}
+	return g.Store.ListSymbolFiles()
+}

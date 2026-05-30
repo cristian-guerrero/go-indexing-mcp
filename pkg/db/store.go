@@ -473,6 +473,14 @@ func (s *Store) GetIgnoredFilesHash() string {
 	return s.getMeta(nil, "ignored_files_hash")
 }
 
+func (s *Store) SetGraphCommitSHA(sha string) {
+	s.db.Exec("INSERT OR REPLACE INTO meta(key, value) VALUES ('graph_commit_sha', ?)", sha)
+}
+
+func (s *Store) GetGraphCommitSHA() string {
+	return s.getMeta(nil, "graph_commit_sha")
+}
+
 // ---- Chunk helpers ----
 
 // UpsertChunks inserts or updates chunks and their embeddings.

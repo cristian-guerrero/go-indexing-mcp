@@ -319,9 +319,8 @@ func (idx *Indexer) IndexAll() error {
 			continue
 		}
 
-		// Defer graph extraction — if the file needs vector indexing, do it now
-		// and collect it for the graph pass later.
-		if !alreadyExtracted {
+		// Defer graph extraction — re-extract if graph is missing or content changed
+		if !alreadyExtracted || !alreadyIndexed {
 			pendingGraph = append(pendingGraph, fi)
 		}
 
@@ -486,13 +485,16 @@ func (idx *Indexer) IndexChanged() error {
 			continue
 		}
 
-		if !alreadyExtracted {
+		// File needs graph re-extraction if missing OR content changed
+		if !alreadyExtracted || !alreadyIndexed {
 			pendingGraph = append(pendingGraph, fi)
 		}
 
-		if !alreadyIndexed {
-			needsIndex = append(needsIndex, fi)
+		if alreadyIndexed {
+			continue
 		}
+
+		needsIndex = append(needsIndex, fi)
 	}
 
 	idx.PendingGraph = pendingGraph
@@ -777,6 +779,44 @@ func matchesPath(relPath, filter string) bool {
 func (idx *Indexer) RunGraphExtraction() {
 	pendingGraph := idx.PendingGraph
 	idx.PendingGraph = nil
+
+	// Detect stale graph data: compare graph_commit_sha with vector commit_sha.
+	// If they differ, diff the two commits and re-extract changed files.
+	graphSHA := idx.Storage.GetGraphCommitSHA()
+	vecSHA := idx.Storage.GetCommitSHA()
+	if len(pendingGraph) == 0 && vecSHA != "" && graphSHA != vecSHA {
+		slog.Info("graph: commit SHA mismatch, detecting stale files",
+			"graph_sha", graphSHA, "vector_sha", vecSHA)
+
+		changedFiles, err := idx.Walker.GetChangedFiles(graphSHA)
+		if err == nil {
+			for _, fi := range changedFiles {
+				if !fi.Deleted {
+					pendingGraph = append(pendingGraph, fi)
+				}
+			}
+		}
+
+		// If GetChangedFiles failed, fall back to gap detection
+		if len(pendingGraph) == 0 {
+			vecFiles := idx.Storage.ListFiles()
+			graphFiles, listErr := idx.Graph.ListSymbolFiles()
+			if listErr == nil {
+				graphSet := make(map[string]bool, len(graphFiles))
+				for _, f := range graphFiles {
+					graphSet[f] = true
+				}
+				for _, vf := range vecFiles {
+					if !graphSet[vf] {
+						if fi, ok := idx.walkerFile(vf); ok {
+							pendingGraph = append(pendingGraph, fi)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	if len(pendingGraph) == 0 || idx.Extractor == nil || idx.Graph == nil {
 		return
 	}
@@ -808,11 +848,58 @@ func (idx *Indexer) RunGraphExtraction() {
 	}
 	slog.Info("graph: extraction complete", "files", len(pendingGraph))
 
-	// Cross-file reference resolution: match refs to definitions by name.
-	// When exactly one symbol matches a ref's TargetName, populate TargetID
-	// with the symbol's ID. Ambiguous names are skipped.
+	// Save graph commit SHA to match current vector commit SHA
+	if vecSHA != "" {
+		idx.Storage.SetGraphCommitSHA(vecSHA)
+	}
+
+	// Cross-file reference resolution
 	if idx.Graph != nil {
 		idx.Graph.ResolveRefs()
+	}
+}
+
+// walkerFile constructs a walker.FileInfo from a relative path by reading file details.
+func (idx *Indexer) walkerFile(relPath string) (walker.FileInfo, bool) {
+	fullPath := filepath.Join(idx.Walker.Root, relPath)
+	if _, err := os.Stat(fullPath); err != nil {
+		return walker.FileInfo{}, false
+	}
+	lang := detectLanguage(relPath)
+	return walker.FileInfo{
+		Path:     fullPath,
+		RelPath:  relPath,
+		Hash:     "",
+		Language: lang,
+	}, true
+}
+
+// detectLanguage maps a file extension to a language name.
+func detectLanguage(path string) string {
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".go":
+		return "go"
+	case ".py":
+		return "python"
+	case ".js":
+		return "javascript"
+	case ".ts":
+		return "typescript"
+	case ".tsx":
+		return "tsx"
+	case ".rs":
+		return "rust"
+	case ".c":
+		return "c"
+	case ".cpp", ".cc", ".cxx":
+		return "cpp"
+	case ".php":
+		return "php"
+	case ".zig":
+		return "zig"
+	default:
+		return ""
 	}
 }
 

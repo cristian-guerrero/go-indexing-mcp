@@ -439,8 +439,23 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		"source", source.branch, "target", targetBranch,
 		"source_records", source.records, "changed_files", len(changedFiles))
 
-	// Copy the SQLite file (contains both vectors and graph data)
-	input, err := os.ReadFile(source.gobPath)
+	// Copy the SQLite file (contains both vectors and graph data).
+	// On Windows, the source file may be locked by the open SQLite connection.
+	// Close the store, copy the file, then reopen at the target path.
+
+	// 1. Checkpoint WAL so main file has all data
+	if err := st.Checkpoint(); err != nil {
+		slog.Warn("branch seeding: checkpoint failed", "error", err)
+	}
+
+	// 2. Close the current connection to release the file lock
+	sourcePath := source.gobPath
+	if err := st.Close(); err != nil {
+		slog.Warn("branch seeding: close failed", "error", err)
+	}
+
+	// 3. Copy source → target
+	input, err := os.ReadFile(sourcePath)
 	if err != nil {
 		slog.Warn("branch seeding: read source failed", "error", err)
 		return false
@@ -450,7 +465,7 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		return false
 	}
 
-	// Switch the shared store to the target branch (reopens the copied file)
+	// 4. Reopen the store at the target path (SwitchBranch handles closed DB)
 	if err := st.SwitchBranch(targetBranch, targetWorktree); err != nil {
 		slog.Warn("branch seeding: switch branch failed", "error", err)
 		return false

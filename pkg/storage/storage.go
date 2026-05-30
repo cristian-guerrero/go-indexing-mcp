@@ -153,6 +153,11 @@ func (s *Storage) GetIgnoredFilesHash() string {
 	return s.store.GetIgnoredFilesHash()
 }
 
+// Checkpoint forces a WAL checkpoint for safe file copy during branch seeding.
+func (s *Storage) Checkpoint() error {
+	return s.store.Checkpoint()
+}
+
 func (s *Storage) SetGraphCommitSHA(sha string) {
 	s.store.SetGraphCommitSHA(sha)
 }

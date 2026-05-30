@@ -104,6 +104,14 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// Checkpoint forces a WAL checkpoint, flushing all WAL data to the main
+// database file. This ensures the main file is self-contained and safe to
+// copy to another branch during branch seeding.
+func (s *Store) Checkpoint() error {
+	_, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	return err
+}
+
 // ensureSchema creates all tables, indices, and virtual tables.
 // Handles dimension changes by recreating the vec0 table.
 func (s *Store) ensureSchema() error {
@@ -409,8 +417,9 @@ func (s *Store) BranchPath(branch, worktree string) string {
 
 // SwitchBranch saves the current state and loads a branch-specific database.
 func (s *Store) SwitchBranch(branch, worktree string) error {
-	if err := s.db.Close(); err != nil {
-		return fmt.Errorf("close current db: %w", err)
+	// Close current connection if open (may already be closed by caller)
+	if s.db != nil {
+		s.db.Close()
 	}
 
 	newPath := s.BranchPath(branch, worktree)

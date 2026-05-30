@@ -481,6 +481,19 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		}
 	}
 
+	// Also prune files from the copied index that don't exist on disk
+	// in the target branch (e.g. files added in the source branch).
+	for _, f := range st.ListFiles() {
+		fullPath := filepath.Join(w.Root, f)
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			st.DeleteChunksByPath(fullPath)
+			if gq != nil {
+				gq.RemoveFile(f)
+			}
+			slog.Info("branch seeding: pruned file not in target", "file", f)
+		}
+	}
+
 	if source.hasCommitSHA {
 		st.SetCommitSHA(mergeBase)
 		slog.Info("branch seeding: complete (complete source)",

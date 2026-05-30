@@ -95,8 +95,8 @@ func TestEncodeProjectPath_WithDots(t *testing.T) {
 func TestStoragePath_EndsWithVectorsGob(t *testing.T) {
 	setTempHome(t)
 	path := StoragePath("/test/project")
-	if !strings.HasSuffix(path, "vectors.gob") {
-		t.Errorf("StoragePath should end with vectors.gob, got %q", path)
+	if !strings.HasSuffix(path, "index.sqlite") {
+		t.Errorf("StoragePath should end with index.sqlite, got %q", path)
 	}
 	if !filepath.IsAbs(path) {
 		t.Errorf("StoragePath should be absolute, got %q", path)

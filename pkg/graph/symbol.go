@@ -4,116 +4,47 @@
 // into a queryable graph for cross-file code intelligence.
 package graph
 
+import "github.com/cristian-guerrero/go-indexing-mcp/pkg/db"
+
 // SymbolKind represents the type of a code symbol.
-type SymbolKind int
+type SymbolKind = db.SymbolKind
 
 const (
-	SymbolFunction  SymbolKind = iota // func Foo, def foo
-	SymbolMethod                      // func (r) Method
-	SymbolClass                       // class Foo
-	SymbolStruct                      // type Foo struct
-	SymbolInterface                   // interface Foo
-	SymbolEnum                        // enum Foo
-	SymbolType                        // type Foo string
-	SymbolVariable                    // var/let/const assignment
-	SymbolConstant                    // const Foo
-	SymbolImport                      // import statement
-	SymbolModule                      // package/module declaration
+	SymbolFunction  SymbolKind = db.SymbolFunction  // func Foo, def foo
+	SymbolMethod               = db.SymbolMethod    // func (r) Method
+	SymbolClass                = db.SymbolClass     // class Foo
+	SymbolStruct               = db.SymbolStruct    // type Foo struct
+	SymbolInterface            = db.SymbolInterface // interface Foo
+	SymbolEnum                 = db.SymbolEnum      // enum Foo
+	SymbolType                 = db.SymbolType      // type Foo string
+	SymbolVariable             = db.SymbolVariable  // var/let/const assignment
+	SymbolConstant             = db.SymbolConstant  // const Foo
+	SymbolImport               = db.SymbolImport    // import statement
+	SymbolModule               = db.SymbolModule    // package/module declaration
 )
-
-func (k SymbolKind) String() string {
-	switch k {
-	case SymbolFunction:
-		return "function"
-	case SymbolMethod:
-		return "method"
-	case SymbolClass:
-		return "class"
-	case SymbolStruct:
-		return "struct"
-	case SymbolInterface:
-		return "interface"
-	case SymbolEnum:
-		return "enum"
-	case SymbolType:
-		return "type"
-	case SymbolVariable:
-		return "variable"
-	case SymbolConstant:
-		return "constant"
-	case SymbolImport:
-		return "import"
-	case SymbolModule:
-		return "module"
-	default:
-		return "unknown"
-	}
-}
 
 // RefKind represents the type of relationship between two symbols.
-type RefKind int
+type RefKind = db.RefKind
 
 const (
-	RefCalls       RefKind = iota // function/method call
-	RefImports                    // import statement
-	RefExtends                    // class extends another class
-	RefImplements                 // implements interface
-	RefInstantiates               // new instance creation
-	RefAssigned                   // variable assignment
-	RefAccessed                   // member/property access
-	RefContains                   // file contains symbol
-	RefDecorates                  // decorator/annotation
+	RefCalls       RefKind = db.RefCalls       // function/method call
+	RefImports              = db.RefImports     // import statement
+	RefExtends              = db.RefExtends     // class extends another class
+	RefImplements           = db.RefImplements  // implements interface
+	RefInstantiates         = db.RefInstantiates // new instance creation
+	RefAssigned             = db.RefAssigned    // variable assignment
+	RefAccessed             = db.RefAccessed    // member/property access
+	RefContains             = db.RefContains    // file contains symbol
+	RefDecorates            = db.RefDecorates   // decorator/annotation
 )
-
-func (k RefKind) String() string {
-	switch k {
-	case RefCalls:
-		return "calls"
-	case RefImports:
-		return "imports"
-	case RefExtends:
-		return "extends"
-	case RefImplements:
-		return "implements"
-	case RefInstantiates:
-		return "instantiates"
-	case RefAssigned:
-		return "assigned"
-	case RefAccessed:
-		return "accessed"
-	case RefContains:
-		return "contains"
-	case RefDecorates:
-		return "decorates"
-	default:
-		return "unknown"
-	}
-}
 
 // Symbol represents a code symbol (function, class, import, etc.) extracted
 // from source code via AST parsing.
-type Symbol struct {
-	ID        string     // unique identifier: hash:relpath:line:name
-	Name      string     // symbol identifier (e.g., "main", "validate")
-	Kind      SymbolKind // function, class, struct, etc.
-	FilePath  string     // absolute file path
-	RelPath   string     // relative file path from project root
-	StartLine int        // 1-based start line
-	EndLine   int        // 1-based end line
-	Signature string     // full signature text (e.g., "func validate(input string) error")
-	Exported  bool       // true if symbol is exported/public
-}
+type Symbol = db.Symbol
 
 // Reference represents a relationship between two symbols, such as a function
 // call or import statement.
-type Reference struct {
-	ID         string  // unique identifier: hash of source+target+kind+line
-	SourceID   string  // symbol ID of the reference source
-	TargetName string  // name of the target being referenced
-	TargetID   string  // resolved symbol ID (empty if unresolved)
-	Kind       RefKind // calls, imports, extends, etc.
-	FilePath   string  // file where the reference occurs
-	Line       int     // 1-based line number
-	Confidence float64 // 1.0 = exact match, <1.0 = fuzzy/cross-file
-}
+type Reference = db.Reference
 
+// SymbolInfo is a complete profile of a code symbol.
+type SymbolInfo = db.SymbolInfo

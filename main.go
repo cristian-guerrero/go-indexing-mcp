@@ -1,6 +1,4 @@
 // main is the entry point for go-indexing-mcp.
-// It parses CLI flags and routes to the appropriate handler:
-// self-setup, MCP server, one-shot index, search, or query-by-grep.
 package main
 
 import (
@@ -16,6 +14,7 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/internal/cli"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/db"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/embedder"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/graph"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/indexer"
@@ -36,14 +35,14 @@ func main() {
 	queryMode := flag.String("query", "", "Search the index (default mode: hybrid)")
 	grepMode := flag.String("grep", "", "Search using grep mode (fast, no llama needed)")
 	limitFlag := flag.Int("limit", 25, "Max results (used with --query or --grep, default: 25, max: 50)")
-	pathFilter := flag.String("path-filter", "", "Path filter: prefix ('pkg/'), exact file ('main.go'), or glob ('*.go', '**/*_test.go')")
-	grepLang := flag.String("lang", "", "Filter by language (used with --grep, e.g. 'go', 'python', 'typescript')")
+	pathFilter := flag.String("path-filter", "", "Path filter: prefix, exact, or glob")
+	grepLang := flag.String("lang", "", "Filter by language (used with --grep)")
 	grepCaseSensitive := flag.Bool("case-sensitive", false, "Case-sensitive matching (used with --grep)")
 	grepWholeWord := flag.Bool("word", false, "Match whole words only (used with --grep)")
 	listFiles := flag.Bool("list-files", false, "List all indexed files")
 	findImports := flag.String("find-imports", "", "Find imports matching a module pattern (knowledge graph)")
-	symbolInfo := flag.String("symbol-info", "", "Get detailed info about a symbol: definition, usages, callers, callees (knowledge graph)")
-	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp (skip PATH, test GPU detection)")
+	symbolInfo := flag.String("symbol-info", "", "Get detailed info about a symbol (knowledge graph)")
+	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp")
 	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', 'kilocode', 'claude', or 'zed'")
 	updateNow := flag.Bool("update", false, "Check and apply update immediately (interactive)")
 	showVersion := flag.Bool("version", false, "Show current version and pending update status")
@@ -162,13 +161,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	// llama-server starts lazily on first tool call via ensureLlama().
-	// It uses --sleep-idle-seconds to manage its own idle state.
-
 	w := walker.New(cfg.Indexing.RootPath, cfg.Indexing.IgnorePatterns)
 	ch := chunker.New(cfg.Indexing.ChunkSize, cfg.Indexing.ChunkOverlap)
 
-	// Wire tree-sitter parser if available (requires build tag onnx)
 	parserCfg := parser.ParserConfig{Enabled: "treesitter"}
 	if p := parser.NewParser(parserCfg); p != nil {
 		if _, ok := p.(*parser.StructuralParser); !ok {
@@ -178,52 +173,46 @@ func main() {
 	}
 
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize, cfg.Embedding.QueryPrefix)
-	dbDir := config.StoragePath(cfg.Indexing.RootPath)
+	dbPath := config.StorageDbPath(cfg.Indexing.RootPath)
 
-	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
+	// Create shared SQLite store
+	store, err := db.Open(dbPath, cfg.Embedding.Dimensions)
 	if err != nil {
-		slog.Error("storage init", "error", err)
+		slog.Error("sqlite store init", "error", err)
 		os.Exit(1)
 	}
-	defer st.Close()
-
-	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB, cfg.Indexing.IgnorePatterns)
+	defer store.Close()
 
 	branch := w.GetBranch()
 	worktree := w.GetWorktreeName()
 
-	// Initialize knowledge graph
-	graphDir := filepath.Join(config.StorageDir(cfg.Indexing.RootPath), "graph")
-	if gq, err := graph.NewGraphQuery(graphDir); err == nil {
-		ext := graph.NewExtractor()
-		idx.WithGraph(gq, ext)
-		if err := gq.SwitchBranch(branch, worktree); err != nil {
-			slog.Warn("graph: branch switch on startup", "error", err)
-		}
-		slog.Info("knowledge graph enabled", "dir", graphDir)
-		defer func() {
-			if err := gq.Close(); err != nil {
-				slog.Warn("graph: close error", "error", err)
-			}
-		}()
-	} else {
-		slog.Warn("knowledge graph not available", "error", err)
+	// Switch the shared store to the current branch
+	if err := store.SwitchBranch(branch, worktree); err != nil {
+		slog.Warn("branch switch failed", "error", err)
 	}
 
-	// Auto-update: apply pending update on startup, then check+download in background
+	// Create shared storage + graph from the same SQLite database
+	st := storage.NewFromStore(store)
+	idx := indexer.New(w, ch, em, st, mgr, cfg.Indexing.MemoryFreeInterval, cfg.Indexing.MaxMemoryMB, cfg.Indexing.IgnorePatterns)
+
+	// Initialize knowledge graph (same DB file)
+	gq := graph.NewGraphQueryFromStore(store)
+	ext := graph.NewExtractor()
+	idx.WithGraph(gq, ext)
+	slog.Info("knowledge graph enabled", "db", dbPath)
+	defer func() {
+		if err := gq.Close(); err != nil {
+			slog.Warn("graph: close error", "error", err)
+		}
+	}()
+
+	// Auto-update
 	if cfg.Indexing.AutoUpdate && version.Version != "dev" {
 		up := updater.New(config.McpDir(), updater.DefaultOwner, updater.DefaultRepo)
-
 		if up.WasJustUpdated() {
 			slog.Info("update successful", "version", version.Version)
 		}
-
-		// Apply a previously downloaded update (replaces binary on disk,
-		// current process continues with old code).
 		justApplied := up.ApplyUpdate() == nil
-
-		// Only check+download if we didn't just consume a pending update,
-		// otherwise we'd re-download the same version immediately.
 		if !justApplied {
 			if info := up.CheckForUpdate(); info != nil && info.Available {
 				slog.Info("update available", "version", info.Version)
@@ -253,26 +242,20 @@ func main() {
 	}
 }
 
-// setupConsoleLogger configures slog to write structured JSON to stderr.
-// Used for CLI-mode operations where no log file exists.
 func setupConsoleLogger() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 }
 
-// setupFileLogger configures dual-output logging to both stderr and
-// ~/.go-mcp/indexing/server.log. Used in MCP server mode.
 func setupFileLogger(cfg *config.Config) error {
 	logDir := config.McpDir()
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return err
 	}
-
 	logPath := filepath.Join(logDir, "server.log")
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return err
 	}
-
 	multi := io.MultiWriter(os.Stderr, f)
 	slog.SetDefault(slog.New(slog.NewTextHandler(multi, &slog.HandlerOptions{
 		Level: slog.LevelInfo,

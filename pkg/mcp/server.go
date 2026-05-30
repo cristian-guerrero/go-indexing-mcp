@@ -133,7 +133,7 @@ func (m *MCPServer) indexOnStartup() {
 
 		// If the knowledge graph is empty but index has data — populate it
 		if stats.TotalChunks > 0 && m.indexer.Graph != nil && m.indexer.Extractor != nil {
-			symCount, _ := m.indexer.Graph.Cache.Stats()
+			symCount, _ := m.indexer.Graph.Stats()
 			if symCount == 0 {
 				slog.Info("knowledge graph is empty, triggering full reindex to populate graph")
 				if err := m.ensureLlama(); err != nil {
@@ -307,7 +307,7 @@ func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 			return
 		}
 		data := storage.LoadGob(gobPath)
-		if data == nil || len(data.Records) == 0 {
+		if data == nil {
 			return
 		}
 		var graphDir string
@@ -317,7 +317,7 @@ func findBestSource(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		candidates = append(candidates, branchSource{
 			branch: branch, worktree: worktree,
 			gobPath: gobPath, graphDir: graphDir,
-			records: len(data.Records),
+			records: data.Records,
 			hasCommitSHA: data.CommitSHA != "",
 		})
 	}
@@ -404,7 +404,7 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		if data.CommitSHA != "" {
 			return false // already complete
 		}
-		targetSize = len(data.Records) // incomplete — may still benefit from seeding
+		targetSize = data.Records // incomplete — may still benefit from seeding
 	}
 
 	source := findBestSource(st, gq, w, targetBranch, targetWorktree)
@@ -580,7 +580,7 @@ func (m *MCPServer) runReindexAll() {
 		slog.Error("clear storage for reindex", "error", err)
 	}
 	if m.indexer.Graph != nil {
-		if err := m.indexer.Graph.DB.Clear(); err != nil {
+		if err := m.indexer.Graph.Store.Clear(); err != nil {
 			slog.Error("clear graph for reindex", "error", err)
 		}
 	}
@@ -799,7 +799,7 @@ func (m *MCPServer) watchChecker() {
 		// If the graph is empty but index has data and extractor is available,
 		// do a full reindex to populate the graph (upgrade from non-onnx build).
 		if stats.TotalChunks > 0 && m.indexer.Graph != nil && m.indexer.Extractor != nil {
-			symCount, _ := m.indexer.Graph.Cache.Stats()
+			symCount, _ := m.indexer.Graph.Stats()
 			if symCount == 0 {
 				slog.Info("watch: knowledge graph is empty, triggering full reindex to populate graph")
 				if err := m.ensureLlama(); err != nil {

@@ -21,6 +21,7 @@ func TestNew(t *testing.T) {
 	ch := chunker.New(50, 10)
 	em := embedder.New("http://localhost:56000", 768, 8, "")
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 
 	idx := New(w, ch, em, st, nil, 0, 0)
 	if idx == nil {
@@ -48,6 +49,7 @@ func TestNew_NilEmbedder(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 
 	idx := New(w, ch, nil, st, nil, 0, 0)
 	if idx.Embedder != nil {
@@ -137,6 +139,7 @@ func TestGetStats_EmptyStorage(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 	idx := New(w, ch, nil, st, nil, 0, 0)
 
 	stats := idx.GetStats()
@@ -153,6 +156,7 @@ func TestGetStats_WithData(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 	idx := New(w, ch, nil, st, nil, 0, 0)
 
 	chunks := []chunker.Chunk{
@@ -171,6 +175,7 @@ func TestListFiles_Empty(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 	idx := New(w, ch, nil, st, nil, 0, 0)
 
 	files := idx.ListFiles()
@@ -204,6 +209,7 @@ func TestPruneStaleEntries(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -253,6 +259,7 @@ func TestIndexPath_FileNotFound(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 	idx := New(w, ch, nil, st, nil, 0, 0)
 
 	err := idx.IndexPath("nonexistent.go")
@@ -268,6 +275,7 @@ func TestIndexPath_Success(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -309,6 +317,7 @@ func TestIndexAll(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -368,6 +377,7 @@ func TestSearch_HybridMode(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/embeddings") {
@@ -408,6 +418,7 @@ func TestSearch_GrepMode(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := struct {
@@ -441,6 +452,7 @@ func TestSearchGrep(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := struct {
@@ -474,6 +486,7 @@ func TestSearchGrep_PathFilter(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := struct {
@@ -505,6 +518,7 @@ func TestFilterByPath(t *testing.T) {
 	w := walker.New(dir, nil)
 	ch := chunker.New(50, 10)
 	st, _ := storage.New(filepath.Join(dir, "test.gob"), 4)
+	defer st.Close()
 	idx := New(w, ch, nil, st, nil, 0, 0)
 
 	results := []storage.SearchResult{
@@ -523,3 +537,4 @@ func TestFilterByPath(t *testing.T) {
 		t.Errorf("expected all results with empty filter, got %d", len(empty))
 	}
 }
+

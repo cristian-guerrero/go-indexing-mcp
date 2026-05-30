@@ -16,6 +16,7 @@ import (
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/chunker"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/config"
+	"github.com/cristian-guerrero/go-indexing-mcp/pkg/db"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/embedder"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/graph"
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/indexer"
@@ -94,23 +95,25 @@ func RunGenerate(rootDir string) int {
 	em := embedder.New(mgr.BaseURL(), cfg.Embedding.Dimensions, cfg.Embedding.BatchSize, cfg.Embedding.QueryPrefix)
 	dbDir := config.StoragePath(rootPath)
 
-	st, err := storage.New(dbDir, cfg.Embedding.Dimensions)
+	store, err := db.Open(dbDir, cfg.Embedding.Dimensions)
 	if err != nil {
-		slog.Error("storage init", "error", err)
+		slog.Error("sqlite store init", "error", err)
 		return 1
 	}
-	defer st.Close()
 
 	branch := w.GetBranch()
 	worktree := w.GetWorktreeName()
-	if err := st.SwitchBranch(branch, worktree); err != nil {
+	if err := store.SwitchBranch(branch, worktree); err != nil {
 		slog.Warn("branch switch failed, continuing", "error", err)
 	}
+
+	st := storage.NewFromStore(store)
+	defer store.Close()
 
 	// Check for format version mismatch — clear if needed before full reindex
 	if st.NeedsReindex() {
 		slog.Warn("storage format version changed, clearing before reindex")
-		if err := st.ClearAll(); err != nil {
+		if err := store.ClearAll(); err != nil {
 			slog.Error("clear storage", "error", err)
 			return 1
 		}
@@ -118,28 +121,14 @@ func RunGenerate(rootDir string) int {
 
 	idx := indexer.New(w, ch, em, st, nil, 0, 0, cfg.Indexing.IgnorePatterns)
 
-	// Wire knowledge graph
-	var graphQuery *graph.GraphQuery
-	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
-	if gq, gErr := graph.NewGraphQuery(graphDir); gErr == nil {
-		ext := graph.NewExtractor()
-		idx.WithGraph(gq, ext)
-		graphQuery = gq
-		if err := gq.SwitchBranch(branch, worktree); err != nil {
-			slog.Warn("graph: branch switch failed, using default", "error", err)
-		}
-		if graphQuery.NeedsReindex() {
-			slog.Warn("graph format version changed, clearing before reindex")
-			if err := graphQuery.DB.Clear(); err != nil {
-				slog.Error("clear graph", "error", err)
-				return 1
-			}
-		}
-	}
+	// Wire knowledge graph (same shared store)
+	gq := graph.NewGraphQueryFromStore(store)
+	ext := graph.NewExtractor()
+	idx.WithGraph(gq, ext)
 
 	defer func() {
-		if graphQuery != nil {
-			graphQuery.Close()
+		if gq != nil {
+			_ = gq.Close()
 		}
 	}()
 
@@ -1182,7 +1171,12 @@ func RunSymbolInfo(name, pathFilter, rootDir string) int {
 
 // pruneStaleGraphEntries removes graph entries for files that no longer exist on disk.
 func pruneStaleGraphEntries(w *walker.Walker, gq *graph.GraphQuery) {
-	for relPath := range gq.Cache.ByFile {
+	files, err := gq.Store.ListSymbolFiles()
+	if err != nil {
+		slog.Warn("graph: list symbol files for pruning", "error", err)
+		return
+	}
+	for _, relPath := range files {
 		fullPath := filepath.Join(w.Root, relPath)
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			gq.RemoveFile(relPath)
@@ -1206,34 +1200,38 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 
 	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
 
-	graphDir := filepath.Join(config.StorageDir(rootPath), "graph")
-	gq, err := graph.NewGraphQuery(graphDir)
+	dbPath := config.StorageDbPath(rootPath)
+	store, err := db.Open(dbPath, 0)
 	if err != nil {
-		slog.Error("open graph", "error", err)
+		slog.Error("open store for graph query", "error", err)
 		return 1
 	}
-	defer gq.Close()
+
+	gq := graph.NewGraphQueryFromStore(store)
+	defer func() {
+		if err := store.Close(); err != nil {
+			slog.Warn("graph: close error", "error", err)
+		}
+	}()
 
 	branch := w.GetBranch()
 	worktree := w.GetWorktreeName()
-	if err := gq.SwitchBranch(branch, worktree); err != nil {
+	if err := store.SwitchBranch(branch, worktree); err != nil {
 		slog.Warn("graph: branch switch in query", "error", err)
 	}
 
 	if gq.NeedsReindex() {
 		slog.Warn("graph format version changed, clearing and re-extracting")
-		if err := gq.DB.Clear(); err != nil {
+		if err := store.Clear(); err != nil {
 			slog.Error("clear graph", "error", err)
 			return 1
 		}
-		// Re-open the cleared graph so Cache is fresh
-		gq.Cache.Clear()
 	}
 
 	// Prune stale graph entries for files that no longer exist on disk
 	pruneStaleGraphEntries(w, gq)
 
-	symCount, _ := gq.Cache.Stats()
+	symCount, _ := gq.Stats()
 	if symCount == 0 {
 		ext := graph.NewExtractor()
 		if ext != nil {
@@ -1267,7 +1265,7 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 		}
 	}
 
-	symCount, refCount := gq.Cache.Stats()
+	symCount, refCount := gq.Stats()
 	if symCount == 0 {
 		fmt.Fprintln(os.Stderr, "Knowledge graph is empty. Run --generate or use --mcp to index files with graph extraction (requires build with -tags onnx).")
 		return 1

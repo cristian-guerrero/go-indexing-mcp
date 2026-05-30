@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [ main, dev ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
@@ -19,14 +19,8 @@ jobs:
           go-version: stable
           go-version-file: go.mod
       - uses: mlugg/setup-zig@v2
-      - name: Pre-download sqlite-vec extension
-        run: |
-          mkdir -p ~/.go-mcp/indexing/lib
-          curl -fsSL "https://github.com/asg017/sqlite-vec/releases/download/v0.1.9/sqlite-vec-0.1.9-loadable-linux-x86_64.tar.gz" \
-            -o /tmp/vec0.tar.gz
-          tar -xzf /tmp/vec0.tar.gz -C ~/.go-mcp/indexing/lib
       - run: CGO_ENABLED=1 CC="zig cc" go vet -tags "onnx sqlite_fts5" ./...
-      - run: CGO_ENABLED=1 CC="zig cc" go test -count=1 -tags "onnx sqlite_fts5" ./...
+      - run: CGO_ENABLED=1 CC="zig cc" go test -v -count=1 -tags "onnx sqlite_fts5" ./...
 
   build:
     needs: test

@@ -121,6 +121,17 @@ func (e *Extractor) Extract(content, language, filePath, relPath, fileHash strin
 	return symbols, refs, nil
 }
 
+// Close frees all cached tree-sitter parser objects.
+// Must be called when the Extractor is no longer needed to prevent CGo memory leaks.
+func (e *Extractor) Close() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for lang, parser := range e.parsers {
+		parser.Close()
+		delete(e.parsers, lang)
+	}
+}
+
 // getParser returns a cached tree-sitter language and parser for the given language.
 func (e *Extractor) getParser(language string) (*sitter.Language, *sitter.Parser, error) {
 	e.mu.Lock()

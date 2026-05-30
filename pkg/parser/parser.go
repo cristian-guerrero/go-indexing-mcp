@@ -19,4 +19,8 @@ type Parser interface {
 
 	// SupportedLanguages returns the list of languages this parser can handle.
 	SupportedLanguages() []string
+
+	// Close frees any CGo resources held by the parser (tree-sitter objects).
+	// Safe to call multiple times; no-op after first call.
+	Close()
 }

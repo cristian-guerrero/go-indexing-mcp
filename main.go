@@ -205,6 +205,10 @@ func main() {
 			slog.Warn("graph: close error", "error", err)
 		}
 	}()
+	defer ext.Close()
+	if ch.Parser != nil {
+		defer ch.Parser.Close()
+	}
 
 	// Auto-update
 	if cfg.Indexing.AutoUpdate && version.Version != "dev" {

@@ -443,18 +443,29 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 	// On Windows, the source file may be locked by the open SQLite connection.
 	// Close the store, copy the file, then reopen at the target path.
 
-	// 1. Checkpoint WAL so main file has all data
+	// 1. Checkpoint WAL so main file has all data (before close)
 	if err := st.Checkpoint(); err != nil {
 		slog.Warn("branch seeding: checkpoint failed", "error", err)
 	}
 
-	// 2. Close the current connection to release the file lock
+	// 2. Close the current connection to release the file lock,
+	//    then reload source stats with a fresh connection.
 	sourcePath := source.gobPath
 	if err := st.Close(); err != nil {
 		slog.Warn("branch seeding: close failed", "error", err)
 	}
 
-	// 3. Copy source → target
+	// 3. Re-read source stats with the store closed (clean connection)
+	if reloaded := storage.LoadGob(sourcePath); reloaded != nil {
+		source.records = reloaded.Records
+		if reloaded.CommitSHA != "" {
+			source.hasCommitSHA = true
+		}
+		slog.Info("branch seeding: reloaded source stats",
+			"records", source.records, "commit_sha", reloaded.CommitSHA != "")
+	}
+
+	// 4. Copy source → target
 	input, err := os.ReadFile(sourcePath)
 	if err != nil {
 		slog.Warn("branch seeding: read source failed", "error", err)
@@ -465,33 +476,54 @@ func SeedBranchFrom(st *storage.Storage, gq *graph.GraphQuery, w *walker.Walker,
 		return false
 	}
 
-	// 4. Reopen the store at the target path (SwitchBranch handles closed DB)
+	// 5. Reopen the store at the target path (SwitchBranch handles closed DB)
 	if err := st.SwitchBranch(targetBranch, targetWorktree); err != nil {
 		slog.Warn("branch seeding: switch branch failed", "error", err)
 		return false
 	}
 
 	// Graph shares the same Store — no separate SwitchBranch needed.
-	// Remove files that differ between source and target branches.
+	// Remove files that differ between source branch and target working tree.
+	changedFilesSet := make(map[string]bool)
+
+	// 1. Files that differ between merge-base and target (already computed above)
 	for _, relPath := range changedFiles {
+		changedFilesSet[relPath] = true
+	}
+
+	// 2. Files that differ between source branch and target branch (files
+	// added/modified in source that aren't in target). This catches files
+	// like pkg/graph/query.go that exist in both branches but have different
+	// content (e.g. ListSymbolFiles was added in dev-database).
+	sourceTargetDiff, err := execGit(w.Root, "diff", "--name-only", source.branch, targetBranch)
+	if err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(sourceTargetDiff), "\n") {
+			rel := strings.TrimSpace(line)
+			if rel != "" {
+				changedFilesSet[rel] = true
+			}
+		}
+	}
+
+	// 3. Files in the copied index that don't exist on disk in target
+	for _, f := range st.ListFiles() {
+		if changedFilesSet[f] {
+			continue
+		}
+		fullPath := filepath.Join(w.Root, f)
+		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
+			changedFilesSet[f] = true
+		}
+	}
+
+	// Remove all changed files from the copied index
+	for relPath := range changedFilesSet {
 		fullPath := filepath.Join(w.Root, relPath)
 		st.DeleteChunksByPath(fullPath)
 		if gq != nil {
 			gq.RemoveFile(relPath)
 		}
-	}
-
-	// Also prune files from the copied index that don't exist on disk
-	// in the target branch (e.g. files added in the source branch).
-	for _, f := range st.ListFiles() {
-		fullPath := filepath.Join(w.Root, f)
-		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
-			st.DeleteChunksByPath(fullPath)
-			if gq != nil {
-				gq.RemoveFile(f)
-			}
-			slog.Info("branch seeding: pruned file not in target", "file", f)
-		}
+		slog.Info("branch seeding: removing file for re-index", "file", relPath)
 	}
 
 	if source.hasCommitSHA {

@@ -263,16 +263,30 @@ func (s *Storage) ListFiles() []string {
 	return files
 }
 
+// sanitizeName replaces filesystem-unsafe characters in branch/worktree names
+// with hyphens, preventing unintended subdirectory creation.
+func sanitizeName(s string) string {
+	s = strings.ReplaceAll(s, "/", "-")
+	s = strings.ReplaceAll(s, "\\", "-")
+	s = strings.ReplaceAll(s, ":", "-")
+	s = strings.ReplaceAll(s, "..", "-")
+	return s
+}
+
 // BranchSuffix builds the filename suffix for non-main git branches.
 // Returns "" for main, "-{worktree}-{branch}" for other branches.
+// Branch and worktree names are sanitized to prevent subdirectory injection
+// (e.g. "feature/HU-123" → "feature-HU-123").
 // Exported for branch seeding in MCPServer.
 func BranchSuffix(branch, worktree string) string {
 	var parts []string
-	if worktree != "" {
-		parts = append(parts, worktree)
+	w := sanitizeName(worktree)
+	b := sanitizeName(branch)
+	if w != "" {
+		parts = append(parts, w)
 	}
-	if branch != "" && branch != "main" {
-		parts = append(parts, branch)
+	if b != "" && b != "main" {
+		parts = append(parts, b)
 	}
 	if len(parts) == 0 {
 		return ""

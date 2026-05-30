@@ -117,37 +117,3 @@ type Reference struct {
 	Confidence float64 // 1.0 = exact match, <1.0 = fuzzy/cross-file
 }
 
-// symbolID builds a deterministic ID for a symbol.
-func symbolID(fileHash, relPath string, line int, name string) string {
-	return fileHash + ":" + relPath + ":" + itoa(line) + ":" + name
-}
-
-// refID builds a deterministic ID for a reference.
-func refID(sourceID, targetName string, kind RefKind, line int) string {
-	h := sourceID + "->" + targetName + ":" + kind.String() + ":" + itoa(line)
-	return h
-}
-
-// itoa converts an integer to string without allocation.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	neg := false
-	if n < 0 {
-		neg = true
-		n = -n
-	}
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
-}

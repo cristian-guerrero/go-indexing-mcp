@@ -167,5 +167,5 @@ Do not modify README.md unless the public interface changes (flags, tools, confi
 - `--list-files` — list all indexed files
 - `--symbol-info <name>` — get detailed info about a symbol: definition, usages, callers, callees (graph, no llama needed)
 - `--find-imports <pattern>` — find imports matching module pattern (graph, no llama needed)
-- `--configure <pi|opencode|kilocode|claude>` — configure integration with Pi, OpenCode, KiloCode, or Claude Code (writes MCP config + global AGENTS.md)
+- `--configure <pi|opencode|kilocode|claude|zed>` — configure integration with Pi, OpenCode, KiloCode, Claude Code, or Zed (writes MCP config + global AGENTS.md)
 - `--update` — check and apply update immediately (interactive CLI mode)

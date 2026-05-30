@@ -44,7 +44,7 @@ func main() {
 	findImports := flag.String("find-imports", "", "Find imports matching a module pattern (knowledge graph)")
 	symbolInfo := flag.String("symbol-info", "", "Get detailed info about a symbol: definition, usages, callers, callees (knowledge graph)")
 	downloadLlama := flag.Bool("download-llama", false, "Force download llama.cpp (skip PATH, test GPU detection)")
-	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', 'kilocode', or 'claude'")
+	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', 'kilocode', 'claude', or 'zed'")
 	updateNow := flag.Bool("update", false, "Check and apply update immediately (interactive)")
 	showVersion := flag.Bool("version", false, "Show current version and pending update status")
 	rootDir := flag.String("dir", "", "Project root directory (overrides config root_path)")

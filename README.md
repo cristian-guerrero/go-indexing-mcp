@@ -40,6 +40,7 @@ go-indexing-mcp --configure claude
 go-indexing-mcp --configure opencode
 go-indexing-mcp --configure kilocode
 go-indexing-mcp --configure pi
+go-indexing-mcp --configure zed
 ```
 
 ## Configure
@@ -64,6 +65,7 @@ Each command:
 | **OpenCode** | `~/.config/opencode/opencode.json` | `~/.config/opencode/AGENTS.md` |
 | **KiloCode** | `~/.config/kilo/kilo.json` | `~/.config/kilo/AGENTS.md` |
 | **Pi** | — | `~/.pi/agent/AGENTS.md` |
+| **Zed** | `~/.config/zed/settings.json` (macOS/Linux) / `%APPDATA%\Zed\settings.json` (Windows) | `~/.config/zed/AGENTS.md` (macOS/Linux) / `%APPDATA%\Zed\AGENTS.md` (Windows) |
 
 ### Forcing Agents
 
@@ -111,7 +113,7 @@ go-indexing-mcp --free
 | `--list-files` | List all indexed files |
 | `--symbol-info <name>` | Get detailed info about a symbol: definition, usages, callers, callees |
 | `--find-imports <pattern>` | Find imports matching a module pattern |
-| `--configure <target>` | Auto-setup for pi, opencode, kilocode, or claude |
+| `--configure <target>` | Auto-setup for pi, opencode, kilocode, claude, or zed |
 | `--dir <path>` | Override project root directory |
 | `--free` | Stop llama-server, free RAM |
 | `--download-llama` | Force download llama.cpp (auto-detects GPU variant) |

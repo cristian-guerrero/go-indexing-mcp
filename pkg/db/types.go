@@ -119,12 +119,17 @@ type Reference struct {
 	Confidence float64 `json:"confidence"`
 }
 
+// SymbolDef is a symbol definition with its associated callers and callees.
+type SymbolDef struct {
+	Symbol
+	Callers []Reference `json:"callers"`
+	Callees []Reference `json:"callees"`
+}
+
 // SymbolInfo is a complete profile of a code symbol.
 type SymbolInfo struct {
-	Definitions []Symbol    `json:"definitions"`
+	Definitions []SymbolDef `json:"definitions"`
 	Usages      []Reference `json:"usages"`
-	Callers     []Reference `json:"callers"`
-	Callees     []Reference `json:"callees"`
 }
 
 func (k SymbolKind) String() string {

@@ -108,6 +108,9 @@ func (l GoLang) WalkExtra(ctx *ExtractContext, node *sitter.Node) bool {
 			*ctx.Symbols = append(*ctx.Symbols, *typeSym)
 		}
 
+	case ntype == "interface_type":
+		extractGoInterfaceMethods(ctx, node)
+
 	case ntype == "var_declaration":
 		if specs := extractGoSpecDeclarations(node, ctx.Source, "var_spec", SymbolVariable, ctx.FilePath, ctx.RelPath, ctx.FileHash); specs != nil {
 			*ctx.Symbols = append(*ctx.Symbols, specs...)
@@ -214,6 +217,48 @@ func extractGoSpecDeclarations(node *sitter.Node, source []byte, specType string
 		})
 	}
 	return symbols
+}
+
+// extractGoInterfaceMethods extracts method signatures from a Go interface_type node
+// as symbols so interface method declarations appear in symbol-info results.
+func extractGoInterfaceMethods(ctx *ExtractContext, node *sitter.Node) {
+	parent := node.Parent()
+	if parent == nil || parent.Type() != "type_spec" {
+		return
+	}
+	ifName := extractNodeName(parent, ctx.Source)
+	if ifName == "" {
+		return
+	}
+	for i := 0; i < int(node.ChildCount()); i++ {
+		child := node.Child(i)
+		if child == nil {
+			continue
+		}
+		childType := child.Type()
+		if childType == "{" || childType == "}" {
+			continue
+		}
+		methodName := extractNodeName(child, ctx.Source)
+		if methodName == "" {
+			continue
+		}
+		startLine := int(child.StartPoint().Row) + 1
+		endLine := int(child.EndPoint().Row) + 1
+		sig := extractSignatureLine(child, ctx.Source)
+		id := symbolID(ctx.FileHash, ctx.RelPath, startLine, methodName)
+		*ctx.Symbols = append(*ctx.Symbols, Symbol{
+			ID:        id,
+			Name:      methodName,
+			Kind:      SymbolMethod,
+			FilePath:  ctx.FilePath,
+			RelPath:   ctx.RelPath,
+			StartLine: startLine,
+			EndLine:   endLine,
+			Signature: sig,
+			Exported:  true,
+		})
+	}
 }
 
 // extractGoReceiver extracts the receiver type from a Go method declaration.

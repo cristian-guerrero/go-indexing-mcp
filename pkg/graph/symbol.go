@@ -46,5 +46,8 @@ type Symbol = db.Symbol
 // call or import statement.
 type Reference = db.Reference
 
+// SymbolDef is a symbol definition with its associated callers and callees.
+type SymbolDef = db.SymbolDef
+
 // SymbolInfo is a complete profile of a code symbol.
 type SymbolInfo = db.SymbolInfo

@@ -140,10 +140,13 @@ func (s *Store) ResolveRefs() (int, error) {
 }
 
 // FindDefinition looks up a symbol definition by name.
+// For methods (kind=1), also matches by suffix (e.g. querying "GetCallers"
+// finds "(*GraphQuery).GetCallers").
 func (s *Store) FindDefinition(name string, pathFilter string) ([]Symbol, error) {
 	rows, err := s.db.Query(
 		`SELECT id, name, kind, file_path, rel_path, start_line, end_line, signature, exported
-		 FROM symbols WHERE name = ? ORDER BY kind, rel_path`, name)
+		 FROM symbols WHERE name = ? OR (kind = ? AND name LIKE ?)
+		 ORDER BY kind, rel_path`, name, int(SymbolMethod), "%."+name)
 	if err != nil {
 		return nil, err
 	}

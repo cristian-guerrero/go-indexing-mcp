@@ -22,6 +22,7 @@ var tsDefinitionTypes = map[string]SymbolKind{
 	"arrow_function":         SymbolFunction,
 	"generator_function":     SymbolFunction,
 	"method_definition":      SymbolMethod,
+	"method_signature":       SymbolMethod,
 	"lexical_declaration":    SymbolVariable,
 	"variable_declaration":   SymbolVariable,
 	"interface_declaration":  SymbolInterface,

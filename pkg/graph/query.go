@@ -211,30 +211,96 @@ func (g *GraphQuery) GetCallees(symID string) []Reference {
 }
 
 // GetSymbolInfo returns a complete profile of a symbol including its definition,
-// usages, callers, and callees.
+// usages, callers, and callees. Each definition carries its own associated
+// callers and callees so the relationship is explicit.
 func (g *GraphQuery) GetSymbolInfo(name string, pathFilter string) *SymbolInfo {
 	if g.Store == nil {
 		return nil
 	}
 	defs := g.FindDefinition(name, pathFilter)
 	usages := g.FindUsages(name, pathFilter)
-	callers := g.GetCallers(name)
-
-	var callees []Reference
-	if len(defs) > 0 {
-		callees = g.GetCallees(defs[0].ID)
-	}
+	allCallers := g.GetCallers(name)
 
 	if pathFilter != "" {
 		usages = filterRefsByPath(usages, pathFilter)
-		callers = filterRefsByPath(callers, pathFilter)
+		allCallers = filterRefsByPath(allCallers, pathFilter)
+	}
+
+	// Group callers by definition, then collect callees per definition
+	result := make([]SymbolDef, len(defs))
+	defIdx := make(map[string]int, len(defs))
+
+	for i, d := range defs {
+		result[i] = SymbolDef{Symbol: d}
+		defIdx[d.ID] = i
+	}
+
+	// Distribute callers to definitions:
+	//   1. Match by target_id (resolved reference points to a specific definition)
+	//   2. Fallback to file+range heuristic (caller within definition body)
+	//   3. Unmatched callers go to all definitions (best-effort)
+	var unmatched []Reference
+	for _, c := range allCallers {
+		if c.TargetID != "" {
+			if idx, ok := defIdx[c.TargetID]; ok {
+				result[idx].Callers = append(result[idx].Callers, c)
+				continue
+			}
+		}
+		// Try file+range: caller in same file and within definition line range
+		matched := false
+		for i := range result {
+			if c.FilePath == result[i].FilePath && c.Line >= result[i].StartLine && c.Line <= result[i].EndLine {
+				result[i].Callers = append(result[i].Callers, c)
+				matched = true
+				break
+			}
+		}
+		if matched {
+			continue
+		}
+		unmatched = append(unmatched, c)
+	}
+	// Add unmatched callers to every definition
+	if len(unmatched) > 0 {
+		for i := range result {
+			result[i].Callers = append(result[i].Callers, unmatched...)
+		}
+	}
+
+	// Get callees per definition:
+	//   1. Exact match via source_id (GetCallees)
+	//   2. Fallback: calls within definition's file+range (since extractCalls uses
+	//      a synthetic source_id, not the enclosing function's real symbol ID)
+	for i := range result {
+		def := &result[i]
+		def.Callees = g.GetCallees(def.ID)
+
+		// Build a set of exact-match lines to avoid duplication
+		exactLines := make(map[int]bool, len(def.Callees))
+		for _, c := range def.Callees {
+			exactLines[c.Line] = true
+		}
+
+		// File+range fallback: find call refs within the definition's body
+		if g.Store != nil && def.FilePath != "" {
+			fileRefs, err := g.Store.GetFileRefs(def.FilePath)
+			if err == nil {
+				for _, ref := range fileRefs {
+					if ref.Kind == RefCalls &&
+						ref.Line >= def.StartLine && ref.Line <= def.EndLine &&
+						!exactLines[ref.Line] {
+						def.Callees = append(def.Callees, ref)
+						exactLines[ref.Line] = true
+					}
+				}
+			}
+		}
 	}
 
 	return &SymbolInfo{
-		Definitions: defs,
+		Definitions: result,
 		Usages:      usages,
-		Callers:     callers,
-		Callees:     callees,
 	}
 }
 

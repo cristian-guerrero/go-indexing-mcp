@@ -283,6 +283,18 @@ func StorageDbPath(rootPath string) string {
 	return filepath.Join(McpDir(), "vectors", encoded, "index.sqlite")
 }
 
+// GraphDbPath returns the full path to the knowledge-graph SQLite file for the
+// given project root. Uses a separate file from the vector index so that branch
+// seeding (which copies index.sqlite) does not wipe graph data.
+func GraphDbPath(rootPath string) string {
+	absRoot, err := filepath.Abs(rootPath)
+	if err != nil {
+		absRoot = rootPath
+	}
+	encoded := EncodeProjectPath(absRoot)
+	return filepath.Join(McpDir(), "vectors", encoded, "graph.sqlite")
+}
+
 // EncodeFilePath encodes a relative file path into a filesystem-safe filename.
 // "src/main.go" → "src-main.go.gob"
 func EncodeFilePath(relPath string) string {

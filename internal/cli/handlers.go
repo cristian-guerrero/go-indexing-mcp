@@ -1201,7 +1201,9 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 
 	w := walker.New(rootPath, cfg.Indexing.IgnorePatterns)
 
-	dbPath := config.StorageDbPath(rootPath)
+	// Use a separate SQLite file for graph data so vector indexing (branch
+	// seeding, chunking) never interferes with the knowledge graph index.
+	dbPath := config.GraphDbPath(rootPath)
 	store, err := db.Open(dbPath, 0)
 	if err != nil {
 		slog.Error("open store for graph query", "error", err)
@@ -1295,7 +1297,10 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 			slog.Info("graph extraction complete", "files_with_symbols", extracted)
 
 			// Save graph commit SHA so next run is incremental
-			if vecSHA != "" {
+			headSHA := w.GetHeadSHA()
+			if headSHA != "" {
+				store.SetGraphCommitSHA(headSHA)
+			} else if vecSHA != "" {
 				store.SetGraphCommitSHA(vecSHA)
 			}
 

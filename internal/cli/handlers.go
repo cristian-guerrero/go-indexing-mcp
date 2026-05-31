@@ -1295,7 +1295,10 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 			slog.Info("graph extraction complete", "files_with_symbols", extracted)
 
 			// Save graph commit SHA so next run is incremental
-			if vecSHA != "" {
+			headSHA := w.GetHeadSHA()
+			if headSHA != "" {
+				store.SetGraphCommitSHA(headSHA)
+			} else if vecSHA != "" {
 				store.SetGraphCommitSHA(vecSHA)
 			}
 

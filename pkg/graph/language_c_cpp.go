@@ -72,7 +72,18 @@ func (CppLang) CallTypes() map[string]bool {
 }
 
 func (l CppLang) ExtractSymbol(ctx *ExtractContext, node *sitter.Node, kind SymbolKind) *Symbol {
-	return extractCSymbol(ctx, node, kind)
+	sym := extractCSymbol(ctx, node, kind)
+	if sym == nil {
+		return nil
+	}
+	// Check if function is inside a class/struct → upgrade to method
+	if kind == SymbolFunction {
+		if className := extractCPPEnclosingClass(node, ctx.Source); className != "" {
+			sym.Kind = SymbolMethod
+			sym.Name = "(" + className + ")." + sym.Name
+		}
+	}
+	return sym
 }
 
 func (l CppLang) ExtractImports(ctx *ExtractContext, node *sitter.Node, ntype string) ([]Symbol, []Reference) {
@@ -143,5 +154,17 @@ func extractCFunctionName(node *sitter.Node, source []byte) string {
 		return extractNodeName(child, source)
 	}
 
+	return ""
+}
+
+// extractCPPEnclosingClass walks up the AST to find an enclosing class_specifier
+// or struct_specifier, returning the class/struct name, or "" if not inside one.
+func extractCPPEnclosingClass(node *sitter.Node, source []byte) string {
+	for p := node.Parent(); p != nil; p = p.Parent() {
+		ptype := p.Type()
+		if ptype == "class_specifier" || ptype == "struct_specifier" {
+			return extractNodeName(p, source)
+		}
+	}
 	return ""
 }

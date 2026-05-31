@@ -261,14 +261,21 @@ func extractGoInterfaceMethods(ctx *ExtractContext, node *sitter.Node) {
 	}
 }
 
-// extractGoReceiver extracts the receiver type from a Go method declaration.
+// extractGoReceiver extracts the receiver type name from a Go method declaration.
+// For "(s *GraphQuery)" it returns "*GraphQuery", for "(g GraphQuery)" it returns "GraphQuery".
 func extractGoReceiver(node *sitter.Node, source []byte) string {
-	for i := 0; i < int(node.ChildCount()); i++ {
-		child := node.Child(i)
-		if child == nil || child.Type() != "receiver" {
-			continue
-		}
-		return child.Content(source)
+	receiverNode := node.ChildByFieldName("receiver")
+	if receiverNode == nil {
+		return ""
 	}
-	return ""
+	content := receiverNode.Content(source) // e.g. "(s *GraphQuery)"
+	// Strip surrounding parens if present
+	content = strings.TrimPrefix(content, "(")
+	content = strings.TrimSuffix(content, ")")
+	// For "(s *GraphQuery)" -> "s *GraphQuery", take last field = type name
+	parts := strings.Fields(content)
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(parts[len(parts)-1])
 }

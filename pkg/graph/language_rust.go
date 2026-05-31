@@ -35,7 +35,8 @@ func (RustLang) ImportTypes() map[string]bool {
 
 func (RustLang) CallTypes() map[string]bool {
 	return map[string]bool{
-		"call_expression": true,
+		"call_expression":  true,
+		"macro_invocation": true,
 	}
 }
 

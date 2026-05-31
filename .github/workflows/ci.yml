@@ -26,6 +26,14 @@ jobs:
             -o /tmp/vec0.tar.gz
           tar -xzf /tmp/vec0.tar.gz -C ~/.go-mcp/indexing/lib
           ls -la ~/.go-mcp/indexing/lib/
+      - name: Pre-download tree-sitter grammars
+        run: |
+          mkdir -p ~/.go-mcp/tree-sitter/grammars
+          for lang in go python typescript javascript tsx c cpp php rust zig; do
+            url="https://github.com/cristian-guerrero/go-indexing-mcp/releases/download/grammars-linux-v1/libtree-sitter-${lang}.so"
+            curl -fsSL "$url" -o ~/.go-mcp/tree-sitter/grammars/libtree-sitter-${lang}.so || echo "Warning: $lang grammar not available"
+          done
+          ls -la ~/.go-mcp/tree-sitter/grammars/
       - run: CGO_ENABLED=1 CC="zig cc" go vet -tags "sqlite_fts5" ./...
       - run: CGO_ENABLED=1 CC="zig cc" go test -v -count=1 -tags "sqlite_fts5" ./...
 

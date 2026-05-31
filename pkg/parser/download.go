@@ -12,7 +12,8 @@ import (
 )
 
 // GrammarDir returns ~/.go-mcp/tree-sitter/grammars/, creating it if needed.
-func GrammarDir() (string, error) {
+// Declared as a variable for testability (can be replaced in tests).
+var GrammarDir = func() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
@@ -56,7 +57,8 @@ func GrammarExists(language string) bool {
 }
 
 // grammarDownloadURL builds the download URL for a grammar shared library.
-func grammarDownloadURL(language string, cfg ParserConfig) string {
+// Declared as a variable for testability (can be replaced in tests).
+var grammarDownloadURL = func(language string, cfg ParserConfig) string {
 	baseURL := cfg.GrammarURL
 	if baseURL == "" {
 		tag := "grammars-v1"

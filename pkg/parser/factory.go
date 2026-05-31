@@ -7,7 +7,7 @@ import (
 // ParserConfig controls parser selection and grammar download behavior.
 type ParserConfig struct {
 	// Enabled selects the parser implementation:
-	// "treesitter" requires the onnx build tag; empty or "structural" uses regex fallback.
+	// "treesitter" requires CGO_ENABLED=1; empty or "structural" uses regex fallback.
 	Enabled string `json:"enabled,omitempty"`
 
 	// GrammarURL is the base URL for downloading grammar shared libraries.

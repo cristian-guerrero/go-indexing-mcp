@@ -837,7 +837,7 @@ func (m *MCPServer) watchChecker() {
 		}
 
 		// If the graph is empty but index has data and extractor is available,
-		// do a full reindex to populate the graph (upgrade from non-onnx build).
+		// do a full reindex to populate the graph (upgrade from non-CGO build).
 		if stats.TotalChunks > 0 && m.indexer.Graph != nil && m.indexer.Extractor != nil {
 			symCount, _ := m.indexer.Graph.Stats()
 			if symCount == 0 {

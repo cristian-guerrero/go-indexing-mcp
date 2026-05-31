@@ -213,7 +213,7 @@ Supported languages: `go`, `python`, `typescript`, `javascript`, `tsx`, `c`, `cp
 ### Building from source
 
 ```bash
-go build -tags "onnx sqlite_fts5" -o bin/go-indexing-mcp.exe .
+go build -tags "sqlite_fts5" -o bin/go-indexing-mcp.exe .
 ```
 
 Requires Go 1.21+ and CGo (for tree-sitter + sqlite-vec). The sqlite-vec extension (`vec0.dll`/`vec0.so`/`vec0.dylib`) is auto-downloaded from GitHub Releases on first use. CI builds multi-platform binaries on every tag and main branch push (see `.github/workflows/ci.yml`).

@@ -2,7 +2,7 @@
 
 ## Commands
 
-- Build: `go build -tags "onnx sqlite_fts5" -ldflags="-X github.com/cristian-guerrero/go-indexing-mcp/pkg/version.Version=dev" -o bin/go-indexing-mcp.exe .`
+- Build: `go build -tags "sqlite_fts5" -ldflags="-X github.com/cristian-guerrero/go-indexing-mcp/pkg/version.Version=dev" -o bin/go-indexing-mcp.exe .`
 - Test: `go test -count=1 -tags "sqlite_fts5" ./...` (avoids cache)
 - Lint: `go vet -tags "sqlite_fts5" ./...`
 - CI: `.github/workflows/ci.yml` — multi-platform test + build + release on tags and main
@@ -35,7 +35,7 @@
 - `pkg/db/` — Core SQLite store: single `.sqlite` file per branch with tables for chunks, FTS5 (BM25), vec0 (ANN vectors), symbols, and references. Auto-downloads sqlite-vec extension from GitHub Releases. WAL mode, 30s busy timeout, cross-process lock detection
 - `pkg/storage/` — Thin wrapper around `pkg/db/Store`. Backward-compatible API (Search, SearchHybrid, SearchGrep, etc.). Save/SaveAndFree/SaveSnapshot are no-ops (SQLite writes immediately)
 - `pkg/indexer/` — orchestrator: walk → chunk → embed → store. `Llama` manager and `MemoryFreeInterval` control periodic llama-server restart during large indexing. `IndexAll()` processes files one at a time with cross-file batching (up to 32 chunks) for bounded memory. Graph extraction (tree-sitter) is deferred to `PendingGraph` and processed later by `RunGraphExtraction()`. `IsLocked()` prevents duplicate work when multiple processes index the same project
-- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (build tag onnx), SQLite-backed storage (separate `graph.sqlite` file from vectors), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_imports, symbol_info). Supported languages: go, python, typescript, javascript, tsx, c, cpp, php, rust, zig. Incremental extraction via `graph_commit_sha` tracking
+- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (CGO only), SQLite-backed storage (separate `graph.sqlite` file from vectors), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_imports, symbol_info). Supported languages: go, python, typescript, javascript, tsx, c, cpp, php, rust, zig. Incremental extraction via `graph_commit_sha` tracking
 - `pkg/mcp/` — MCP server with tools: search_code, grep_code, find_imports, symbol_info. llama-server starts lazily (`ensureLlama()` on first tool call) and stays alive — model sleep via `--sleep-idle-seconds` replaces the old kill-on-idle logic
 
 ## Performance: indexing hot path
@@ -61,7 +61,7 @@
 
 ## Auto-extraction on CLI graph queries
 
-`--symbol-info` and `--find-imports` auto-extract the knowledge graph from source files when the graph is empty (fresh clone or new branch). Also auto-extracts incrementally when `graph_commit_sha` differs from vector `commit_sha` (stale graph). Uses only the tree-sitter extractor — no llama-server needed. Works when built with `-tags onnx`. Graph data is stored in a separate `graph.sqlite` file (isolated from vector `index.sqlite` so branch seeding never wipes it).
+`--symbol-info` and `--find-imports` auto-extract the knowledge graph from source files when the graph is empty (fresh clone or new branch). Also auto-extracts incrementally when `graph_commit_sha` differs from vector `commit_sha` (stale graph). Uses only the tree-sitter extractor — no llama-server needed. Works when built with `CGO_ENABLED=1`. Graph data is stored in a separate `graph.sqlite` file (isolated from vector `index.sqlite` so branch seeding never wipes it).
 
 ### MCP tools
 

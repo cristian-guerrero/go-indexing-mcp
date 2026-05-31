@@ -53,7 +53,7 @@ func (m *MCPServer) handleFindImports(ctx context.Context, req mcp.CallToolReque
 
 	g := m.indexer.Graph
 	if g == nil {
-		return mcp.NewToolResultText("Knowledge graph is not available. Build with -tags onnx to enable."), nil
+		return mcp.NewToolResultText("Knowledge graph is not available. Build with CGO_ENABLED=1 to enable."), nil
 	}
 
 	imports := g.FindImports(pattern)
@@ -95,7 +95,7 @@ func (m *MCPServer) handleSymbolInfo(ctx context.Context, req mcp.CallToolReques
 
 	g := m.indexer.Graph
 	if g == nil {
-		return mcp.NewToolResultText("Knowledge graph is not available. Build with -tags onnx to enable."), nil
+		return mcp.NewToolResultText("Knowledge graph is not available. Build with CGO_ENABLED=1 to enable."), nil
 	}
 
 	info := g.GetSymbolInfo(name, pathFilter)

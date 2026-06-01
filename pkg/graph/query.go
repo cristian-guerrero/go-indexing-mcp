@@ -13,9 +13,10 @@ import (
 // GraphQuery provides a unified query interface over the knowledge graph,
 // backed by SQLite. Supports branch-isolated indexes via db.Store.
 type GraphQuery struct {
-	Store      *db.Store
-	DBPath     string
-	storageDir string
+	Store       *db.Store
+	DBPath      string
+	sharedStore bool // when true, SwitchBranch skips close/reopen (store owned by Storage)
+	storageDir  string
 }
 
 // NewGraphQuery opens or creates a graph database backed by SQLite.
@@ -47,9 +48,10 @@ func NewGraphQueryFromStore(store *db.Store) *GraphQuery {
 
 func newFromStore(store *db.Store) *GraphQuery {
 	gq := &GraphQuery{
-		Store:      store,
-		DBPath:     store.Path(),
-		storageDir: filepath.Dir(store.Path()),
+		Store:       store,
+		DBPath:      store.Path(),
+		sharedStore: true,
+		storageDir:  filepath.Dir(store.Path()),
 	}
 	if gq.NeedsReindex() {
 		slog.Warn("graph: database has old format version, will re-extract on next index")
@@ -63,7 +65,9 @@ func (g *GraphQuery) NeedsReindex() bool {
 	return g.Store.GraphNeedsReindex()
 }
 
-// SwitchBranch persists the current graph and switches to a branch-specific index.
+// SwitchBranch switches the graph to a branch-specific index. When the store is
+// shared with Storage (NewGraphQueryFromStore), it only updates DBPath — the
+// Storage owns the connection lifecycle.
 func (g *GraphQuery) SwitchBranch(branch, worktree string) error {
 	if g.Store == nil {
 		return nil
@@ -73,11 +77,16 @@ func (g *GraphQuery) SwitchBranch(branch, worktree string) error {
 	// Derive the branch-specific path from the current directory
 	base := strings.TrimSuffix(g.DBPath, ".sqlite")
 	newPath := base + suffix + ".sqlite"
+	g.DBPath = newPath
+
+	if g.sharedStore {
+		// Storage already switched the shared connection; nothing more to do.
+		return nil
+	}
 
 	oldStore := g.Store
 	g.Store = nil
 
-	// Close old store
 	if err := oldStore.Close(); err != nil {
 		slog.Warn("graph: close old store", "error", err)
 	}
@@ -87,7 +96,6 @@ func (g *GraphQuery) SwitchBranch(branch, worktree string) error {
 		return fmt.Errorf("open branch graph store: %w", err)
 	}
 	g.Store = store
-	g.DBPath = newPath
 
 	return nil
 }

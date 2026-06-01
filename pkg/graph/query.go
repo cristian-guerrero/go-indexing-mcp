@@ -235,7 +235,7 @@ func (g *GraphQuery) GetSymbolInfo(name string, pathFilter string) *SymbolInfo {
 		defIdx[d.ID] = i
 	}
 
-	// Distribute callers to definitions:
+	// Distribute callers (RefCalls) to definitions:
 	//   1. Match by target_id (resolved reference points to a specific definition)
 	//   2. Fallback to file+range heuristic (caller within definition body)
 	//   3. Unmatched callers go to all definitions (best-effort)
@@ -265,6 +265,45 @@ func (g *GraphQuery) GetSymbolInfo(name string, pathFilter string) *SymbolInfo {
 	if len(unmatched) > 0 {
 		for i := range result {
 			result[i].Callers = append(result[i].Callers, unmatched...)
+		}
+	}
+
+	// Distribute non-RefCalls usages (RefAccessed, etc.) to definitions by file
+	// path match. Usages in the same file as a definition belong to that definition.
+	// Falls back to directory match for sibling files (e.g. validation_test.go
+	// references belong to the validation.go definition).
+	// target_id is NOT used here because ResolveRefs uses LIMIT 1 and may resolve
+	// all same-named references to a single definition when multiple share the name.
+	{
+		fileToDef := make(map[string]int, len(result))
+		dirToDef := make(map[string]int, len(result))
+		for i, d := range result {
+			if d.FilePath != "" {
+				fileToDef[d.FilePath] = i
+				dir := filepath.Dir(d.FilePath)
+				if dir != "." {
+					dirToDef[dir] = i
+				}
+			}
+		}
+		var remainingUsages []Reference
+		for _, u := range usages {
+			if u.Kind == RefCalls {
+				continue // already distributed above
+			}
+			if idx, ok := fileToDef[u.FilePath]; ok {
+				result[idx].Callers = append(result[idx].Callers, u)
+			} else if idx, ok := dirToDef[filepath.Dir(u.FilePath)]; ok {
+				result[idx].Callers = append(result[idx].Callers, u)
+			} else {
+				remainingUsages = append(remainingUsages, u)
+			}
+		}
+		// Unmatched usage-refs go to all definitions (best-effort)
+		if len(remainingUsages) > 0 {
+			for i := range result {
+				result[i].Callers = append(result[i].Callers, remainingUsages...)
+			}
 		}
 	}
 

@@ -202,9 +202,16 @@ func walkAST(node *sitter.Node, ctx *ExtractContext, lang Language) {
 			typeName := node.Content(ctx.Source)
 			if typeName != "" && len(typeName) < 200 {
 				col := int(node.StartPoint().Column)
-				*ctx.Refs = append(*ctx.Refs, makeTypeRef(
-					ctx.FileHash, ctx.RelPath, startLine, col, typeName, ctx.FilePath,
-				))
+				// composite_literal and type_conversion are instantiations, not plain accesses
+				if parent != nil && (parent.Type() == "composite_literal" || parent.Type() == "type_conversion") {
+					*ctx.Refs = append(*ctx.Refs, makeInstantiateRef(
+						ctx.FileHash, ctx.RelPath, startLine, col, typeName, ctx.FilePath,
+					))
+				} else {
+					*ctx.Refs = append(*ctx.Refs, makeTypeRef(
+						ctx.FileHash, ctx.RelPath, startLine, col, typeName, ctx.FilePath,
+					))
+				}
 			}
 		}
 	}

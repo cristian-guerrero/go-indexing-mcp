@@ -55,6 +55,7 @@ func FormatSymbolInfo(info *SymbolInfo) *FormatSymbolInfoResult {
 		for _, c := range d.Callers {
 			def.Callers = append(def.Callers, FormatRefResult{
 				TargetName: c.TargetName,
+				Kind:       c.Kind.String(),
 				FilePath:   c.FilePath,
 				Line:       c.Line,
 			})
@@ -62,6 +63,7 @@ func FormatSymbolInfo(info *SymbolInfo) *FormatSymbolInfoResult {
 		for _, c := range d.Callees {
 			def.Callees = append(def.Callees, FormatRefResult{
 				TargetName: c.TargetName,
+				Kind:       c.Kind.String(),
 				FilePath:   c.FilePath,
 				Line:       c.Line,
 			})

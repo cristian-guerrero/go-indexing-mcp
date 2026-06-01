@@ -9,6 +9,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -16,7 +19,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
           go-version-file: go.mod
       - uses: mlugg/setup-zig@v2
       - name: Pre-download sqlite-vec extension
@@ -67,7 +69,6 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
           go-version-file: go.mod
       - if: matrix.os != 'macos-latest'
         uses: mlugg/setup-zig@v2

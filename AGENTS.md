@@ -2,11 +2,34 @@
 
 ## Commands
 
-- Build: `go build -tags "sqlite_fts5" -ldflags="-X github.com/cristian-guerrero/go-indexing-mcp/pkg/version.Version=dev" -o bin/go-indexing-mcp.exe .`
-- Test: `go test -count=1 -tags "sqlite_fts5" ./...` (avoids cache)
-- Lint: `go vet -tags "sqlite_fts5" ./...`
-- CI: `.github/workflows/ci.yml` — multi-platform test + build + release on tags and main
-- Dependencies: `go mod tidy`
+Requires `CGO_ENABLED=1` and `CC="zig cc"` for all Go tooling (CGO is needed for SQLite + tree-sitter).
+
+| Action | Windows | Linux/macOS |
+|--------|---------|-------------|
+| Build | `.\scripts\build.ps1` | `./scripts/build.sh` |
+| Test | `.\scripts\test.ps1` | `./scripts/test.sh` |
+| Test + coverage | `.\scripts\test-cover.ps1` | `./scripts/test-cover.sh` |
+| Lint (go vet) | `.\scripts\lint.ps1` | `./scripts/lint.sh` |
+| Dependencies | `go mod tidy` | `go mod tidy` |
+| CI | `.github/workflows/ci.yml` | `.github/workflows/ci.yml` |
+
+**Raw commands** (equivalent to scripts above):
+
+```powershell
+# Windows
+$env:CGO_ENABLED=1; $env:CC="zig cc"; go build -tags sqlite_fts5 -ldflags="-X ..." -o go-indexing-mcp.exe .
+$env:CGO_ENABLED=1; $env:CC="zig cc"; go test -count=1 -tags sqlite_fts5 ./...
+$env:CGO_ENABLED=1; $env:CC="zig cc"; go test -count=1 -tags sqlite_fts5 -coverprofile=coverage.out ./...
+$env:CGO_ENABLED=1; $env:CC="zig cc"; go vet -tags sqlite_fts5 ./...
+```
+
+```bash
+# Linux/macOS
+CGO_ENABLED=1 CC="zig cc" go build -tags sqlite_fts5 -ldflags="-X ..." -o go-indexing-mcp .
+CGO_ENABLED=1 CC="zig cc" go test -count=1 -tags sqlite_fts5 ./...
+CGO_ENABLED=1 CC="zig cc" go test -count=1 -tags sqlite_fts5 -coverprofile=coverage.out ./...
+CGO_ENABLED=1 CC="zig cc" go vet -tags sqlite_fts5 ./...
+```
 
 ## Conventions
 

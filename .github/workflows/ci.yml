@@ -35,7 +35,12 @@ jobs:
           done
           ls -la ~/.go-mcp/tree-sitter/grammars/
       - run: CGO_ENABLED=1 CC="zig cc" go vet -tags "sqlite_fts5" ./...
-      - run: CGO_ENABLED=1 CC="zig cc" go test -v -count=1 -tags "sqlite_fts5" ./...
+      - run: CGO_ENABLED=1 CC="zig cc" go test -v -count=1 -tags "sqlite_fts5" -coverprofile=coverage.out ./...
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.out
 
   build:
     needs: test

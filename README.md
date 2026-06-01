@@ -212,11 +212,23 @@ Supported languages: `go`, `python`, `typescript`, `javascript`, `tsx`, `c`, `cp
 
 ### Building from source
 
+Requires Go 1.21+, CGo, and `zig cc` on PATH (C compiler for CGO with SQLite + tree-sitter).
+
 ```bash
-go build -tags "sqlite_fts5" -o bin/go-indexing-mcp.exe .
+# Linux/macOS
+CGO_ENABLED=1 CC="zig cc" go build -tags sqlite_fts5 -o go-indexing-mcp .
+
+# Windows (PowerShell)
+$env:CGO_ENABLED=1; $env:CC="zig cc"; go build -tags sqlite_fts5 -o go-indexing-mcp.exe .
+
+# Or use the helper scripts:
+#   ./scripts/build.sh       (Linux/macOS)
+#   .\scripts\build.ps1      (Windows)
+#   .\scripts\test.ps1       (test)
+#   .\scripts\test-cover.ps1 (test + coverage report)
 ```
 
-Requires Go 1.21+ and CGo (for tree-sitter + sqlite-vec). The sqlite-vec extension (`vec0.dll`/`vec0.so`/`vec0.dylib`) is auto-downloaded from GitHub Releases on first use. CI builds multi-platform binaries on every tag and main branch push (see `.github/workflows/ci.yml`).
+The sqlite-vec extension (`vec0.dll`/`vec0.so`/`vec0.dylib`) is auto-downloaded from GitHub Releases on first use. CI builds multi-platform binaries on every tag and main branch push (see `.github/workflows/ci.yml`).
 
 ### Languages
 

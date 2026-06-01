@@ -116,6 +116,8 @@ func (s *Store) searchHybridBM25(query string, limit int) (map[string]float64, e
 }
 
 // sanitizeFTS5 converts a user query string into a safe FTS5 MATCH expression.
+// Returns empty string if the query contains characters unsafe for FTS5 (e.g. `/`, `-`, `+`),
+// such as `//go:build`, `C++`, or `my-file`. Callers should fall back to LIKE in that case.
 func sanitizeFTS5(query string) string {
 	if strings.HasPrefix(query, "\"") && strings.HasSuffix(query, "\"") {
 		return query
@@ -127,6 +129,18 @@ func sanitizeFTS5(query string) string {
 	if len(tokens) == 0 {
 		return ""
 	}
+
+	// FTS5 barewords may only contain alphanumeric characters, underscore, and
+	// escaped double-quotes (`""`). Special characters like `/`, `-`, `+`, `(`, `)`,
+	// etc. cause FTS5 syntax errors (e.g., `/` triggers the NEAR operator parser).
+	for _, t := range tokens {
+		for _, c := range t {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '"') {
+				return ""
+			}
+		}
+	}
+
 	var parts []string
 	for _, t := range tokens {
 		parts = append(parts, t+"*")
@@ -273,33 +287,38 @@ func (s *Store) SearchGrep(opts GrepOptions) ([]GrepResult, error) {
 
 	if !isRegex && !opts.CaseSensitive && len(query) >= 3 {
 		ftsQ := sanitizeFTS5(query)
-		sqlQuery = `
-			SELECT c.id, c.file_path, c.rel_path, c.language,
-			       c.start_line, c.end_line, c.content
-			FROM chunks c
-			WHERE c.rowid IN (
-				SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?
-			)`
-		sqlArgs = append(sqlArgs, ftsQ)
-	} else if !isRegex {
-		if opts.CaseSensitive {
-			sqlQuery = `SELECT id, file_path, rel_path, language, start_line, end_line, content
-				FROM chunks WHERE content LIKE ?`
-			sqlArgs = append(sqlArgs, "%"+query+"%")
-		} else {
-			sqlQuery = `SELECT id, file_path, rel_path, language, start_line, end_line, content
-				FROM chunks WHERE content LIKE ? COLLATE NOCASE`
-			sqlArgs = append(sqlArgs, "%"+query+"%")
+		if ftsQ != "" {
+			sqlQuery = `
+				SELECT c.id, c.file_path, c.rel_path, c.language,
+				       c.start_line, c.end_line, c.content
+				FROM chunks c
+				WHERE c.rowid IN (
+					SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?
+				)`
+			sqlArgs = append(sqlArgs, ftsQ)
 		}
-	} else {
-		firstWord := extractFirstWord(query)
-		if len(firstWord) >= 3 {
-			sqlQuery = `SELECT id, file_path, rel_path, language, start_line, end_line, content
-				FROM chunks WHERE content LIKE ? COLLATE NOCASE`
-			sqlArgs = append(sqlArgs, "%"+firstWord+"%")
+	}
+	if sqlQuery == "" {
+		if !isRegex {
+			if opts.CaseSensitive {
+				sqlQuery = `SELECT id, file_path, rel_path, language, start_line, end_line, content
+					FROM chunks WHERE content LIKE ?`
+				sqlArgs = append(sqlArgs, "%"+query+"%")
+			} else {
+				sqlQuery = `SELECT id, file_path, rel_path, language, start_line, end_line, content
+					FROM chunks WHERE content LIKE ? COLLATE NOCASE`
+				sqlArgs = append(sqlArgs, "%"+query+"%")
+			}
 		} else {
-			sqlQuery = `SELECT id, file_path, rel_path, language, start_line, end_line, content
-				FROM chunks`
+			firstWord := extractFirstWord(query)
+			if len(firstWord) >= 3 {
+				sqlQuery = `SELECT id, file_path, rel_path, language, start_line, end_line, content
+					FROM chunks WHERE content LIKE ? COLLATE NOCASE`
+				sqlArgs = append(sqlArgs, "%"+firstWord+"%")
+			} else {
+				sqlQuery = `SELECT id, file_path, rel_path, language, start_line, end_line, content
+					FROM chunks`
+			}
 		}
 	}
 

@@ -36,21 +36,21 @@ func NewGraphQuery(graphPath string) (*GraphQuery, error) {
 		return nil, fmt.Errorf("open graph store: %w", err)
 	}
 
-	gq := newFromStore(store)
+	gq := newFromStore(store, false)
 	return gq, nil
 }
 
 // NewGraphQueryFromStore wraps an existing db.Store for graph queries.
 // Used when sharing a Store with vector storage (single DB file).
 func NewGraphQueryFromStore(store *db.Store) *GraphQuery {
-	return newFromStore(store)
+	return newFromStore(store, true)
 }
 
-func newFromStore(store *db.Store) *GraphQuery {
+func newFromStore(store *db.Store, shared bool) *GraphQuery {
 	gq := &GraphQuery{
 		Store:       store,
 		DBPath:      store.Path(),
-		sharedStore: true,
+		sharedStore: shared,
 		storageDir:  filepath.Dir(store.Path()),
 	}
 	if gq.NeedsReindex() {

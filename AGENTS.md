@@ -2,7 +2,7 @@
 
 ## Commands
 
-- Build: `go build -tags "onnx sqlite_fts5" -ldflags="-X github.com/cristian-guerrero/go-indexing-mcp/pkg/version.Version=dev" -o bin/go-indexing-mcp.exe .`
+- Build: `go build -tags "sqlite_fts5" -ldflags="-X github.com/cristian-guerrero/go-indexing-mcp/pkg/version.Version=dev" -o bin/go-indexing-mcp.exe .`
 - Test: `go test -count=1 -tags "sqlite_fts5" ./...` (avoids cache)
 - Lint: `go vet -tags "sqlite_fts5" ./...`
 - CI: `.github/workflows/ci.yml` — multi-platform test + build + release on tags and main
@@ -22,7 +22,7 @@
 
 - `main.go` — flag parsing + routing to handlers
 - `internal/cli/handlers.go` — `RunGenerate()`, `RunQuery()`, `RunConfigure()` + `configurePi()`, `configureOpenCode()`, `configureKiloCode()`, `configureClaude()`
-- `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`. `McpDir()`, `ModelsDir()`, `LlamaCppDir()`, `McpBinDir()`, `EncodeProjectPath()`, `StorageDir()`, `StorageDbPath()`
+- `pkg/config/` — load/save `~/.go-mcp/indexing/config.json`. `McpDir()`, `ModelsDir()`, `LlamaCppDir()`, `McpBinDir()`, `EncodeProjectPath()`, `StorageDir()`, `StorageDbPath()`, `GraphDbPath()`
 - `pkg/version/` — `Version` var injected via ldflags at build time (default: "dev"). Dev builds skip update checks
 - `pkg/updater/` — auto-update via GitHub Releases: `CheckForUpdate`, `DownloadUpdate`, `ApplyUpdate` (replace running binary), `WasJustUpdated`. Windows: rename .exe → .old, copy new, hide .old if in-use. Config: `indexing.auto_update` (default: true). Triggered on MCP startup in background goroutine
 - `pkg/selfsetup/` — auto-setup on first run
@@ -35,7 +35,7 @@
 - `pkg/db/` — Core SQLite store: single `.sqlite` file per branch with tables for chunks, FTS5 (BM25), vec0 (ANN vectors), symbols, and references. Auto-downloads sqlite-vec extension from GitHub Releases. WAL mode, 30s busy timeout, cross-process lock detection
 - `pkg/storage/` — Thin wrapper around `pkg/db/Store`. Backward-compatible API (Search, SearchHybrid, SearchGrep, etc.). Save/SaveAndFree/SaveSnapshot are no-ops (SQLite writes immediately)
 - `pkg/indexer/` — orchestrator: walk → chunk → embed → store. `Llama` manager and `MemoryFreeInterval` control periodic llama-server restart during large indexing. `IndexAll()` processes files one at a time with cross-file batching (up to 32 chunks) for bounded memory. Graph extraction (tree-sitter) is deferred to `PendingGraph` and processed later by `RunGraphExtraction()`. `IsLocked()` prevents duplicate work when multiple processes index the same project
-- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (build tag onnx), SQLite-backed storage (same `.sqlite` file as vectors), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_imports, symbol_info). Supported languages: go, python, typescript, javascript, tsx, c, cpp, php, rust, zig. Incremental extraction via `graph_commit_sha` tracking
+- `pkg/graph/` — knowledge graph: Tree-sitter AST extractor (CGO only), SQLite-backed storage (separate `graph.sqlite` file from vectors), GraphQuery API (FindDefinition, FindUsages, FindImports, GetCallers, GetCallees, GetSymbolInfo), MCP tools (find_imports, symbol_info). Supported languages: go, python, typescript, javascript, tsx, c, cpp, php, rust, zig. Incremental extraction via `graph_commit_sha` tracking
 - `pkg/mcp/` — MCP server with tools: search_code, grep_code, find_imports, symbol_info. llama-server starts lazily (`ensureLlama()` on first tool call) and stays alive — model sleep via `--sleep-idle-seconds` replaces the old kill-on-idle logic
 
 ## Performance: indexing hot path
@@ -61,7 +61,7 @@
 
 ## Auto-extraction on CLI graph queries
 
-`--symbol-info` and `--find-imports` auto-extract the knowledge graph from source files when the graph is empty (fresh clone or new branch). Also auto-extracts incrementally when `graph_commit_sha` differs from vector `commit_sha` (stale graph). Uses only the tree-sitter extractor — no llama-server needed. Works when built with `-tags onnx`.
+`--symbol-info` and `--find-imports` auto-extract the knowledge graph from source files when the graph is empty (fresh clone or new branch). Also auto-extracts incrementally when `graph_commit_sha` differs from vector `commit_sha` (stale graph). Uses only the tree-sitter extractor — no llama-server needed. Works when built with `CGO_ENABLED=1`. Graph data is stored in a separate `graph.sqlite` file (isolated from vector `index.sqlite` so branch seeding never wipes it).
 
 ### MCP tools
 
@@ -69,7 +69,7 @@
 |---|---|---|
 | `search_code(query, path_filter?, limit?)` | BM25 (FTS5) + vector (sqlite-vec) similarity via RRF. Best for intent-based queries | Yes |
 | `grep_code(query, path_filter?, lang?, case_sensitive?, word_boundary?, limit?)` | Substring/regex match on cached chunks with line-level results. Definition lines (func, type, class) are boosted 2x. Supports glob path filters | No |
-| `symbol_info(name, path_filter?)` | Get detailed info about a symbol (definition + usages + callers + callees) | No (graph only) |
+| `symbol_info(name, path_filter?)` | Get detailed info with per-definition callers/callees. Each definition in the result carries its own callers and callees arrays | No (graph only) |
 | `find_imports(pattern)` | Find all imports matching a package pattern | No (graph only) |
 
 ### Implementation
@@ -77,14 +77,15 @@
 - `pkg/db/store.go`: SQLite wrapper with WAL mode, vec0 extension loading, schema management, branch isolation
 - `pkg/db/search.go`: `Search()` via `vec0` KNN, `SearchHybrid()` via FTS5 BM25 + vec0 fused with RRF, `SearchGrep()` via FTS5 pre-filter + Go regex post-processing with definition-line boost
 - `pkg/db/graph.go`: Symbol/reference CRUD via SQLite tables, `ResolveRefs()` cross-file reference resolution
-- `pkg/db/types.go`: Shared types (`SearchResult`, `GrepResult`, `Symbol`, `Reference`, `SymbolInfo`)
+- `pkg/db/types.go`: Shared types (`SearchResult`, `GrepResult`, `Symbol`, `SymbolDef`, `Reference`, `SymbolInfo`)
 - `pkg/db/download.go`: Auto-download of sqlite-vec extension from GitHub Releases (per-platform)
 - FTS5 sync: triggers on `chunks` and `symbols` tables keep FTS5 indices in sync automatically
 - `grep_code`: line-level matching with `GrepOptions` (case_sensitive, whole_word, language filter). Results include `Matches` with exact line numbers. Definition lines (`func`, `type`, `class`, `interface`, etc.) get a 2x score boost. Supports glob path patterns (`*.go`, `**/*_test.go`)
 
 ## Branch-isolated index
 
-- Single SQLite file per branch: `index.sqlite` (main) or `index-{worktree}-{branch}.sqlite` (other branches)
+- Vector index per branch: `index.sqlite` (main) or `index-{worktree}-{branch}.sqlite` (other branches)
+- Knowledge graph per branch: `graph.sqlite` (main) or `graph-{worktree}-{branch}.sqlite` (other branches)
 - Stored under `~/.go-mcp/indexing/vectors/{encoded-project-path}/` (e.g. `--C--project-apps-go-indexing-mcp--/`)
 - `Store.SwitchBranch(branch, worktree)` persist and load automatically
 - `CommitSHA` saved on each indexation for precise diff
@@ -162,7 +163,7 @@ Do not modify README.md unless the public interface changes (flags, tools, confi
 - `--case-sensitive` — case-sensitive matching (used with --grep)
 - `--word` — match whole words only (used with --grep)
 - `--list-files` — list all indexed files
-- `--symbol-info <name>` — get detailed info about a symbol: definition, usages, callers, callees (graph, no llama needed). Auto-extracts graph incrementally if stale
+- `--symbol-info <name>` — get detailed info about a symbol with per-definition callers/callees (graph, no llama needed). Each definition in the output carries its own callers and callees arrays. Auto-extracts graph incrementally if stale
 - `--find-imports <pattern>` — find imports matching module pattern (graph, no llama needed). Auto-extracts graph incrementally if stale
 - `--configure <pi|opencode|kilocode|claude|zed>` — configure integration with Pi, OpenCode, KiloCode, Claude Code, or Zed (writes MCP config + global AGENTS.md)
 - `--update` — check and apply update immediately (interactive CLI mode)

@@ -50,7 +50,7 @@ type Indexer struct {
 	MemoryFreeInterval int                // 0 = disabled; save+clear+restart every N files
 	MaxMemoryMB        int                // 0 = disabled; llama-server memory threshold in MB
 	Graph              *graph.GraphQuery  // knowledge graph (nil if not available)
-	Extractor          *graph.Extractor   // AST extractor (nil without onnx tag)
+	Extractor          *graph.Extractor   // AST extractor (nil without CGO_ENABLED=1)
 	IgnorePatterns     []string           // active ignore patterns for change detection
 	PendingGraph       []walker.FileInfo  // files queued for tree-sitter extraction (Phase 2)
 	mu                 sync.Mutex

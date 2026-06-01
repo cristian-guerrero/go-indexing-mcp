@@ -1,4 +1,4 @@
-//go:build onnx
+//go:build cgo
 
 package graph
 
@@ -243,12 +243,22 @@ func findJSXComponentName(node *sitter.Node, source []byte) string {
 
 // makeTypeRef creates a RefAccessed reference for a type identifier usage.
 func makeTypeRef(fileHash, relPath string, startLine, col int, typeName, filePath string) Reference {
+	return makeRef(fileHash, relPath, startLine, col, typeName, filePath, RefAccessed)
+}
+
+// makeInstantiateRef creates a RefInstantiates reference for a struct/class instantiation.
+func makeInstantiateRef(fileHash, relPath string, startLine, col int, typeName, filePath string) Reference {
+	return makeRef(fileHash, relPath, startLine, col, typeName, filePath, RefInstantiates)
+}
+
+// makeRef creates a reference with the given kind for a type identifier usage.
+func makeRef(fileHash, relPath string, startLine, col int, typeName, filePath string, kind RefKind) Reference {
 	id := symbolID(fileHash, relPath, startLine, fmt.Sprintf("type:%s:c%d", typeName, col))
 	return Reference{
-		ID:         refID(id, typeName, RefAccessed, startLine),
+		ID:         refID(id, typeName, kind, startLine),
 		SourceID:   id,
 		TargetName: typeName,
-		Kind:       RefAccessed,
+		Kind:       kind,
 		FilePath:   filePath,
 		Line:       startLine,
 		Confidence: 1.0,

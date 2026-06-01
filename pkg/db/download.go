@@ -19,7 +19,8 @@ const (
 )
 
 // vec0Dir returns ~/.go-mcp/indexing/lib/, creating it if needed.
-func vec0Dir() (string, error) {
+// Declared as a variable for testability (can be replaced in tests).
+var vec0Dir = func() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
@@ -66,7 +67,8 @@ func vec0Platform() string {
 }
 
 // vec0DownloadURL builds the download URL for the vec0 extension archive.
-func vec0DownloadURL() string {
+// Declared as a variable for testability (can be replaced in tests).
+var vec0DownloadURL = func() string {
 	platform := vec0Platform()
 	return fmt.Sprintf("https://github.com/%s/releases/download/v%s/sqlite-vec-%s-loadable-%s.tar.gz",
 		vec0Repo, vec0Version, vec0Version, platform)

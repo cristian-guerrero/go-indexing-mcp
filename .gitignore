@@ -23,6 +23,11 @@ Thumbs.db
 # Config local
 .config/
 
+# Coverage output
+coverage
+coverage.out
+*.out
+
 # Temp
 tmp/
 info.txt

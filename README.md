@@ -90,7 +90,7 @@ go-indexing-mcp --grep "func validate"
 go-indexing-mcp --query "db pool config" --limit 10
 
 # Graph queries — tree-sitter knowledge graph (no llama needed)
-go-indexing-mcp --symbol-info "Config"           # Definition + usages + callers + callees
+go-indexing-mcp --symbol-info "Config"           # Per-definition callers + callees (hierarchical)
 go-indexing-mcp --find-imports "github.com/proj" # Find imports by partial module path
 
 # Free llama-server memory
@@ -111,7 +111,7 @@ go-indexing-mcp --free
 | `--case-sensitive` | Case-sensitive matching (used with --grep) |
 | `--word` | Match whole words only (used with --grep) |
 | `--list-files` | List all indexed files |
-| `--symbol-info <name>` | Get detailed info about a symbol: definition, usages, callers, callees |
+| `--symbol-info <name>` | Detailed info with per-definition callers/callees. Hierarchical output — each definition shows its own callers and callees |
 | `--find-imports <pattern>` | Find imports matching a module pattern |
 | `--configure <target>` | Auto-setup for pi, opencode, kilocode, claude, or zed |
 | `--dir <path>` | Override project root directory |
@@ -196,22 +196,24 @@ After the configured `idle_timeout_secs` of inactivity (default: 5 min), llama-s
 
 - **Small files**: sliding window chunking
 - **Large files**: structural splitter detects functions/classes/sections via regex + brace/indent counting per language
-- **Storage**: single `.sqlite` file per git branch, using sqlite-vec for ANN vector search and FTS5 for BM25 full-text search. Stored under `~/.go-mcp/indexing/vectors/{encoded-project-path}/`
+- **Storage**: `index.sqlite` per git branch for vectors, `graph.sqlite` per git branch for the knowledge graph (separate so branch seeding never interferes). Uses sqlite-vec for ANN vector search and FTS5 for BM25 full-text search. Stored under `~/.go-mcp/indexing/vectors/{encoded-project-path}/`
 
 ### Knowledge graph (structural queries)
 
-Stored in the same `.sqlite` file as the vector index. Uses tree-sitter AST extraction for precise symbol-level queries:
+Stored in a **separate** `graph.sqlite` file from the vector index (`index.sqlite`), so vector branch seeding never interferes with graph data. Uses tree-sitter AST extraction for precise symbol-level queries:
 
 1. **Extraction** (per-file): tree-sitter parses source → extracts symbols (functions, classes, imports) and references (calls, imports). Deferred to `RunGraphExtraction()` so it never blocks semantic search.
 2. **Cross-file resolution** (global pass): after extraction, matches unresolved references against all known symbols by name in SQLite. When exactly one symbol matches, populates `target_id` — ambiguous names are skipped.
 3. **Incremental extraction**: tracks `graph_commit_sha` separately from vector `commit_sha`. Stale graph entries are re-extracted via `git diff` between the two SHAs.
+4. **Per-definition callers/callees**: `--symbol-info` returns definitions with their own `callers` and `callees` arrays — the relationship between a definition and who calls it / what it calls is explicit, not a flat list.
+5. **Interface method extraction**: Go and TypeScript interface method signatures are extracted as symbols. Go methods include their receiver type (`(*Type).Method`).
 
 Supported languages: `go`, `python`, `typescript`, `javascript`, `tsx`, `c`, `cpp`, `php`, `rust`, `zig`.
 
 ### Building from source
 
 ```bash
-go build -tags "onnx sqlite_fts5" -o bin/go-indexing-mcp.exe .
+go build -tags "sqlite_fts5" -o bin/go-indexing-mcp.exe .
 ```
 
 Requires Go 1.21+ and CGo (for tree-sitter + sqlite-vec). The sqlite-vec extension (`vec0.dll`/`vec0.so`/`vec0.dylib`) is auto-downloaded from GitHub Releases on first use. CI builds multi-platform binaries on every tag and main branch push (see `.github/workflows/ci.yml`).
@@ -228,7 +230,9 @@ Uses [jina-embeddings-v2-base-code](https://huggingface.co/jinaai/jina-embedding
 
 ### Branch-isolated indexes
 
-Each git branch has its own `.sqlite` file (e.g. `index-{worktree}-{branch}.sqlite`). Switching branches and searching loads the correct index instantly — no waiting. When the target branch has no index yet, the best source branch's index is copied and files differing between branches are re-indexed (branch seeding).
+Each git branch has its own `index-{worktree}-{branch}.sqlite` (vectors) and `graph-{worktree}-{branch}.sqlite` (knowledge graph). Switching branches and searching loads the correct index instantly — no waiting. When the target branch has no index yet, the best source branch's index is copied and files differing between branches are re-indexed (branch seeding).
+
+Graph files are isolated from vector files: branch seeding copies only `index.sqlite`, so graph data is never wiped.
 
 Index files are stored under `~/.go-mcp/indexing/vectors/{encoded-project-path}/`, where `{encoded-project-path}` follows the Pi agent folder format:
 - Windows: `C:\project\apps\my-app` → `--C--project-apps-my-app--`

@@ -1313,7 +1313,7 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 	symCount, refCount = gq.Stats()
 
 	if symCount == 0 {
-		fmt.Fprintln(os.Stderr, "Knowledge graph is empty. Run --generate or use --mcp to index files with graph extraction (requires build with -tags onnx).")
+		fmt.Fprintln(os.Stderr, "Knowledge graph is empty. Run --generate or use --mcp to index files with graph extraction (requires build with CGO_ENABLED=1).")
 		return 1
 	}
 

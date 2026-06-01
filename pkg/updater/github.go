@@ -14,17 +14,30 @@ import (
 
 // GitHubAPI wraps calls to the GitHub Releases API for a given owner/repo.
 type GitHubAPI struct {
-	owner  string
-	repo   string
-	client *http.Client
+	owner   string
+	repo    string
+	client  *http.Client
+	baseURL string
 }
 
 // newGitHubAPI creates a new GitHubAPI for the given repository.
 func newGitHubAPI(owner, repo string) *GitHubAPI {
 	return &GitHubAPI{
-		owner:  owner,
-		repo:   repo,
-		client: &http.Client{},
+		owner:   owner,
+		repo:    repo,
+		client:  &http.Client{},
+		baseURL: "https://api.github.com",
+	}
+}
+
+// newGitHubAPIWithClient creates a GitHubAPI with a custom HTTP client and base URL.
+// Used for testing with httptest.Server.
+func newGitHubAPIWithClient(owner, repo string, client *http.Client, baseURL string) *GitHubAPI {
+	return &GitHubAPI{
+		owner:   owner,
+		repo:    repo,
+		client:  client,
+		baseURL: baseURL,
 	}
 }
 
@@ -56,7 +69,7 @@ func (g *GitHubAPI) getLatestRelease() (*Release, error) {
 
 // listReleases fetches up to 30 releases from the GitHub API.
 func (g *GitHubAPI) listReleases() ([]Release, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases?per_page=30", g.owner, g.repo)
+	url := fmt.Sprintf("%s/repos/%s/%s/releases?per_page=30", g.baseURL, g.owner, g.repo)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err

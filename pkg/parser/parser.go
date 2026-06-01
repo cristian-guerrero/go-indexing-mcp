@@ -1,6 +1,6 @@
 // Package parser provides a unified Parser interface for extracting structural
 // code blocks (functions, classes, methods) from source files. Two implementations
-// are available: TreeSitterParser (AST-level, build tag onnx) and
+// are available: TreeSitterParser (AST-level, CGO only) and
 // StructuralParser (regex-based, always available, fallback).
 package parser
 

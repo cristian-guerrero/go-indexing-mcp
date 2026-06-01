@@ -971,7 +971,16 @@ func (m *MCPServer) handleSearch(ctx context.Context, req mcp.CallToolRequest) (
 					return mcp.NewToolResultText(msgIndexBuilding), nil
 				}
 			} else {
-				return mcp.NewToolResultText(msgNoIndex), nil
+				slog.Info("search: index empty, triggering full index")
+				if err := m.runIndexAll(); err != nil {
+					if errors.Is(err, indexer.ErrBranchChanged) {
+						slog.Info("search: branch changed during index, retrying")
+						m.currentBranch = ""
+						continue
+					}
+					slog.Error("search: full index failed", "error", err)
+					return mcp.NewToolResultText(msgNoIndex), nil
+				}
 			}
 		}
 
@@ -1110,7 +1119,16 @@ func (m *MCPServer) handleGrepSearch(ctx context.Context, req mcp.CallToolReques
 					return mcp.NewToolResultText(msgIndexBuilding), nil
 				}
 			} else {
-				return mcp.NewToolResultText(msgNoIndex), nil
+				slog.Info("grep: index empty, triggering full index")
+				if err := m.runIndexAll(); err != nil {
+					if errors.Is(err, indexer.ErrBranchChanged) {
+						slog.Info("grep: branch changed during index, retrying")
+						m.currentBranch = ""
+						continue
+					}
+					slog.Error("grep: full index failed", "error", err)
+					return mcp.NewToolResultText(msgNoIndex), nil
+				}
 			}
 		}
 

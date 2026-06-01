@@ -47,25 +47,25 @@ type Indexer struct {
 	Embedder           *embedder.Embedder
 	Storage            *storage.Storage
 	Llama              *llama.Manager
-	MemoryFreeInterval int                // 0 = disabled; save+clear+restart every N files
-	MaxMemoryMB        int                // 0 = disabled; llama-server memory threshold in MB
-	Graph              *graph.GraphQuery  // knowledge graph (nil if not available)
-	Extractor          *graph.Extractor   // AST extractor (nil without CGO_ENABLED=1)
-	IgnorePatterns     []string           // active ignore patterns for change detection
-	PendingGraph       []walker.FileInfo  // files queued for tree-sitter extraction (Phase 2)
+	MemoryFreeInterval int               // 0 = disabled; save+clear+restart every N files
+	MaxMemoryMB        int               // 0 = disabled; llama-server memory threshold in MB
+	Graph              *graph.GraphQuery // knowledge graph (nil if not available)
+	Extractor          *graph.Extractor  // AST extractor (nil without CGO_ENABLED=1)
+	IgnorePatterns     []string          // active ignore patterns for change detection
+	PendingGraph       []walker.FileInfo // files queued for tree-sitter extraction (Phase 2)
 	mu                 sync.Mutex
 	Running            bool
 	Stats              IndexStats
-	expected           atomic.Value      // stores *expectedBranchInfo or nil
-	cancelReq          atomic.Bool       // set by Cancel() to request mid-index cancellation
+	expected           atomic.Value // stores *expectedBranchInfo or nil
+	cancelReq          atomic.Bool  // set by Cancel() to request mid-index cancellation
 }
 
 // IndexStats holds cumulative indexing statistics, updated after each operation.
 type IndexStats struct {
-	TotalChunks  int
-	TotalFiles   int
-	LastIndexed  string
-	IsIndexing   bool
+	TotalChunks int
+	TotalFiles  int
+	LastIndexed string
+	IsIndexing  bool
 }
 
 // New creates an Indexer from the given pipeline components.
@@ -131,12 +131,6 @@ func (idx *Indexer) IndexAll() error {
 	if idx.Running {
 		idx.mu.Unlock()
 		return fmt.Errorf("indexing already in progress")
-	}
-	// Skip if another process is actively writing to the database
-	if idx.Storage != nil && idx.Storage.IsLocked() {
-		idx.mu.Unlock()
-		slog.Warn("index: database locked by another process, skipping full index")
-		return nil
 	}
 	idx.Running = true
 	idx.Stats.IsIndexing = true
@@ -451,12 +445,6 @@ func (idx *Indexer) IndexPath(path string) error {
 // IndexChanged performs an incremental index by diffing the current working tree
 // against the last saved commit SHA. Handles added, modified, and deleted files.
 func (idx *Indexer) IndexChanged() error {
-	// Skip if another process is actively writing to the database
-	if idx.Storage != nil && idx.Storage.IsLocked() {
-		slog.Warn("index: database locked by another process, skipping incremental index")
-		return nil
-	}
-
 	sinceSHA := idx.Storage.GetCommitSHA()
 	files, err := idx.Walker.GetChangedFiles(sinceSHA)
 	if err != nil {

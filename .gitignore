@@ -26,6 +26,7 @@ Thumbs.db
 # Coverage output
 coverage
 coverage.out
+coverage.html
 *.out
 
 # Temp

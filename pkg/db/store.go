@@ -397,6 +397,11 @@ func (s *Store) EnsureRefsIndexes() {
 		{"idx_refs_source_line", `CREATE INDEX IF NOT EXISTS idx_refs_source_line ON refs(source_id, line)`},
 	}
 	for _, idx := range indexes {
+		var exists int
+		s.db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name=?", idx.name).Scan(&exists)
+		if exists > 0 {
+			continue
+		}
 		slog.Info("creating graph index (first run, may take a minute)", "index", idx.name)
 		if _, err := s.db.Exec(idx.sql); err != nil {
 			slog.Warn("graph: create index", "index", idx.name, "error", err)

@@ -1155,6 +1155,7 @@ func RunFindImports(pattern, rootDir string) int {
 
 // RunSymbolInfo returns full symbol info (definitions, usages, callers, callees).
 func RunSymbolInfo(name, pathFilter, rootDir string) int {
+	tStart := time.Now()
 	return runGraphQuery("symbol-info", func(g *graph.GraphQuery) {
 		info := g.GetSymbolInfo(name, pathFilter)
 		formatted := graph.FormatSymbolInfo(info)
@@ -1166,6 +1167,7 @@ func RunSymbolInfo(name, pathFilter, rootDir string) int {
 			data, _ := json.MarshalIndent(formatted, "", "  ")
 			fmt.Println(string(data))
 		}
+		fmt.Printf(" Total time: %s\n", roundDuration(time.Since(tStart)))
 		fmt.Println("====================")
 	}, rootDir)
 }

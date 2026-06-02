@@ -405,6 +405,57 @@ func TestResolveRefs(t *testing.T) {
 	}
 }
 
+func TestResolveRefs_SameFilePreference(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir+"/test.sqlite", 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Two symbols with same name in different files (like detectLanguage)
+	// Store each file's symbols + refs together so StoreFile doesn't delete anything.
+	walkerSym := Symbol{ID: "w1", Name: "detectLanguage", Kind: SymbolFunction,
+		FilePath: "C:\\project\\walker.go", RelPath: "walker.go", StartLine: 250, EndLine: 306}
+	indexerSym := Symbol{ID: "i1", Name: "detectLanguage", Kind: SymbolFunction,
+		FilePath: "C:\\project\\indexer.go", RelPath: "indexer.go", StartLine: 878, EndLine: 904}
+
+	walkerRef := Reference{ID: "r1", SourceID: "s2", TargetName: "detectLanguage",
+		TargetID: "", Kind: RefCalls, FilePath: "C:\\project\\walker.go", Line: 92}
+	indexerRef := Reference{ID: "r2", SourceID: "s3", TargetName: "detectLanguage",
+		TargetID: "", Kind: RefCalls, FilePath: "C:\\project\\indexer.go", Line: 868}
+
+	s.StoreFile("walker.go", []Symbol{walkerSym}, []Reference{walkerRef})
+	s.StoreFile("indexer.go", []Symbol{indexerSym}, []Reference{indexerRef})
+
+	resolved, err := s.ResolveRefs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved != 2 {
+		t.Fatalf("expected 2 resolved refs, got %d", resolved)
+	}
+
+	// Verify walker ref resolved to walker sym
+	var targetID string
+	err = s.DB().QueryRow("SELECT target_id FROM refs WHERE id = 'r1'").Scan(&targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if targetID != "w1" {
+		t.Fatalf("walker ref: expected target_id=w1, got %s", targetID)
+	}
+
+	// Verify indexer ref resolved to indexer sym
+	err = s.DB().QueryRow("SELECT target_id FROM refs WHERE id = 'r2'").Scan(&targetID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if targetID != "i1" {
+		t.Fatalf("indexer ref: expected target_id=i1, got %s", targetID)
+	}
+}
+
 func TestResolveRefs_NoUnresolved(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir+"/test.sqlite", 4)

@@ -28,6 +28,8 @@ import (
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/walker"
 )
 
+var isVerbose bool
+
 func main() {
 	mcpMode := flag.Bool("mcp", false, "Start MCP server (stdio)")
 	freeMem := flag.Bool("free", false, "Stop llama-server and free memory")
@@ -46,8 +48,10 @@ func main() {
 	configureMode := flag.String("configure", "", "Configure integration: 'pi', 'opencode', 'kilocode', 'claude', or 'zed'")
 	updateNow := flag.Bool("update", false, "Check and apply update immediately (interactive)")
 	showVersion := flag.Bool("version", false, "Show current version and pending update status")
+	verbose := flag.Bool("verbose", false, "Enable debug-level logging")
 	rootDir := flag.String("dir", "", "Project root directory (overrides config root_path)")
 	flag.Parse()
+	isVerbose = *verbose
 
 	if *showVersion {
 		setupConsoleLogger()
@@ -247,7 +251,11 @@ func main() {
 }
 
 func setupConsoleLogger() {
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	level := slog.LevelInfo
+	if isVerbose {
+		level = slog.LevelDebug
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 }
 
 func setupFileLogger(cfg *config.Config) error {
@@ -261,8 +269,12 @@ func setupFileLogger(cfg *config.Config) error {
 		return err
 	}
 	multi := io.MultiWriter(os.Stderr, f)
+	level := slog.LevelInfo
+	if isVerbose {
+		level = slog.LevelDebug
+	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(multi, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: level,
 	})))
 	slog.Info("logging initialized", "file", logPath, "time", time.Now().Format(time.RFC3339))
 	return nil

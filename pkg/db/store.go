@@ -384,6 +384,28 @@ func (s *Store) ClearAll() error {
 	return tx.Commit()
 }
 
+// EnsureRefsIndexes creates missing indexes on the refs table outside a transaction.
+// Run after Open() to avoid blocking the fast initSchema path with index creation
+// on existing large databases.
+func (s *Store) EnsureRefsIndexes() {
+	indexes := []struct {
+		name string
+		sql  string
+	}{
+		{"idx_refs_target_name", `CREATE INDEX IF NOT EXISTS idx_refs_target_name ON refs(target_name, kind)`},
+		{"idx_refs_file_path", `CREATE INDEX IF NOT EXISTS idx_refs_file_path ON refs(file_path)`},
+		{"idx_refs_source_line", `CREATE INDEX IF NOT EXISTS idx_refs_source_line ON refs(source_id, line)`},
+	}
+	for _, idx := range indexes {
+		slog.Info("creating graph index (first run, may take a minute)", "index", idx.name)
+		if _, err := s.db.Exec(idx.sql); err != nil {
+			slog.Warn("graph: create index", "index", idx.name, "error", err)
+		} else {
+			slog.Info("graph index created", "index", idx.name)
+		}
+	}
+}
+
 // getMeta reads a metadata value. If tx is non-nil, runs within the transaction.
 func (s *Store) getMeta(tx *sql.Tx, key string) string {
 	var value string

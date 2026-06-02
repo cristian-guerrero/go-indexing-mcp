@@ -288,8 +288,8 @@ func (g *GraphQuery) GetSymbolInfo(name string, pathFilter string) *SymbolInfo {
 	// path match. Usages in the same file as a definition belong to that definition.
 	// Falls back to directory match for sibling files (e.g. validation_test.go
 	// references belong to the validation.go definition).
-	// target_id is NOT used here because ResolveRefs uses LIMIT 1 and may resolve
-	// all same-named references to a single definition when multiple share the name.
+	// target_id is NOT used here because usages are not calls and don't resolve
+	// to a specific definition via ResolveRefs (they lack target_name).
 	{
 		fileToDef := make(map[string]int, len(result))
 		dirToDef := make(map[string]int, len(result))

@@ -266,7 +266,7 @@ func detectLanguage(path string) string {
 		return "java"
 	case ".c", ".h":
 		return "c"
-	case ".cpp", ".cc", ".cxx", ".hpp":
+	case ".cpp", ".cc", ".cxx", ".hpp", ".cu", ".cuh":
 		return "cpp"
 	case ".cs":
 		return "csharp"

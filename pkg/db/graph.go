@@ -87,7 +87,7 @@ func (s *Store) HasFile(relPath string) (bool, error) {
 // TargetName against known symbol names. Returns count of resolved refs.
 func (s *Store) ResolveRefs() (int, error) {
 	rows, err := s.db.Query(
-		`SELECT r.id, r.target_name
+		`SELECT r.id, r.target_name, r.file_path
 		 FROM refs r
 		 WHERE r.target_id = '' OR r.target_id IS NULL`)
 	if err != nil {
@@ -97,11 +97,12 @@ func (s *Store) ResolveRefs() (int, error) {
 	type unresolved struct {
 		id         string
 		targetName string
+		filePath   string
 	}
 	var pending []unresolved
 	for rows.Next() {
 		var u unresolved
-		if err := rows.Scan(&u.id, &u.targetName); err != nil {
+		if err := rows.Scan(&u.id, &u.targetName, &u.filePath); err != nil {
 			continue
 		}
 		pending = append(pending, u)
@@ -122,8 +123,11 @@ func (s *Store) ResolveRefs() (int, error) {
 	stmt, _ := tx.Prepare("UPDATE refs SET target_id = ? WHERE id = ?")
 	for _, p := range pending {
 		var targetID string
+		// Prefer same-file definition first, fall back to any definition with that name.
+		// This prevents cross-file collisions (e.g. detectLanguage in walker.go and indexer.go).
 		err := tx.QueryRow(
-			"SELECT id FROM symbols WHERE name = ? LIMIT 1", p.targetName).Scan(&targetID)
+			"SELECT id FROM symbols WHERE name = ? ORDER BY CASE WHEN file_path = ? THEN 0 ELSE 1 END LIMIT 1",
+			p.targetName, p.filePath).Scan(&targetID)
 		if err != nil || targetID == "" {
 			continue
 		}

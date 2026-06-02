@@ -892,7 +892,7 @@ func detectLanguage(path string) string {
 		return "rust"
 	case ".c":
 		return "c"
-	case ".cpp", ".cc", ".cxx":
+	case ".cpp", ".cc", ".cxx", ".cu", ".cuh":
 		return "cpp"
 	case ".php":
 		return "php"

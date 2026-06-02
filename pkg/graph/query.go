@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cristian-guerrero/go-indexing-mcp/pkg/db"
 )
@@ -225,9 +226,16 @@ func (g *GraphQuery) GetSymbolInfo(name string, pathFilter string) *SymbolInfo {
 	if g.Store == nil {
 		return nil
 	}
+	tStart := time.Now()
 	defs := g.FindDefinition(name, pathFilter)
+	tDef := time.Now()
 	usages := g.FindUsages(name, pathFilter)
+	tUsage := time.Now()
 	allCallers := g.GetCallers(name)
+	tCallers := time.Now()
+	slog.Debug("GetSymbolInfo: find queries",
+		"name", name, "defs", len(defs), "usages", len(usages), "callers", len(allCallers),
+		"find_def", tDef.Sub(tStart), "find_usages", tUsage.Sub(tDef), "get_callers", tCallers.Sub(tUsage))
 
 	if pathFilter != "" {
 		usages = filterRefsByPath(usages, pathFilter)
@@ -319,6 +327,7 @@ func (g *GraphQuery) GetSymbolInfo(name string, pathFilter string) *SymbolInfo {
 	//   1. Exact match via source_id (GetCallees)
 	//   2. Fallback: calls within definition's file+range (since extractCalls uses
 	//      a synthetic source_id, not the enclosing function's real symbol ID)
+	tCalleesStart := time.Now()
 	for i := range result {
 		def := &result[i]
 		def.Callees = g.GetCallees(def.ID)
@@ -331,11 +340,10 @@ func (g *GraphQuery) GetSymbolInfo(name string, pathFilter string) *SymbolInfo {
 
 		// File+range fallback: find call refs within the definition's body
 		if g.Store != nil && def.FilePath != "" {
-			fileRefs, err := g.Store.GetFileRefs(def.FilePath)
+			fileRefs, err := g.Store.GetFileRefs(def.FilePath, RefCalls)
 			if err == nil {
 				for _, ref := range fileRefs {
-					if ref.Kind == RefCalls &&
-						ref.Line >= def.StartLine && ref.Line <= def.EndLine &&
+					if ref.Line >= def.StartLine && ref.Line <= def.EndLine &&
 						!exactLines[ref.Line] {
 						def.Callees = append(def.Callees, ref)
 						exactLines[ref.Line] = true
@@ -344,6 +352,12 @@ func (g *GraphQuery) GetSymbolInfo(name string, pathFilter string) *SymbolInfo {
 			}
 		}
 	}
+
+	slog.Debug("GetSymbolInfo: callee phase",
+		"name", name, "defs", len(result),
+		"duration", time.Since(tCalleesStart))
+	slog.Debug("GetSymbolInfo: total",
+		"name", name, "duration", time.Since(tStart))
 
 	return &SymbolInfo{
 		Definitions: result,

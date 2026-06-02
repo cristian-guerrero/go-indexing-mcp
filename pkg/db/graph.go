@@ -283,17 +283,29 @@ func (s *Store) GetCallees(symID string) ([]Reference, error) {
 	return result, rows.Err()
 }
 
-// GraphStats returns symbol and reference counts.
+// GraphStats returns symbol and reference counts via independent subqueries
+// to avoid a cross-join that would be catastrophically slow on large graphs.
 func (s *Store) GraphStats() (symbols, refs int, err error) {
-	err = s.db.QueryRow("SELECT COUNT(*), COUNT(*) FROM symbols, refs").Scan(&symbols, &refs)
+	err = s.db.QueryRow(
+		"SELECT (SELECT COUNT(*) FROM symbols), (SELECT COUNT(*) FROM refs)",
+	).Scan(&symbols, &refs)
 	return
 }
 
-// GetFileRefs returns all references for a specific file.
-func (s *Store) GetFileRefs(relPath string) ([]Reference, error) {
-	rows, err := s.db.Query(
-		`SELECT id, source_id, target_name, target_id, kind, file_path, line, confidence
-		 FROM refs WHERE file_path = ?`, relPath)
+// GetFileRefs returns references of a specific kind for a file.
+// Pass kind=-1 to return all references (used by tests).
+func (s *Store) GetFileRefs(relPath string, kind RefKind) ([]Reference, error) {
+	var rows *sql.Rows
+	var err error
+	if kind >= 0 {
+		rows, err = s.db.Query(
+			`SELECT id, source_id, target_name, target_id, kind, file_path, line, confidence
+			 FROM refs WHERE file_path = ? AND kind = ?`, relPath, int(kind))
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, source_id, target_name, target_id, kind, file_path, line, confidence
+			 FROM refs WHERE file_path = ?`, relPath)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -302,12 +314,12 @@ func (s *Store) GetFileRefs(relPath string) ([]Reference, error) {
 	var result []Reference
 	for rows.Next() {
 		var ref Reference
-		var kind int
+		var k int
 		if err := rows.Scan(&ref.ID, &ref.SourceID, &ref.TargetName, &ref.TargetID,
-			&kind, &ref.FilePath, &ref.Line, &ref.Confidence); err != nil {
+			&k, &ref.FilePath, &ref.Line, &ref.Confidence); err != nil {
 			return nil, err
 		}
-		ref.Kind = RefKind(kind)
+		ref.Kind = RefKind(k)
 		result = append(result, ref)
 	}
 	return result, rows.Err()

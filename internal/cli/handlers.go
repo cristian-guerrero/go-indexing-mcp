@@ -1171,23 +1171,33 @@ func RunSymbolInfo(name, pathFilter, rootDir string) int {
 }
 
 // pruneStaleGraphEntries removes graph entries for files that no longer exist on disk.
-func pruneStaleGraphEntries(w *walker.Walker, gq *graph.GraphQuery) {
+// Returns the number of pruned entries.
+func pruneStaleGraphEntries(w *walker.Walker, gq *graph.GraphQuery) int {
 	files, err := gq.Store.ListSymbolFiles()
 	if err != nil {
 		slog.Warn("graph: list symbol files for pruning", "error", err)
-		return
+		return 0
 	}
+	pruned := 0
 	for _, relPath := range files {
 		fullPath := filepath.Join(w.Root, relPath)
 		if _, err := os.Stat(fullPath); os.IsNotExist(err) {
 			gq.RemoveFile(relPath)
-			slog.Info("pruned stale graph entry", "file", relPath)
+			pruned++
+			if pruned <= 10 {
+				slog.Debug("pruned stale graph entry", "file", relPath)
+			}
 		}
 	}
+	if pruned > 0 {
+		slog.Info("graph: pruned stale entries", "count", pruned)
+	}
+	return pruned
 }
 
 // runGraphQuery opens the graph, runs fn, and returns an exit code.
 func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int {
+	totalStart := time.Now()
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("load config", "error", err)
@@ -1209,6 +1219,8 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 		slog.Error("open store for graph query", "error", err)
 		return 1
 	}
+	// Create indexes outside initSchema to avoid blocking on large DBs
+	store.EnsureRefsIndexes()
 
 	gq := graph.NewGraphQueryFromStore(store)
 	defer func() {
@@ -1232,7 +1244,10 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 	}
 
 	// Prune stale graph entries for files that no longer exist on disk
-	pruneStaleGraphEntries(w, gq)
+	pruneStart := time.Now()
+	slog.Debug("graph: pruning stale entries...")
+	pruned := pruneStaleGraphEntries(w, gq)
+	slog.Debug("graph: prune done", "pruned", pruned, "duration", time.Since(pruneStart))
 
 	symCount, _ := gq.Stats()
 
@@ -1317,7 +1332,8 @@ func runGraphQuery(label string, fn func(*graph.GraphQuery), rootDir string) int
 		return 1
 	}
 
-	slog.Debug("graph loaded", "symbols", symCount, "refs", refCount, "branch", branch)
+	slog.Debug("graph loaded", "symbols", symCount, "refs", refCount, "branch", branch,
+		"total_setup", time.Since(totalStart))
 
 	fn(gq)
 	return 0

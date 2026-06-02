@@ -361,7 +361,7 @@ func TestGetFileRefs(t *testing.T) {
 		Kind: RefCalls, FilePath: "main.go", Line: 5}
 	s.StoreFile("main.go", []Symbol{sym}, []Reference{ref})
 
-	refs, err := s.GetFileRefs("main.go")
+	refs, err := s.GetFileRefs("main.go", -1)
 	if err != nil {
 		t.Fatal(err)
 	}

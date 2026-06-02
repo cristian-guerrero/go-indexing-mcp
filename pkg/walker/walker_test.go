@@ -383,6 +383,8 @@ func TestDetectLanguage_AdditionalCases(t *testing.T) {
 		{"file.kts", "kotlin"},
 		{"file.bash", "bash"},
 		{"file.scss", "css"},
+		{"file.cu", "cpp"},
+		{"file.cuh", "cpp"},
 	}
 
 	for _, tt := range tests {

@@ -82,7 +82,7 @@ func (m *MCPServer) indexOnStartup() {
 
 	slog.Info("git repository detected, checking index state on startup", "branch", branch, "worktree", worktree)
 
-	for attempts := 0; attempts < 3; attempts++ {
+	for attempts := 0; attempts < 5; attempts++ {
 		// Re-detect branch each attempt (it may have changed)
 		branch = m.indexer.Walker.GetBranch()
 		worktree = m.indexer.Walker.GetWorktreeName()
@@ -165,10 +165,10 @@ func (m *MCPServer) indexOnStartup() {
 				continue
 			}
 			if indexErr != nil {
-					slog.Warn("startup full index failed", "error", indexErr)
-				}
-				m.indexer.RunGraphExtraction()
-				return
+				slog.Warn("startup full index failed", "error", indexErr)
+			}
+			m.indexer.RunGraphExtraction()
+			return
 		}
 
 		lastSHA := m.indexer.Storage.GetCommitSHA()
@@ -185,10 +185,10 @@ func (m *MCPServer) indexOnStartup() {
 				continue
 			}
 			if indexErr != nil {
-					slog.Warn("startup interrupted index failed", "error", indexErr)
-				}
-				m.indexer.RunGraphExtraction()
-				return
+				slog.Warn("startup interrupted index failed", "error", indexErr)
+			}
+			m.indexer.RunGraphExtraction()
+			return
 		}
 
 		headSHA := m.indexer.Walker.GetHeadSHA()
@@ -235,8 +235,8 @@ func (m *MCPServer) indexOnStartup() {
 				continue
 			}
 			if indexErr != nil {
-					slog.Warn("startup reindex after ignore change failed", "error", indexErr)
-				}
+				slog.Warn("startup reindex after ignore change failed", "error", indexErr)
+			}
 		}
 
 		m.indexer.RunGraphExtraction()
@@ -392,7 +392,7 @@ func execGit(dir string, args ...string) (string, error) {
 	return string(out), nil
 }
 
-	// SeedBranchFrom copies the SQLite index file from the best available source branch
+// SeedBranchFrom copies the SQLite index file from the best available source branch
 // to the target branch so that only files that differ between the two
 // branches need re-indexing. Returns true if seeding was performed.
 //
